@@ -134,11 +134,14 @@ mod tests {
     #[test]
     fn test_pattern_caching() {
         // Use a unique pattern for this test to avoid interference from other tests
-        let unique_pattern = format!("test_pattern_{}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos());
-        
+        let unique_pattern = format!(
+            "test_pattern_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
         let metrics = MemoryMetrics::default();
         let metrics = Arc::new(metrics);
 
@@ -159,8 +162,7 @@ mod tests {
             "Second creation should add one cache hit"
         );
         assert_eq!(
-            second_misses,
-            first_misses,
+            second_misses, first_misses,
             "Second creation should not add cache misses"
         );
 
@@ -170,8 +172,7 @@ mod tests {
         let third_hits = metrics.cache_hits();
         let third_misses = metrics.cache_misses();
         assert_eq!(
-            third_hits,
-            second_hits,
+            third_hits, second_hits,
             "Different pattern should not add cache hits"
         );
         assert_eq!(
