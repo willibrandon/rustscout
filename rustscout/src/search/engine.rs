@@ -42,7 +42,7 @@ pub fn search(config: &SearchConfig) -> SearchResult<SearchOutput> {
     let files: Vec<PathBuf> = walker
         .build()
         .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.file_type().map_or(false, |ft| ft.is_file()))
+        .filter(|entry| entry.file_type().is_some_and(|ft| ft.is_file()))
         .filter(|entry| {
             let path = entry.path();
             !should_ignore(path, &config.ignore_patterns)
@@ -55,7 +55,7 @@ pub fn search(config: &SearchConfig) -> SearchResult<SearchOutput> {
 
     // Process files in parallel with adaptive chunk size
     let thread_count = config.thread_count.get();
-    let chunk_size = (files.len() / thread_count).max(16).min(256);
+    let chunk_size = (files.len() / thread_count).clamp(16, 256);
 
     let mut result = SearchOutput::new();
 

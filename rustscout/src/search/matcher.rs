@@ -78,7 +78,7 @@ impl PatternMatcher {
     }
 
     /// Finds all matches in the given text
-    pub fn find_matches<'a>(&self, text: &'a str) -> Vec<(usize, usize)> {
+    pub fn find_matches(&self, text: &str) -> Vec<(usize, usize)> {
         match &self.strategy {
             MatchStrategy::Simple(pattern) => text
                 .match_indices(pattern)

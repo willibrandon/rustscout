@@ -175,7 +175,7 @@ impl FileProcessor {
         let file_size = metadata.len();
 
         // Create memory map and record allocation
-        let mmap = unsafe { Mmap::map(&file) }.map_err(|e| SearchError::IoError(e))?;
+        let mmap = unsafe { Mmap::map(&file) }.map_err(SearchError::IoError)?;
         self.metrics.record_mmap(file_size);
 
         // Convert to string, skipping invalid UTF-8 sequences
