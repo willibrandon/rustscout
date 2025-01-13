@@ -99,7 +99,7 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use tracing::{debug, info, trace, warn};
 
-use crate::config::Config;
+use crate::config::SearchConfig;
 use crate::errors::{SearchError, SearchResult};
 use crate::filters::should_include_file;
 use crate::results::{FileResult, Match, SearchResult as SearchOutput};
@@ -259,35 +259,6 @@ fn search_file_regex(path: &Path, regex: &Regex) -> SearchResult<FileResult> {
 
 /// Performs a concurrent search across files in the specified directory.
 ///
-/// # .NET Parallel Processing Comparison
-///
-/// This function demonstrates several parallel processing patterns that are similar to .NET:
-///
-/// 1. **Parallel File Processing**
-///    .NET:
-///    ```csharp
-///    var results = files.AsParallel()
-///        .Select(file => ProcessFile(file))
-///        .ToList();
-///    ```
-///    Rust/Rayon:
-///    ```rust,ignore
-///    let results: Vec<_> = files.par_iter()
-///        .map(|file| process_file(file))
-///        .collect();
-///    ```
-///
-/// 2. **Work Stealing Thread Pool**
-///    .NET uses TPL's work-stealing pool:
-///    ```csharp
-///    var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount };
-///    Parallel.ForEach(files, parallelOptions, file => ProcessFile(file));
-///    ```
-///    Rust uses Rayon's work-stealing pool:
-///    ```rust,ignore
-///    files.par_iter().for_each(|file| process_file(file));
-///    ```
-///
 /// # Arguments
 ///
 /// * `config` - The search configuration containing pattern and options
@@ -298,8 +269,8 @@ fn search_file_regex(path: &Path, regex: &Regex) -> SearchResult<FileResult> {
 ///
 /// # Error Handling
 ///
-/// Returns io::Error for file operations or invalid regex patterns
-pub fn search(config: &Config) -> SearchResult<SearchOutput> {
+/// Returns SearchError for file operations or invalid regex patterns
+pub fn search(config: &SearchConfig) -> SearchResult<SearchOutput> {
     info!("Starting search with pattern: {}", config.pattern);
 
     if config.pattern.is_empty() {

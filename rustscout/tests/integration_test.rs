@@ -1,6 +1,6 @@
 use anyhow::Result;
 use rustscout::search::search;
-use rustscout::Config;
+use rustscout::SearchConfig;
 use std::fs::File;
 use std::io::Write;
 use std::num::NonZeroUsize;
@@ -29,13 +29,14 @@ fn test_simple_pattern() -> Result<()> {
     let dir = tempdir()?;
     create_test_files(&dir, 10, 100)?;
 
-    let config = Config {
+    let config = SearchConfig {
         pattern: String::from("TODO"),
         root_path: PathBuf::from(dir.path()),
-        ignore_patterns: vec![],
         file_extensions: None,
+        ignore_patterns: vec![],
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
+        log_level: "warn".to_string(),
     };
 
     let result = search(&config)?;
@@ -49,13 +50,14 @@ fn test_regex_pattern() -> Result<()> {
     let dir = tempdir()?;
     create_test_files(&dir, 10, 100)?;
 
-    let config = Config {
+    let config = SearchConfig {
         pattern: String::from(r"FIXME:.*bug.*line \d+"),
         root_path: PathBuf::from(dir.path()),
-        ignore_patterns: vec![],
         file_extensions: None,
+        ignore_patterns: vec![],
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
+        log_level: "warn".to_string(),
     };
 
     let result = search(&config)?;
@@ -74,13 +76,14 @@ fn test_file_extensions() -> Result<()> {
     let mut file = File::create(rs_file)?;
     writeln!(file, "// TODO: Implement this function")?;
 
-    let config = Config {
+    let config = SearchConfig {
         pattern: String::from("TODO"),
         root_path: PathBuf::from(dir.path()),
-        ignore_patterns: vec![],
         file_extensions: Some(vec!["rs".to_string()]),
+        ignore_patterns: vec![],
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
+        log_level: "warn".to_string(),
     };
 
     let result = search(&config)?;
@@ -94,13 +97,14 @@ fn test_ignore_patterns() -> Result<()> {
     let dir = tempdir()?;
     create_test_files(&dir, 10, 100)?;
 
-    let config = Config {
+    let config = SearchConfig {
         pattern: String::from("TODO"),
         root_path: PathBuf::from(dir.path()),
-        ignore_patterns: vec!["**/test_[0-4].txt".to_string()],
         file_extensions: None,
+        ignore_patterns: vec!["**/test_[0-4].txt".to_string()],
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
+        log_level: "warn".to_string(),
     };
 
     let result = search(&config)?;
@@ -114,13 +118,14 @@ fn test_empty_pattern() -> Result<()> {
     let dir = tempdir()?;
     create_test_files(&dir, 1, 10)?;
 
-    let config = Config {
+    let config = SearchConfig {
         pattern: String::new(),
         root_path: PathBuf::from(dir.path()),
-        ignore_patterns: vec![],
         file_extensions: None,
+        ignore_patterns: vec![],
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
+        log_level: "warn".to_string(),
     };
 
     let result = search(&config)?;
@@ -134,13 +139,14 @@ fn test_stats_only() -> Result<()> {
     let dir = tempdir()?;
     create_test_files(&dir, 10, 100)?;
 
-    let config = Config {
+    let config = SearchConfig {
         pattern: String::from("TODO"),
         root_path: PathBuf::from(dir.path()),
-        ignore_patterns: vec![],
         file_extensions: None,
+        ignore_patterns: vec![],
         stats_only: true,
         thread_count: NonZeroUsize::new(1).unwrap(),
+        log_level: "warn".to_string(),
     };
 
     let result = search(&config)?;

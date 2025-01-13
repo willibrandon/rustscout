@@ -155,16 +155,101 @@ fn main() -> anyhow::Result<()> {
 
 ## Configuration
 
-RustScout can be configured via command line arguments:
+`rustscout` supports flexible configuration through both YAML configuration files and command-line arguments. Command-line arguments take precedence over configuration file values.
 
-| Option | Description | Example |
-|--------|-------------|---------|
-| `--pattern` | Search pattern (regex supported) | `"fn\s+\w+"` |
-| `--path` | Directory to search | `./src` |
-| `--threads` | Number of threads to use | `8` |
-| `--ignore` | Ignore patterns | `"target/*"` |
-| `--extensions` | File extensions to search | `"rs,toml"` |
-| `--stats-only` | Show only summary statistics | `true` |
+### Configuration Locations
+
+Configuration files are loaded from multiple locations in order of precedence:
+1. Custom config file specified via `--config` flag
+2. Local `.rustscout.yaml` in the current directory
+3. Global `$HOME/.config/rustscout/config.yaml`
+
+### Configuration Format
+
+Example `.rustscout.yaml`:
+```yaml
+# Search pattern (supports regex)
+pattern: "TODO|FIXME"
+
+# Root directory to search in
+root_path: "."
+
+# File extensions to include
+file_extensions:
+  - "rs"
+  - "toml"
+
+# Patterns to ignore (glob syntax)
+ignore_patterns:
+  - "target/**"
+  - ".git/**"
+  - "**/*.min.js"
+
+# Show only statistics
+stats_only: false
+
+# Thread count (default: CPU cores)
+thread_count: 4
+
+# Log level (trace, debug, info, warn, error)
+log_level: "info"
+```
+
+### Command-Line Options
+
+```bash
+USAGE:
+    rustscout-cli [OPTIONS] <PATTERN> [ROOT_PATH]
+
+ARGS:
+    <PATTERN>      Pattern to search for (supports regex)
+    [ROOT_PATH]    Root directory to search in [default: .]
+
+OPTIONS:
+    -e, --extensions <EXTENSIONS>    Comma-separated list of file extensions to search (e.g. "rs,toml")
+    -i, --ignore <PATTERNS>         Additional patterns to ignore (supports .gitignore syntax)
+    --stats-only                    Show only statistics, not individual matches
+    -t, --threads <COUNT>           Number of threads to use for searching
+    -l, --log-level <LEVEL>         Log level (trace, debug, info, warn, error) [default: warn]
+    -c, --config <FILE>             Path to config file [default: .rustscout.yaml]
+    -h, --help                      Print help information
+    -V, --version                   Print version information
+```
+
+### Configuration Details
+
+#### Search Pattern
+- Supports both simple text and regex patterns
+- For regex patterns, uses the Rust regex syntax
+- Examples:
+  - Simple: `TODO`
+  - Regex: `FIXME:.*\b\d{4}\b`
+
+#### File Extensions
+- Optional list of extensions to include
+- Case-insensitive matching
+- If not specified, searches all non-binary files
+
+#### Ignore Patterns
+- Uses `.gitignore` syntax
+- Supports glob patterns
+- Built-in ignores: `.git/`, `target/`
+- Examples:
+  - `**/node_modules/**`
+  - `*.bak`
+  - `build/*.o`
+
+#### Thread Control
+- Default: Number of CPU cores
+- Can be reduced for lower system impact
+- Can be increased for faster searching on I/O-bound systems
+
+#### Log Levels
+- `trace`: Most verbose, shows all operations
+- `debug`: Shows detailed progress
+- `info`: Shows important progress
+- `warn`: Shows only warnings (default)
+- `error`: Shows only errors
 
 ## Contributing
 

@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use colored::*;
 use rustscout::search::search;
-use rustscout::Config;
+use rustscout::SearchConfig;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use tracing::{info, Level};
@@ -37,6 +37,10 @@ struct Args {
     /// Log level (trace, debug, info, warn, error)
     #[arg(short, long, default_value = "warn")]
     log_level: String,
+
+    /// Path to config file (default: .rustscout.yaml)
+    #[arg(short, long)]
+    config: Option<PathBuf>,
 }
 
 fn init_logging(level: &str) -> Result<()> {
@@ -67,32 +71,42 @@ fn init_logging(level: &str) -> Result<()> {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    init_logging(&args.log_level)?;
 
-    info!("Starting rustscout-cli with pattern: {}", args.pattern);
+    // Load config file if it exists
+    let config = if let Some(config_path) = args.config.as_deref() {
+        SearchConfig::load_from(Some(config_path))?
+    } else {
+        SearchConfig::load().unwrap_or_else(|_| SearchConfig {
+            pattern: args.pattern.clone(),
+            root_path: args.root_path.clone(),
+            file_extensions: args.extensions
+                .as_ref()
+                .map(|s| s.split(',').map(String::from).collect()),
+            ignore_patterns: args.ignore.clone(),
+            stats_only: args.stats_only,
+            thread_count: NonZeroUsize::new(args.threads.unwrap_or_else(num_cpus::get))
+                .expect("Thread count cannot be zero"),
+            log_level: args.log_level.clone(),
+        })
+    };
 
-    if let Some(thread_count) = args.threads {
-        info!("Setting thread pool size to {}", thread_count);
+    // Initialize logging with the configured level
+    init_logging(&config.log_level)?;
+
+    info!("Starting rustscout-cli with pattern: {}", config.pattern);
+
+    // Set up thread pool if specified
+    if config.thread_count.get() != num_cpus::get() {
+        info!("Setting thread pool size to {}", config.thread_count);
         rayon::ThreadPoolBuilder::new()
-            .num_threads(thread_count)
+            .num_threads(config.thread_count.get())
             .build_global()?;
     }
-
-    let config = Config {
-        pattern: args.pattern,
-        root_path: args.root_path,
-        file_extensions: args.extensions
-            .map(|s| s.split(',').map(String::from).collect::<Vec<_>>()),
-        ignore_patterns: args.ignore,
-        stats_only: args.stats_only,
-        thread_count: NonZeroUsize::new(args.threads.unwrap_or_else(num_cpus::get))
-            .expect("Thread count cannot be zero"),
-    };
 
     info!("Searching with config: {:?}", config);
     let result = search(&config)?;
 
-    if args.stats_only {
+    if config.stats_only {
         println!(
             "Found {} matches in {} files",
             result.total_matches.to_string().green(),

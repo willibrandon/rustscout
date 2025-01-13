@@ -1,0 +1,32 @@
+# Default configuration for rustscout
+# This file can be placed in:
+# - Global: $HOME/.config/rustscout/config.yaml
+# - Local: .rustscout.yaml in the current directory
+# - Custom: Specified via --config flag
+
+# Search pattern (supports regex)
+pattern: "TODO|FIXME"
+
+# Root directory to search in
+root_path: "."
+
+# File extensions to include (optional)
+file_extensions:
+  - "rs"
+  - "toml"
+  - "md"
+
+# Patterns to ignore (supports glob syntax)
+ignore_patterns:
+  - "target/**"
+  - ".git/**"
+  - "**/*.min.js"
+
+# Show only statistics, not individual matches
+stats_only: false
+
+# Number of threads to use for searching (default: number of CPU cores)
+thread_count: 4
+
+# Log level (trace, debug, info, warn, error)
+log_level: "info" 
