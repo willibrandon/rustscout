@@ -1,3 +1,8 @@
+//! High-performance concurrent code search library
+//! 
+//! This library provides functionality for searching code repositories
+//! with parallel processing capabilities.
+
 pub mod config;
 pub mod errors;
 pub mod filters;
