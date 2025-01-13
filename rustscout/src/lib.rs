@@ -12,3 +12,4 @@ pub mod search;
 pub use config::SearchConfig;
 pub use errors::{SearchError, SearchResult};
 pub use results::{FileResult, Match, SearchResult as SearchOutput};
+pub use search::search;
