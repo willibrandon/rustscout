@@ -273,26 +273,49 @@ Performance comparison with other popular search tools (searching a large Rust c
 
 ## Performance
 
-### Benchmark Results
+### Adaptive Processing Strategies
 
-rustscout has been benchmarked against various scenarios using Criterion:
+RustScout employs different processing strategies based on file size:
 
-1. **Simple Pattern Search** (searching for "TODO" in 10 files with 100 lines each):
-   - Average time: ~2ms
-   - Consistent performance across multiple runs
-   - Linear scaling with file size
+1. **Small Files (<32KB)**:
+   - Direct string operations
+   - ~330 µs for simple patterns
+   - ~485 µs for regex patterns
+   - Optimal for quick access to small files
 
-2. **Regex Pattern Search** (searching for complex patterns like `FIXME:.*bug.*line \d+`):
-   - Average time: ~5ms
-   - Optimized for both simple and complex patterns
-   - Automatic pattern optimization for literal strings
+2. **Medium Files (32KB - 10MB)**:
+   - Buffered reading
+   - ~1.4 ms for 10 files
+   - ~696 µs for 50 files (parallel processing)
+   - Good balance of memory usage and performance
 
-3. **File Count Scaling** (searching across different numbers of files):
-   - 5 files: ~1ms
-   - 10 files: ~2ms
-   - 25 files: ~4ms
-   - 50 files: ~8ms
-   - Near-linear scaling with file count
+3. **Large Files (>10MB)**:
+   - Memory mapping for efficient access
+   - ~2.1 ms for 20MB file with simple pattern
+   - ~3.2 ms for 20MB file with regex pattern
+   - Parallel pattern matching within files
+
+### Pattern Optimization
+
+1. **Pattern Caching**:
+   - Global thread-safe pattern cache
+   - Simple patterns: ~331 µs (consistent performance)
+   - Regex patterns: ~483 µs (~0.7% improvement)
+   - Zero-cost abstraction when no contention
+
+2. **Smart Pattern Detection**:
+   - Automatic detection of pattern complexity
+   - Simple string matching for basic patterns
+   - Full regex support for complex patterns
+   - Threshold-based optimization
+
+### Memory Usage Tracking
+
+RustScout now includes comprehensive memory metrics:
+- Total allocated memory and peak usage
+- Memory mapped regions for large files
+- Pattern cache size and hit/miss rates
+- File processing statistics by size category
 
 ### Performance Tips
 
@@ -318,6 +341,12 @@ rustscout has been benchmarked against various scenarios using Criterion:
    ```bash
    # Search only Rust and TOML files
    rustscout-cli --extensions rs,toml "pattern" .
+   ```
+
+4. **Monitor Memory Usage**:
+   ```bash
+   # Show memory usage statistics
+   rustscout-cli "pattern" --stats .
    ```
 
 ## Troubleshooting Guide
