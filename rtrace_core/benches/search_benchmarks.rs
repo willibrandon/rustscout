@@ -1,12 +1,16 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use rtrace_core::{Config, search::search};
-use std::path::PathBuf;
-use tempfile::tempdir;
+use rtrace_core::{search::search, Config};
 use std::fs::File;
 use std::io::Write;
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
+use tempfile::tempdir;
 
-fn create_test_files(dir: &tempfile::TempDir, file_count: usize, lines_per_file: usize) -> std::io::Result<()> {
+fn create_test_files(
+    dir: &tempfile::TempDir,
+    file_count: usize,
+    lines_per_file: usize,
+) -> std::io::Result<()> {
     for i in 0..file_count {
         let file_path = dir.path().join(format!("test_{}.txt", i));
         let mut file = File::create(file_path)?;
@@ -102,5 +106,10 @@ fn bench_file_scaling(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_simple_pattern, bench_regex_pattern, bench_file_scaling);
+criterion_group!(
+    benches,
+    bench_simple_pattern,
+    bench_regex_pattern,
+    bench_file_scaling
+);
 criterion_main!(benches);

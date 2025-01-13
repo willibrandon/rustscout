@@ -7,8 +7,8 @@ license = "MIT"
 repository = "https://github.com/willibrandon/rtrace"
 documentation = "https://docs.rs/rtrace_core"
 readme = "../README.md"
-keywords = ["search", "concurrency", "regex", "parallel"]
-categories = ["command-line-utilities", "development-tools"]
+keywords = ["search", "concurrency", "regex", "parallel", "filesystem"]
+categories = ["command-line-utilities", "development-tools::cargo-plugins", "filesystem"]
 authors = ["Brandon Williams"]
 
 [dependencies]
