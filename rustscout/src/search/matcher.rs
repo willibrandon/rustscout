@@ -34,27 +34,24 @@ impl PatternMatcher {
         let mut strategies = Vec::with_capacity(patterns.len());
 
         for pattern in patterns {
-            let strategy = PATTERN_CACHE
-                .get(&pattern)
-                .map(|entry| {
-                    metrics.record_cache_operation(0, true);
-                    entry.clone()
-                })
-                .unwrap_or_else(|| {
-                    let strategy = if Self::is_simple_pattern(&pattern) {
-                        MatchStrategy::Simple(pattern.clone())
-                    } else {
-                        MatchStrategy::Regex(Arc::new(
-                            Regex::new(&pattern).expect("Invalid regex pattern"),
-                        ))
-                    };
+            let strategy = if let Some(entry) = PATTERN_CACHE.get(&pattern) {
+                metrics.record_cache_operation(0, true);
+                entry.clone()
+            } else {
+                let strategy = if Self::is_simple_pattern(&pattern) {
+                    MatchStrategy::Simple(pattern.clone())
+                } else {
+                    MatchStrategy::Regex(Arc::new(
+                        Regex::new(&pattern).expect("Invalid regex pattern"),
+                    ))
+                };
 
-                    // Record cache miss and size change only once
-                    metrics.record_cache_operation(pattern.len() as i64, false);
+                // Record cache miss and size change only once
+                metrics.record_cache_operation(pattern.len() as i64, false);
 
-                    PATTERN_CACHE.insert(pattern.clone(), strategy.clone());
-                    strategy
-                });
+                PATTERN_CACHE.insert(pattern.clone(), strategy.clone());
+                strategy
+            };
             strategies.push(strategy);
         }
 
@@ -136,24 +133,52 @@ mod tests {
 
     #[test]
     fn test_pattern_caching() {
+        // Use a unique pattern for this test to avoid interference from other tests
+        let unique_pattern = format!("test_pattern_{}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos());
+        
         let metrics = MemoryMetrics::default();
         let metrics = Arc::new(metrics);
 
         // First creation should have no cache hits and one cache miss
-        let _matcher1 = PatternMatcher::with_metrics(vec!["test".to_string()], metrics.clone());
-        assert_eq!(metrics.cache_hits(), 0);
-        assert_eq!(metrics.cache_misses(), 1);
+        let _matcher1 = PatternMatcher::with_metrics(vec![unique_pattern.clone()], metrics.clone());
+        let first_hits = metrics.cache_hits();
+        let first_misses = metrics.cache_misses();
+        assert_eq!(first_hits, 0, "First creation should have no cache hits");
+        assert_eq!(first_misses, 1, "First creation should have one cache miss");
 
         // Second creation should hit the cache
-        let _matcher2 = PatternMatcher::with_metrics(vec!["test".to_string()], metrics.clone());
-        assert_eq!(metrics.cache_hits(), 1);
-        assert_eq!(metrics.cache_misses(), 1);
+        let _matcher2 = PatternMatcher::with_metrics(vec![unique_pattern.clone()], metrics.clone());
+        let second_hits = metrics.cache_hits();
+        let second_misses = metrics.cache_misses();
+        assert_eq!(
+            second_hits,
+            first_hits + 1,
+            "Second creation should add one cache hit"
+        );
+        assert_eq!(
+            second_misses,
+            first_misses,
+            "Second creation should not add cache misses"
+        );
 
         // Different pattern should not hit the cache
-        let _matcher3 =
-            PatternMatcher::with_metrics(vec!["different".to_string()], metrics.clone());
-        assert_eq!(metrics.cache_hits(), 1);
-        assert_eq!(metrics.cache_misses(), 2);
+        let different_pattern = format!("{}_different", unique_pattern);
+        let _matcher3 = PatternMatcher::with_metrics(vec![different_pattern], metrics.clone());
+        let third_hits = metrics.cache_hits();
+        let third_misses = metrics.cache_misses();
+        assert_eq!(
+            third_hits,
+            second_hits,
+            "Different pattern should not add cache hits"
+        );
+        assert_eq!(
+            third_misses,
+            second_misses + 1,
+            "Different pattern should add one cache miss"
+        );
     }
 
     #[test]
