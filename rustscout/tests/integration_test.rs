@@ -108,8 +108,11 @@ fn test_ignore_patterns() -> Result<()> {
     };
 
     let result = search(&config)?;
-    assert!(result.files_with_matches <= 5, 
-        "Expected at most 5 files with matches, got {}", result.files_with_matches);
+    assert!(
+        result.files_with_matches <= 5,
+        "Expected at most 5 files with matches, got {}",
+        result.files_with_matches
+    );
     Ok(())
 }
 

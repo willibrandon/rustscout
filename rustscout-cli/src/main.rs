@@ -53,8 +53,7 @@ fn init_logging(level: &str) -> Result<()> {
         _ => Level::WARN,
     };
 
-    let env_filter = EnvFilter::from_default_env()
-        .add_directive(level.into());
+    let env_filter = EnvFilter::from_default_env().add_directive(level.into());
 
     fmt()
         .with_env_filter(env_filter)
@@ -79,7 +78,8 @@ fn main() -> Result<()> {
         SearchConfig::load().unwrap_or_else(|_| SearchConfig {
             pattern: args.pattern.clone(),
             root_path: args.root_path.clone(),
-            file_extensions: args.extensions
+            file_extensions: args
+                .extensions
                 .as_ref()
                 .map(|s| s.split(',').map(String::from).collect()),
             ignore_patterns: args.ignore.clone(),

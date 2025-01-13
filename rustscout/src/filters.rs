@@ -93,7 +93,7 @@ pub fn has_valid_extension(path: &Path, extensions: &Option<Vec<String>>) -> boo
 /// Checks if a file should be ignored based on ignore patterns
 pub fn should_ignore(path: &Path, ignore_patterns: &[String]) -> bool {
     let path_str = path.to_string_lossy();
-    
+
     // Always ignore target/ and .git/ directories
     if path_str.contains("/target/") || path_str.contains("/.git/") {
         return true;
@@ -178,7 +178,10 @@ mod tests {
         assert!(should_ignore(Path::new("test_0.txt"), &ignore_patterns));
         assert!(should_ignore(Path::new("test_4.txt"), &ignore_patterns));
         assert!(should_ignore(Path::new("dir/test_2.txt"), &ignore_patterns));
-        assert!(should_ignore(Path::new("target/debug/main.rs"), &ignore_patterns));
+        assert!(should_ignore(
+            Path::new("target/debug/main.rs"),
+            &ignore_patterns
+        ));
         assert!(should_ignore(Path::new(".git/config"), &ignore_patterns));
         assert!(should_ignore(Path::new("src/temp.tmp"), &ignore_patterns));
 

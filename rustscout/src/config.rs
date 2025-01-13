@@ -1,7 +1,7 @@
+use config::{Config as ConfigBuilder, ConfigError, File};
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use config::{Config as ConfigBuilder, ConfigError, File};
 
 /// Configuration for the search operation, demonstrating Rust's strong typing
 /// compared to .NET's optional configuration pattern.
@@ -216,7 +216,10 @@ mod tests {
         let config = SearchConfig::load_from(Some(&config_path)).unwrap();
         assert_eq!(config.pattern, "TODO|FIXME");
         assert_eq!(config.root_path, PathBuf::from("src"));
-        assert_eq!(config.file_extensions, Some(vec!["rs".to_string(), "toml".to_string()]));
+        assert_eq!(
+            config.file_extensions,
+            Some(vec!["rs".to_string(), "toml".to_string()])
+        );
         assert_eq!(config.ignore_patterns, vec!["target/*".to_string()]);
         assert!(config.stats_only);
         assert_eq!(config.thread_count, NonZeroUsize::new(4).unwrap());
@@ -273,7 +276,10 @@ mod tests {
         assert_eq!(config.file_extensions, None);
         assert!(config.ignore_patterns.is_empty());
         assert!(!config.stats_only);
-        assert_eq!(config.thread_count, NonZeroUsize::new(num_cpus::get()).unwrap());
+        assert_eq!(
+            config.thread_count,
+            NonZeroUsize::new(num_cpus::get()).unwrap()
+        );
         assert_eq!(config.log_level, "warn");
     }
 

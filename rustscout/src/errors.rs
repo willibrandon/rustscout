@@ -49,34 +49,23 @@ use thiserror::Error;
 pub enum SearchError {
     /// File not found error
     #[error("File not found: {path}")]
-    FileNotFound {
-        path: PathBuf,
-    },
+    FileNotFound { path: PathBuf },
 
     /// Permission denied error
     #[error("Permission denied: {path}")]
-    PermissionDenied {
-        path: PathBuf,
-    },
+    PermissionDenied { path: PathBuf },
 
     /// Invalid pattern error
     #[error("Invalid pattern: {message}")]
-    InvalidPattern {
-        message: String,
-    },
+    InvalidPattern { message: String },
 
     /// File too large error
     #[error("File too large: {path} ({size} bytes)")]
-    FileTooLarge {
-        path: PathBuf,
-        size: u64,
-    },
+    FileTooLarge { path: PathBuf, size: u64 },
 
     /// Thread pool error
     #[error("Thread pool error: {message}")]
-    ThreadPoolError {
-        message: String,
-    },
+    ThreadPoolError { message: String },
 
     /// I/O error
     #[error(transparent)]
@@ -84,9 +73,7 @@ pub enum SearchError {
 
     /// Invalid file encoding error
     #[error("Invalid file encoding: {path}")]
-    InvalidEncoding {
-        path: PathBuf,
-    },
+    InvalidEncoding { path: PathBuf },
 }
 
 /// Type alias for Results that may return a SearchError
@@ -175,22 +162,22 @@ mod tests {
     #[test]
     fn test_error_creation() {
         let path = PathBuf::from("test.txt");
-        
+
         let err = SearchError::file_not_found(&path);
         assert!(err.is_not_found());
-        
+
         let err = SearchError::permission_denied(&path);
         assert!(err.is_permission_denied());
-        
+
         let err = SearchError::invalid_pattern("invalid[regex");
         assert!(err.is_invalid_pattern());
-        
+
         let err = SearchError::file_too_large(&path, 1024);
         assert!(err.is_file_too_large());
-        
+
         let err = SearchError::thread_pool_error("thread error");
         assert!(err.is_thread_pool_error());
-        
+
         let err = SearchError::invalid_encoding(&path);
         assert!(err.is_invalid_encoding());
     }
@@ -198,22 +185,22 @@ mod tests {
     #[test]
     fn test_error_messages() {
         let path = PathBuf::from("test.txt");
-        
+
         let err = SearchError::file_not_found(&path);
         assert_eq!(err.to_string(), "File not found: test.txt");
-        
+
         let err = SearchError::permission_denied(&path);
         assert_eq!(err.to_string(), "Permission denied: test.txt");
-        
+
         let err = SearchError::invalid_pattern("bad pattern");
         assert_eq!(err.to_string(), "Invalid pattern: bad pattern");
-        
+
         let err = SearchError::file_too_large(&path, 1024);
         assert_eq!(err.to_string(), "File too large: test.txt (1024 bytes)");
-        
+
         let err = SearchError::thread_pool_error("thread error");
         assert_eq!(err.to_string(), "Thread pool error: thread error");
-        
+
         let err = SearchError::invalid_encoding(&path);
         assert_eq!(err.to_string(), "Invalid file encoding: test.txt");
     }

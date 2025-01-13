@@ -232,7 +232,11 @@ fn search_file_regex(path: &Path, regex: &Regex) -> SearchResult<FileResult> {
     while reader.read_line(&mut line_buffer)? > 0 {
         line_number += 1;
         if regex.is_match(&line_buffer) {
-            trace!("Found match at line {}: {}", line_number, line_buffer.trim());
+            trace!(
+                "Found match at line {}: {}",
+                line_number,
+                line_buffer.trim()
+            );
             for capture in regex.find_iter(&line_buffer) {
                 matches.push(Match {
                     line_number,
