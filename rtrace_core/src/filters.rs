@@ -1,3 +1,77 @@
+/// This module implements file filtering functionality, demonstrating key differences between
+/// Rust's trait system and .NET's interfaces.
+///
+/// # Rust Traits vs .NET Interfaces
+///
+/// While both traits and interfaces define contracts for types, they have important differences:
+///
+/// 1. **Default Implementations**
+///    .NET interfaces (pre-C# 8.0):
+///    ```csharp
+///    public interface IFileFilter {
+///        bool ShouldIncludeFile(string path);
+///        // No default implementations possible
+///    }
+///    ```
+///    
+///    Rust traits:
+///    ```rust,ignore
+///    pub trait FileFilter {
+///        fn should_include_file(&self, path: &Path) -> bool {
+///            // Default implementation possible
+///            !self.is_binary(path) && self.has_valid_extension(path)
+///        }
+///    }
+///    ```
+///
+/// 2. **Coherence Rules**
+///    .NET allows implementing interfaces anywhere:
+///    ```csharp
+///    // Can implement IFileFilter for any type, anywhere
+///    public class ThirdPartyFilter : IFileFilter { }
+///    ```
+///    
+///    Rust's orphan rule requires either the trait or type to be local:
+///    ```rust,ignore
+///    // Must own either the trait or the type to implement it
+///    impl FileFilter for MyLocalType { }
+///    impl MyLocalTrait for String { }
+///    ```
+///
+/// 3. **Static Dispatch vs Dynamic Dispatch**
+///    .NET interfaces always use virtual dispatch:
+///    ```csharp
+///    public void ProcessFile(IFileFilter filter) {
+///        // Always uses virtual dispatch
+///        if (filter.ShouldIncludeFile(path)) { }
+///    }
+///    ```
+///    
+///    Rust allows choosing between static and dynamic dispatch:
+///    ```rust,ignore
+///    // Static dispatch - resolved at compile time
+///    fn process_file<T: FileFilter>(filter: &T) { }
+///    
+///    // Dynamic dispatch - resolved at runtime
+///    fn process_file(filter: &dyn FileFilter) { }
+///    ```
+///
+/// 4. **Multiple Trait Bounds**
+///    .NET requires separate interface declarations:
+///    ```csharp
+///    public interface IFileFilter : IDisposable, ICloneable { }
+///    ```
+///    
+///    Rust uses a more flexible trait bound syntax:
+///    ```rust,ignore
+///    fn process_file<T>(filter: &T)
+///    where
+///        T: FileFilter + Clone + Send + 'static
+///    { }
+///    ```
+///
+/// This module uses free functions instead of traits for simplicity, but the concepts
+/// could be refactored into a trait-based design for more complex filtering requirements.
 use glob::Pattern;
 use std::path::Path;
 

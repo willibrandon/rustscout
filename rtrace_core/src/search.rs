@@ -13,7 +13,7 @@
 ///
 /// In Rust, we use Rayon's parallel iterators which provide similar functionality but with
 /// guaranteed memory safety through Rust's ownership system:
-/// ```rust
+/// ```rust,ignore
 /// let results: Vec<_> = files.par_iter()
 ///     .map(|file| search_file(file))
 ///     .filter_map(|r| r.ok())
@@ -43,13 +43,54 @@
 /// ```
 ///
 /// Rust uses Result for error handling:
-/// ```rust
+/// ```rust,ignore
 /// match search(config) {
 ///     Ok(result) => // Process result,
 ///     Err(e) => // Handle error
 /// }
 /// ```
-
+///
+/// # Parallel Processing Patterns
+///
+/// This function demonstrates several parallel processing patterns that are similar to .NET:
+///
+/// 1. **Parallel File Processing**
+///    .NET:
+///    ```csharp
+///    var results = files.AsParallel()
+///        .Select(file => ProcessFile(file))
+///        .ToList();
+///    ```
+///    Rust/Rayon:
+///    ```rust,ignore
+///    let results: Vec<_> = files.par_iter()
+///        .map(|file| process_file(file))
+///        .collect();
+///    ```
+///
+/// 2. **Work Stealing Thread Pool**
+///    .NET uses TPL's work-stealing pool:
+///    ```csharp
+///    var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount };
+///    Parallel.ForEach(files, parallelOptions, file => ProcessFile(file));
+///    ```
+///    Rust uses Rayon's work-stealing pool:
+///    ```rust,ignore
+///    files.par_iter().for_each(|file| process_file(file));
+///    ```
+///
+/// # Memory Management
+///
+/// Unlike .NET where the GC handles memory:
+/// ```csharp
+/// using var reader = new StreamReader(path);
+/// ```
+///
+/// In Rust, we explicitly manage buffers:
+/// ```rust,ignore
+/// let mut reader = BufReader::with_capacity(BUFFER_CAPACITY, file);
+/// let mut line_buffer = String::with_capacity(256);
+/// ```
 use ignore::WalkBuilder;
 use rayon::prelude::*;
 use regex::Regex;
@@ -153,7 +194,7 @@ fn search_file_simple(path: &Path, pattern: &str) -> io::Result<FileResult> {
 /// ```
 ///
 /// In Rust, we explicitly manage buffers:
-/// ```rust
+/// ```rust,ignore
 /// let mut reader = BufReader::with_capacity(BUFFER_CAPACITY, file);
 /// let mut line_buffer = String::with_capacity(256);
 /// ```
@@ -205,7 +246,7 @@ fn search_file_regex(path: &Path, regex: &Regex) -> io::Result<FileResult> {
 ///        .ToList();
 ///    ```
 ///    Rust/Rayon:
-///    ```rust
+///    ```rust,ignore
 ///    let results: Vec<_> = files.par_iter()
 ///        .map(|file| process_file(file))
 ///        .collect();
@@ -218,7 +259,7 @@ fn search_file_regex(path: &Path, regex: &Regex) -> io::Result<FileResult> {
 ///    Parallel.ForEach(files, parallelOptions, file => ProcessFile(file));
 ///    ```
 ///    Rust uses Rayon's work-stealing pool:
-///    ```rust
+///    ```rust,ignore
 ///    files.par_iter().for_each(|file| process_file(file));
 ///    ```
 ///

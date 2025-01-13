@@ -1,3 +1,91 @@
+/// This module implements search result types, demonstrating key differences between
+/// Rust's ownership system and .NET's reference types.
+///
+/// # Rust Ownership vs .NET References
+///
+/// The handling of search results highlights fundamental differences between Rust and .NET:
+///
+/// 1. **Memory Management**
+///    .NET class (reference type):
+///    ```csharp
+///    public class SearchResult {
+///        public List<Match> Matches { get; set; }
+///        // Garbage collector handles cleanup
+///        // Risk of memory leaks through circular references
+///        // No explicit control over when cleanup occurs
+///    }
+///    ```
+///    
+///    Rust struct (owned type):
+///    ```rust,ignore
+///    pub struct SearchResult {
+///        pub matches: Vec<Match>,
+///        // Automatically cleaned up when SearchResult is dropped
+///        // No garbage collector needed
+///        // Deterministic cleanup
+///    }
+///    ```
+///
+/// 2. **Reference Safety**
+///    .NET can have null references and race conditions:
+///    ```csharp
+///    public class SearchEngine {
+///        private SearchResult _lastResult; // Can be null
+///        
+///        public void ProcessResult(SearchResult result) {
+///            _lastResult = result; // Possible race condition
+///            // No compile-time guarantees about thread safety
+///        }
+///    }
+///    ```
+///    
+///    Rust enforces safety at compile time:
+///    ```rust,ignore
+///    pub struct SearchEngine {
+///        last_result: Option<SearchResult>, // Explicit optional value
+///        
+///        pub fn process_result(&mut self, result: SearchResult) {
+///            self.last_result = Some(result); // Ownership transferred
+///            // Compiler ensures exclusive access through &mut
+///        }
+///    }
+///    ```
+///
+/// 3. **Data Sharing**
+///    .NET allows multiple mutable references:
+///    ```csharp
+///    var result = new SearchResult();
+///    var ref1 = result; // Reference
+///    var ref2 = result; // Another reference to same data
+///    // Both can modify data simultaneously
+///    ```
+///    
+///    Rust enforces borrowing rules:
+///    ```rust,ignore
+///    let result = SearchResult::new();
+///    let ref1 = &result; // Immutable borrow
+///    let ref2 = &result; // Multiple immutable borrows OK
+///    let mut_ref = &mut result; // ERROR: Can't borrow mutably
+///                               // while immutable borrows exist
+///    ```
+///
+/// 4. **Clone vs Copy**
+///    .NET reference types are implicitly shared:
+///    ```csharp
+///    var result1 = new SearchResult();
+///    var result2 = result1; // Both reference same data
+///    ```
+///    
+///    Rust requires explicit cloning for complex types:
+///    ```rust,ignore
+///    let result1 = SearchResult::new();
+///    let result2 = result1.clone(); // Explicit deep copy
+///    // result1 moved here if not explicitly cloned
+///    ```
+///
+/// The types in this module use Rust's ownership system to provide memory safety
+/// and thread safety guarantees at compile time, preventing common issues that
+/// can occur in .NET applications.
 use std::path::PathBuf;
 
 /// Represents a single match in a file
