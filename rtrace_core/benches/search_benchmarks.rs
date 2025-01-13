@@ -1,123 +1,106 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use rtrace_core::{search, Config};
-use std::fs::{self, create_dir_all};
-use std::path::Path;
-use tempfile::TempDir;
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use rtrace_core::{Config, search::search};
+use std::path::PathBuf;
+use tempfile::tempdir;
+use std::fs::File;
+use std::io::Write;
+use std::num::NonZeroUsize;
 
-// Helper function to create a test file with content
-fn create_test_file(dir: &Path, name: &str, content: &str) {
-    let path = dir.join(name);
-    if let Some(parent) = path.parent() {
-        create_dir_all(parent).unwrap();
-    }
-    fs::write(path, content).unwrap();
-}
-
-// Helper function to create a test project with specified size
-fn create_test_project(dir: &Path, files: usize, lines_per_file: usize, matches_per_file: usize) {
-    for i in 0..files {
-        let mut content = String::with_capacity(lines_per_file * 50);
+fn create_test_files(dir: &tempfile::TempDir, file_count: usize, lines_per_file: usize) -> std::io::Result<()> {
+    for i in 0..file_count {
+        let file_path = dir.path().join(format!("test_{}.txt", i));
+        let mut file = File::create(file_path)?;
         for j in 0..lines_per_file {
-            if j % (lines_per_file / matches_per_file) == 0 {
-                content.push_str(&format!("Line {} with TODO: Fix this\n", j));
-            } else {
-                content.push_str(&format!("Line {} with some content\n", j));
-            }
+            writeln!(file, "Line {} in file {}: TODO implement this", j, i)?;
+            writeln!(file, "Another line {} in file {}: nothing special", j, i)?;
+            writeln!(file, "FIXME: This is a bug in file {} line {}", i, j)?;
         }
-        create_test_file(dir, &format!("src/file{}.rs", i), &content);
     }
+    Ok(())
 }
 
-fn bench_search_varying_files(c: &mut Criterion) {
-    let mut group = c.benchmark_group("search_varying_files");
-    group.sample_size(10); // Reduce sample size for large benchmarks
+fn bench_simple_pattern(c: &mut Criterion) {
+    let dir = tempdir().unwrap();
+    create_test_files(&dir, 10, 100).unwrap();
 
-    for files in [10, 50, 100].iter() {
-        let temp_dir = TempDir::new().unwrap();
-        create_test_project(&temp_dir.path(), *files, 100, 5);
-
-        let config = Config::new("TODO: Fix this".to_string(), temp_dir.path().to_path_buf())
-            .with_file_extensions(vec!["rs".to_string()]);
-
-        group.bench_with_input(BenchmarkId::from_parameter(files), files, |b, _| {
-            b.iter(|| {
-                black_box(search::search(&config).unwrap());
-            });
-        });
-    }
-    group.finish();
-}
-
-fn bench_search_varying_file_sizes(c: &mut Criterion) {
-    let mut group = c.benchmark_group("search_varying_file_sizes");
+    let mut group = c.benchmark_group("Simple Pattern Search");
     group.sample_size(10);
 
-    for lines in [100, 1000, 10000].iter() {
-        let temp_dir = TempDir::new().unwrap();
-        create_test_project(&temp_dir.path(), 1, *lines, lines / 20);
+    let config = Config {
+        pattern: String::from("TODO"),
+        root_path: PathBuf::from(dir.path()),
+        ignore_patterns: vec![],
+        file_extensions: None,
+        stats_only: false,
+        thread_count: NonZeroUsize::new(1).unwrap(),
+    };
 
-        let config = Config::new("TODO: Fix this".to_string(), temp_dir.path().to_path_buf())
-            .with_file_extensions(vec!["rs".to_string()]);
-
-        group.bench_with_input(BenchmarkId::from_parameter(lines), lines, |b, _| {
-            b.iter(|| {
-                black_box(search::search(&config).unwrap());
-            });
+    group.bench_function("search_todo", |b| {
+        b.iter(|| {
+            search(black_box(&config)).unwrap();
         });
-    }
+    });
+
     group.finish();
 }
 
-fn bench_search_varying_patterns(c: &mut Criterion) {
-    let mut group = c.benchmark_group("search_varying_patterns");
-    let temp_dir = TempDir::new().unwrap();
-    create_test_project(&temp_dir.path(), 10, 1000, 50);
+fn bench_regex_pattern(c: &mut Criterion) {
+    let dir = tempdir().unwrap();
+    create_test_files(&dir, 10, 100).unwrap();
 
-    let patterns = [
-        ("simple", "TODO"),
-        ("word_boundary", r"\bTODO\b"),
-        ("complex", r"TODO:?\s*[A-Z][a-z]+(\s+[a-z]+)*"),
-        ("with_colon", r"TODO:"),
-        ("with_comment", r"//\s*TODO"),
-    ];
+    let mut group = c.benchmark_group("Regex Pattern Search");
+    group.sample_size(10);
 
-    for (name, pattern) in patterns.iter() {
-        let config = Config::new(pattern.to_string(), temp_dir.path().to_path_buf())
-            .with_file_extensions(vec!["rs".to_string()]);
+    let config = Config {
+        pattern: String::from(r"FIXME:.*bug.*line \d+"),
+        root_path: PathBuf::from(dir.path()),
+        ignore_patterns: vec![],
+        file_extensions: None,
+        stats_only: false,
+        thread_count: NonZeroUsize::new(1).unwrap(),
+    };
 
-        group.bench_with_input(BenchmarkId::from_parameter(name), name, |b, _| {
-            b.iter(|| {
-                black_box(search::search(&config).unwrap());
-            });
+    group.bench_function("search_fixme_regex", |b| {
+        b.iter(|| {
+            search(black_box(&config)).unwrap();
         });
-    }
+    });
+
     group.finish();
 }
 
-fn bench_search_with_threads(c: &mut Criterion) {
-    let mut group = c.benchmark_group("search_with_threads");
-    let temp_dir = TempDir::new().unwrap();
-    create_test_project(&temp_dir.path(), 100, 1000, 50);
+fn bench_file_scaling(c: &mut Criterion) {
+    let dir = tempdir().unwrap();
+    create_test_files(&dir, 50, 20).unwrap(); // More files, fewer lines each
 
-    for threads in [1, 2, 4, 8].iter() {
-        let config = Config::new("TODO: Fix this".to_string(), temp_dir.path().to_path_buf())
-            .with_file_extensions(vec!["rs".to_string()])
-            .with_thread_count(std::num::NonZeroUsize::new(*threads).unwrap());
+    let mut group = c.benchmark_group("File Count Scaling");
+    group.sample_size(10);
 
-        group.bench_with_input(BenchmarkId::from_parameter(threads), threads, |b, _| {
+    let base_config = Config {
+        pattern: String::from("TODO"),
+        root_path: PathBuf::from(dir.path()),
+        ignore_patterns: vec![],
+        file_extensions: None,
+        stats_only: false,
+        thread_count: NonZeroUsize::new(1).unwrap(),
+    };
+
+    // Test with different subsets of files
+    for &file_count in &[5, 10, 25, 50] {
+        group.bench_function(format!("files_{}", file_count), |b| {
             b.iter(|| {
-                black_box(search::search(&config).unwrap());
+                let mut config = base_config.clone();
+                // Limit search to first n files
+                config.ignore_patterns = (file_count..50)
+                    .map(|i| format!("test_{}.txt", i))
+                    .collect();
+                search(black_box(&config)).unwrap();
             });
         });
     }
+
     group.finish();
 }
 
-criterion_group!(
-    benches,
-    bench_search_varying_files,
-    bench_search_varying_file_sizes,
-    bench_search_varying_patterns,
-    bench_search_with_threads
-);
+criterion_group!(benches, bench_simple_pattern, bench_regex_pattern, bench_file_scaling);
 criterion_main!(benches);
