@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use colored::*;
-use rtrace_core::{Config, SearchResult};
+use rustscout::{Config, SearchResult};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
