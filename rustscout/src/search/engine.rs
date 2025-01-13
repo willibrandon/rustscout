@@ -12,15 +12,22 @@ use crate::results::{FileResult, SearchResult as SearchOutput};
 
 /// Performs a concurrent search across files in a directory
 pub fn search(config: &SearchConfig) -> SearchResult<SearchOutput> {
-    info!("Starting search with pattern: {}", config.pattern);
+    info!("Starting search with patterns: {:?}", config.patterns);
 
-    if config.pattern.is_empty() {
-        debug!("Empty search pattern, returning empty result");
+    if config.patterns.is_empty() && config.pattern.is_empty() {
+        debug!("No search patterns provided, returning empty result");
         return Ok(SearchOutput::new());
     }
 
+    // Get patterns from either new or legacy field
+    let patterns = if !config.patterns.is_empty() {
+        config.patterns.clone()
+    } else {
+        vec![config.pattern.clone()]
+    };
+
     // Create pattern matcher and file processor
-    let matcher = PatternMatcher::new(config.pattern.clone());
+    let matcher = PatternMatcher::new(patterns);
     let processor = FileProcessor::new(matcher);
     let metrics = processor.metrics().clone();
 
@@ -99,6 +106,7 @@ mod tests {
         std::fs::write(&file_path, "test line\ntest line 2\n").unwrap();
 
         let config = SearchConfig {
+            patterns: vec!["test".to_string()],
             pattern: "test".to_string(),
             root_path: dir.path().to_path_buf(),
             ignore_patterns: vec![],

@@ -83,7 +83,12 @@ use std::path::{Path, PathBuf};
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchConfig {
-    /// The search pattern (supports regex)
+    /// The search patterns (supports regex)
+    #[serde(default = "Vec::new")]
+    pub patterns: Vec<String>,
+
+    /// Deprecated: Use patterns instead
+    #[serde(skip)]
     pub pattern: String,
 
     /// Root directory to start search from
@@ -164,8 +169,11 @@ impl SearchConfig {
     /// Merges CLI arguments with configuration file values
     pub fn merge_with_cli(mut self, cli_config: SearchConfig) -> Self {
         // CLI values take precedence over config file values
-        if !cli_config.pattern.is_empty() {
-            self.pattern = cli_config.pattern;
+        if !cli_config.patterns.is_empty() {
+            self.patterns = cli_config.patterns;
+        } else if !cli_config.pattern.is_empty() {
+            // Support legacy single pattern
+            self.patterns = vec![cli_config.pattern];
         }
         if cli_config.root_path != PathBuf::from(".") {
             self.root_path = cli_config.root_path;
@@ -200,7 +208,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let config_path = dir.path().join("config.yaml");
         let config_content = r#"
-            pattern: "TODO|FIXME"
+            patterns: ["TODO|FIXME"]
             root_path: "src"
             file_extensions: ["rs", "toml"]
             ignore_patterns: ["target/*"]
@@ -213,7 +221,7 @@ mod tests {
         file.write_all(config_content.as_bytes()).unwrap();
 
         let config = SearchConfig::load_from(Some(&config_path)).unwrap();
-        assert_eq!(config.pattern, "TODO|FIXME");
+        assert_eq!(config.patterns, vec!["TODO|FIXME"]);
         assert_eq!(config.root_path, PathBuf::from("src"));
         assert_eq!(
             config.file_extensions,
@@ -228,6 +236,7 @@ mod tests {
     #[test]
     fn test_merge_with_cli() {
         let config_file = SearchConfig {
+            patterns: vec!["TODO".to_string()],
             pattern: "TODO".to_string(),
             root_path: PathBuf::from("src"),
             file_extensions: Some(vec!["rs".to_string()]),
@@ -238,6 +247,7 @@ mod tests {
         };
 
         let cli_config = SearchConfig {
+            patterns: vec!["FIXME".to_string()],
             pattern: "FIXME".to_string(),
             root_path: PathBuf::from("tests"),
             file_extensions: None,
@@ -248,7 +258,7 @@ mod tests {
         };
 
         let merged = config_file.merge_with_cli(cli_config);
-        assert_eq!(merged.pattern, "FIXME"); // CLI value
+        assert_eq!(merged.patterns, vec!["FIXME"]); // CLI value
         assert_eq!(merged.root_path, PathBuf::from("tests")); // CLI value
         assert_eq!(merged.file_extensions, Some(vec!["rs".to_string()])); // File value (CLI None)
         assert_eq!(merged.ignore_patterns, vec!["*.tmp".to_string()]); // CLI value
@@ -260,7 +270,7 @@ mod tests {
     #[test]
     fn test_default_values() {
         let config_content = r#"
-            pattern: "test"
+            patterns: ["test"]
             root_path: "."
         "#;
 
@@ -270,7 +280,7 @@ mod tests {
         file.write_all(config_content.as_bytes()).unwrap();
 
         let config = SearchConfig::load_from(Some(&config_path)).unwrap();
-        assert_eq!(config.pattern, "test");
+        assert_eq!(config.patterns, vec!["test"]);
         assert_eq!(config.root_path, PathBuf::from("."));
         assert_eq!(config.file_extensions, None);
         assert!(config.ignore_patterns.is_empty());

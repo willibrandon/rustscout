@@ -192,12 +192,59 @@ fn bench_large_file_search(c: &mut Criterion) {
     }
 }
 
+fn bench_multiple_patterns(c: &mut Criterion) {
+    let dir = tempdir().unwrap();
+    create_test_files(&dir, 10, 100).unwrap();
+
+    let mut group = c.benchmark_group("Multiple Pattern Search");
+    group.sample_size(10);
+
+    // Test with multiple simple patterns
+    let simple_config = SearchConfig {
+        patterns: vec!["TODO".to_string(), "FIXME".to_string()],
+        root_path: PathBuf::from(dir.path()),
+        ignore_patterns: vec![],
+        file_extensions: None,
+        stats_only: false,
+        thread_count: NonZeroUsize::new(1).unwrap(),
+        log_level: "warn".to_string(),
+        pattern: String::new(), // Legacy field
+    };
+
+    group.bench_function("search_multiple_simple", |b| {
+        b.iter(|| {
+            search(black_box(&simple_config)).unwrap();
+        });
+    });
+
+    // Test with mixed simple and regex patterns
+    let mixed_config = SearchConfig {
+        patterns: vec!["TODO".to_string(), r"FIXME:.*bug.*line \d+".to_string()],
+        root_path: PathBuf::from(dir.path()),
+        ignore_patterns: vec![],
+        file_extensions: None,
+        stats_only: false,
+        thread_count: NonZeroUsize::new(1).unwrap(),
+        log_level: "warn".to_string(),
+        pattern: String::new(), // Legacy field
+    };
+
+    group.bench_function("search_multiple_mixed", |b| {
+        b.iter(|| {
+            search(black_box(&mixed_config)).unwrap();
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_simple_pattern,
     bench_regex_pattern,
     bench_repeated_pattern,
     bench_file_scaling,
-    bench_large_file_search
+    bench_large_file_search,
+    bench_multiple_patterns,
 );
 criterion_main!(benches);

@@ -12,7 +12,7 @@ A high-performance, concurrent code search tool written in Rust. RustScout is de
 ## Features
 
 - 🚀 **High Performance**: Utilizes Rust's concurrency features for blazing-fast searches
-- 🔍 **Smart Search**: Regex support with intelligent pattern matching
+- 🔍 **Smart Search**: Support for multiple patterns with mix of simple text and regex
 - 📁 **File Filtering**: Flexible ignore patterns and file type filtering
 - 📊 **Rich Output**: Detailed search results with statistics
 - 🛠️ **Developer Friendly**: Clear documentation with .NET comparison examples
@@ -89,8 +89,11 @@ rustscout-cli "fn\s+\w+\s*\([^)]*\)" .
 # Find TODO comments
 rustscout-cli "TODO:.*" .
 
-# Find multiple patterns
-rustscout-cli "(FIXME|TODO|XXX):" .
+# Multiple simple patterns
+rustscout-cli --pattern "TODO" --pattern "FIXME" .
+
+# Mix of simple and regex patterns
+rustscout-cli --pattern "TODO" --pattern "FIXME:.*bug.*line \d+" .
 ```
 
 ### File Filtering
@@ -168,7 +171,13 @@ Configuration files are loaded from multiple locations in order of precedence:
 
 Example `.rustscout.yaml`:
 ```yaml
-# Search pattern (supports regex)
+# Search patterns (supports both simple text and regex)
+patterns:
+  - "TODO"
+  - "FIXME"
+  - "BUG-\\d+"
+
+# Legacy single pattern support
 pattern: "TODO|FIXME"
 
 # Root directory to search in
@@ -199,13 +208,14 @@ log_level: "info"
 
 ```bash
 USAGE:
-    rustscout-cli [OPTIONS] <PATTERN> [ROOT_PATH]
+    rustscout-cli [OPTIONS] [PATTERN] [ROOT_PATH]
 
 ARGS:
-    <PATTERN>      Pattern to search for (supports regex)
+    [PATTERN]      Pattern to search for (supports regex)
     [ROOT_PATH]    Root directory to search in [default: .]
 
 OPTIONS:
+    -p, --pattern <PATTERN>         Pattern to search for (can be specified multiple times)
     -e, --extensions <EXTENSIONS>    Comma-separated list of file extensions to search (e.g. "rs,toml")
     -i, --ignore <PATTERNS>         Additional patterns to ignore (supports .gitignore syntax)
     --stats-only                    Show only statistics, not individual matches
@@ -218,12 +228,15 @@ OPTIONS:
 
 ### Configuration Details
 
-#### Search Pattern
-- Supports both simple text and regex patterns
-- For regex patterns, uses the Rust regex syntax
+#### Search Patterns
+- Supports multiple patterns in a single search
+- Each pattern can be simple text or regex
+- Simple patterns use fast string matching
+- Regex patterns use the full regex engine
 - Examples:
-  - Simple: `TODO`
-  - Regex: `FIXME:.*\b\d{4}\b`
+  - Simple: `["TODO", "FIXME"]`
+  - Mixed: `["TODO", "FIXME:.*\\b\\d{4}\\b"]`
+  - Legacy: `"TODO|FIXME"` (using regex alternation)
 
 #### File Extensions
 - Optional list of extensions to include

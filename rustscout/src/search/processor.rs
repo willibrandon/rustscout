@@ -253,7 +253,7 @@ mod tests {
         }
 
         // Create a pattern matcher and processor
-        let matcher = PatternMatcher::new("pattern_\\d+".to_string());
+        let matcher = PatternMatcher::new(vec!["pattern_\\d+".to_string()]);
         let processor = FileProcessor::new(matcher);
 
         // Process the file
@@ -320,7 +320,7 @@ mod tests {
         file.write_all(content.as_bytes()).unwrap();
 
         // Create a pattern matcher and processor
-        let matcher = PatternMatcher::new("pattern_split".to_string());
+        let matcher = PatternMatcher::new(vec!["pattern_split".to_string()]);
         let processor = FileProcessor::new(matcher);
 
         // Process the file

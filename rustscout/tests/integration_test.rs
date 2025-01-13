@@ -30,6 +30,7 @@ fn test_simple_pattern() -> Result<()> {
     create_test_files(&dir, 10, 100)?;
 
     let config = SearchConfig {
+        patterns: vec!["TODO".to_string()],
         pattern: String::from("TODO"),
         root_path: PathBuf::from(dir.path()),
         file_extensions: None,
@@ -51,6 +52,7 @@ fn test_regex_pattern() -> Result<()> {
     create_test_files(&dir, 10, 100)?;
 
     let config = SearchConfig {
+        patterns: vec![r"FIXME:.*bug.*line \d+".to_string()],
         pattern: String::from(r"FIXME:.*bug.*line \d+"),
         root_path: PathBuf::from(dir.path()),
         file_extensions: None,
@@ -77,6 +79,7 @@ fn test_file_extensions() -> Result<()> {
     writeln!(file, "// TODO: Implement this function")?;
 
     let config = SearchConfig {
+        patterns: vec!["TODO".to_string()],
         pattern: String::from("TODO"),
         root_path: PathBuf::from(dir.path()),
         file_extensions: Some(vec!["rs".to_string()]),
@@ -98,6 +101,7 @@ fn test_ignore_patterns() -> Result<()> {
     create_test_files(&dir, 10, 100)?;
 
     let config = SearchConfig {
+        patterns: vec!["TODO".to_string()],
         pattern: String::from("TODO"),
         root_path: PathBuf::from(dir.path()),
         file_extensions: None,
@@ -122,6 +126,7 @@ fn test_empty_pattern() -> Result<()> {
     create_test_files(&dir, 1, 10)?;
 
     let config = SearchConfig {
+        patterns: vec![],
         pattern: String::new(),
         root_path: PathBuf::from(dir.path()),
         file_extensions: None,
@@ -143,6 +148,7 @@ fn test_stats_only() -> Result<()> {
     create_test_files(&dir, 10, 100)?;
 
     let config = SearchConfig {
+        patterns: vec!["TODO".to_string()],
         pattern: String::from("TODO"),
         root_path: PathBuf::from(dir.path()),
         file_extensions: None,
@@ -155,5 +161,68 @@ fn test_stats_only() -> Result<()> {
     let result = search(&config)?;
     assert!(result.total_matches > 0);
     assert!(result.files_with_matches > 0);
+    Ok(())
+}
+
+#[test]
+fn test_multiple_patterns() -> Result<()> {
+    let dir = tempdir()?;
+    create_test_files(&dir, 10, 100)?;
+
+    let config = SearchConfig {
+        patterns: vec!["TODO".to_string(), r"FIXME:.*bug.*line \d+".to_string()],
+        pattern: String::new(),
+        root_path: PathBuf::from(dir.path()),
+        file_extensions: None,
+        ignore_patterns: vec![],
+        stats_only: false,
+        thread_count: NonZeroUsize::new(1).unwrap(),
+        log_level: "warn".to_string(),
+    };
+
+    let result = search(&config)?;
+    assert!(result.total_matches > 0);
+    assert!(result.files_with_matches > 0);
+
+    // Verify we find both pattern types
+    let mut found_todo = false;
+    let mut found_fixme = false;
+
+    for file_result in &result.file_results {
+        for m in &file_result.matches {
+            if m.line_content.contains("TODO") {
+                found_todo = true;
+            }
+            if m.line_content.contains("FIXME") && m.line_content.contains("bug") {
+                found_fixme = true;
+            }
+        }
+    }
+
+    assert!(found_todo, "Should find TODO patterns");
+    assert!(found_fixme, "Should find FIXME patterns");
+
+    Ok(())
+}
+
+#[test]
+fn test_empty_patterns() -> Result<()> {
+    let dir = tempdir()?;
+    create_test_files(&dir, 1, 10)?;
+
+    let config = SearchConfig {
+        patterns: vec![],
+        pattern: String::new(),
+        root_path: PathBuf::from(dir.path()),
+        file_extensions: None,
+        ignore_patterns: vec![],
+        stats_only: false,
+        thread_count: NonZeroUsize::new(1).unwrap(),
+        log_level: "warn".to_string(),
+    };
+
+    let result = search(&config)?;
+    assert_eq!(result.total_matches, 0);
+    assert_eq!(result.files_with_matches, 0);
     Ok(())
 }

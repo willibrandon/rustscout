@@ -76,6 +76,7 @@ fn main() -> Result<()> {
         SearchConfig::load_from(Some(config_path))?
     } else {
         SearchConfig::load().unwrap_or_else(|_| SearchConfig {
+            patterns: vec![args.pattern.clone()],
             pattern: args.pattern.clone(),
             root_path: args.root_path.clone(),
             file_extensions: args
