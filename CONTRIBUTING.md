@@ -1,6 +1,6 @@
-# Contributing to RTrace
+# Contributing to RustScout
 
-First off, thank you for considering contributing to RTrace! It's people like you that make RTrace such a great tool.
+First off, thank you for considering contributing to RustScout! It's people like you that make RustScout such a great tool.
 
 ## Code of Conduct
 
@@ -54,11 +54,11 @@ Enhancement suggestions are tracked as GitHub issues. When creating an enhanceme
 
 ```bash
 # Clone your fork
-git clone https://github.com/your-username/rtrace.git
-cd rtrace
+git clone https://github.com/your-username/rustscout.git
+cd rustscout
 
 # Add upstream remote
-git remote add upstream https://github.com/original/rtrace.git
+git remote add upstream https://github.com/willibrandon/rustscout.git
 
 # Install development dependencies
 cargo build
@@ -73,15 +73,15 @@ cargo bench
 ### Project Structure
 
 ```
-rtrace/
-├── rtrace_core/       # Core search functionality
+rustscout/
+├── rustscout/        # Core search functionality
 │   ├── src/
 │   │   ├── lib.rs    # Library entry point
 │   │   ├── search.rs # Search implementation
 │   │   ├── config.rs # Configuration handling
 │   │   └── ...
 │   └── benches/      # Performance benchmarks
-├── rtrace_cli/       # Command-line interface
+├── rustscout-cli/    # Command-line interface
 │   └── src/
 │       └── main.rs   # CLI implementation
 └── docs/            # Documentation
@@ -147,4 +147,4 @@ When contributing performance-related changes:
 
 Feel free to open an issue or reach out to the maintainers directly.
 
-Thank you for contributing to RTrace! 🚀 
+Thank you for contributing to RustScout! 🚀 
