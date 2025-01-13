@@ -1,7 +1,7 @@
 # RTrace 🚀
 
 [![Crates.io](https://img.shields.io/crates/v/rtrace_cli.svg)](https://crates.io/crates/rtrace_cli)
-[![Build Status](https://github.com/yourusername/rtrace/workflows/CI/badge.svg)](https://github.com/yourusername/rtrace/actions)
+[![Build Status](https://github.com/willibrandon/rtrace/workflows/CI/badge.svg)](https://github.com/willibrandon/rtrace/actions)
 [![License](https://img.shields.io/crates/l/rtrace_cli.svg)](LICENSE)
 
 > Lightning-fast code search with smart pattern matching and parallel processing
@@ -144,3 +144,5 @@ If you find RTrace useful, please consider giving it a star on GitHub! Your supp
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details. 
+
+Check out our [GitHub repository](https://github.com/willibrandon/rtrace) and consider giving us a star if you find RTrace useful! 

@@ -8,9 +8,9 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["Your Name <your.email@example.com>"]
+authors = ["Brandon Williams"]
 description = "A high-performance, cross-platform CLI tool for searching and analyzing codebases"
-repository = "https://github.com/yourusername/rtrace"
+repository = "https://github.com/willibrandon/rtrace"
 license = "MIT"
 readme = "README.md"
 keywords = ["search", "grep", "cli", "regex", "parallel"]
