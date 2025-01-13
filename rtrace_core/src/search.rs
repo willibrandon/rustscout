@@ -104,11 +104,20 @@ pub fn search(config: &Config) -> io::Result<SearchResult> {
     };
 
     let mut builder = WalkBuilder::new(&config.root_path);
-    builder.hidden(true).standard_filters(false);
+    builder
+        .hidden(true)
+        .standard_filters(true) // Enable standard filters for .git, target/, etc.
+        .require_git(false); // Don't require .gitignore to exist
 
+    // Add custom ignore patterns
     for pattern in &config.ignore_patterns {
         builder.add_ignore(pattern);
     }
+
+    // Add standard ignore patterns
+    builder.add_custom_ignore_filename(".gitignore");
+    builder.add_ignore("target");
+    builder.add_ignore(".git");
 
     let walker = builder.build();
 
