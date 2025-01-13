@@ -1,5 +1,5 @@
 //! High-performance concurrent code search library
-//! 
+//!
 //! This library provides functionality for searching code repositories
 //! with parallel processing capabilities.
 
