@@ -19,7 +19,6 @@ pub fn has_valid_extension(path: &Path, extensions: &Option<Vec<String>>) -> boo
 /// Checks if a file should be ignored based on ignore patterns
 pub fn should_ignore(path: &Path, ignore_patterns: &[String]) -> bool {
     let path_str = path.to_string_lossy();
-    
     // Always ignore target/ and .git/ directories
     if path_str.contains("/target/") || path_str.contains("/.git/") {
         return true;
