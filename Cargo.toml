@@ -1,7 +1,7 @@
 [workspace]
 members = [
-    "rtrace_cli",
-    "rtrace_core"
+    "rustscout",
+    "rustscout-cli"
 ]
 resolver = "2"
 
