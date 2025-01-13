@@ -1,9 +1,9 @@
-use std::num::NonZeroUsize;
-use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::Parser;
 use colored::*;
 use rtrace_core::{Config, SearchResult};
+use std::num::NonZeroUsize;
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -36,19 +36,14 @@ fn print_match(result: &SearchResult) {
     for file_result in &result.file_results {
         if !file_result.matches.is_empty() {
             println!("\n{}", file_result.path.display().to_string().green());
-            
+
             for m in &file_result.matches {
                 let line_num = format!("{:>6}:", m.line_number).blue();
                 let before = &m.line_content[..m.start];
                 let matched = &m.line_content[m.start..m.end];
                 let after = &m.line_content[m.end..];
-                
-                println!("{} {}{}{}", 
-                    line_num,
-                    before,
-                    matched.red(),
-                    after
-                );
+
+                println!("{} {}{}{}", line_num, before, matched.red(), after);
             }
         }
     }
@@ -86,8 +81,7 @@ fn main() -> Result<()> {
         config
     };
 
-    let result = rtrace_core::search::search(&config)
-        .context("Failed to perform search")?;
+    let result = rtrace_core::search::search(&config).context("Failed to perform search")?;
 
     if !args.stats_only {
         print_match(&result);

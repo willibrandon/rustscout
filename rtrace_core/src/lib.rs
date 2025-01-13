@@ -1,8 +1,8 @@
 pub mod config;
-pub mod search;
+pub mod errors;
 pub mod filters;
 pub mod results;
-pub mod errors;
+pub mod search;
 
 pub use config::Config;
 pub use results::SearchResult;
@@ -10,6 +10,6 @@ pub use results::SearchResult;
 /// Re-export common types for convenience
 pub mod prelude {
     pub use crate::config::Config;
-    pub use crate::results::SearchResult;
     pub use crate::errors::RTraceError;
+    pub use crate::results::SearchResult;
 }

@@ -1,5 +1,5 @@
-use std::path::Path;
 use glob::Pattern;
+use std::path::Path;
 
 /// Checks if a file should be included in the search based on its extension
 pub fn has_valid_extension(path: &Path, extensions: &Option<Vec<String>>) -> bool {
@@ -30,26 +30,28 @@ pub fn should_ignore(path: &Path, ignore_patterns: &[String]) -> bool {
 pub fn is_likely_binary(path: &Path) -> bool {
     // Common binary file extensions
     const BINARY_EXTENSIONS: &[&str] = &[
-        "exe", "dll", "so", "dylib", "bin", "obj", "o",
-        "class", "jar", "war", "ear",
-        "png", "jpg", "jpeg", "gif", "bmp", "ico",
-        "pdf", "doc", "docx", "xls", "xlsx",
-        "zip", "tar", "gz", "7z", "rar",
+        "exe", "dll", "so", "dylib", "bin", "obj", "o", "class", "jar", "war", "ear", "png", "jpg",
+        "jpeg", "gif", "bmp", "ico", "pdf", "doc", "docx", "xls", "xlsx", "zip", "tar", "gz", "7z",
+        "rar",
     ];
 
     if let Some(ext) = path.extension() {
         if let Some(ext_str) = ext.to_str() {
-            return BINARY_EXTENSIONS.iter().any(|&bin_ext| {
-                bin_ext.eq_ignore_ascii_case(ext_str)
-            });
+            return BINARY_EXTENSIONS
+                .iter()
+                .any(|&bin_ext| bin_ext.eq_ignore_ascii_case(ext_str));
         }
     }
     false
 }
 
 /// Determines if a file should be included in the search
-pub fn should_include_file(path: &Path, extensions: &Option<Vec<String>>, ignore_patterns: &[String]) -> bool {
-    !is_likely_binary(path) 
+pub fn should_include_file(
+    path: &Path,
+    extensions: &Option<Vec<String>>,
+    ignore_patterns: &[String],
+) -> bool {
+    !is_likely_binary(path)
         && has_valid_extension(path, extensions)
         && !should_ignore(path, ignore_patterns)
 }
@@ -67,10 +69,10 @@ mod tests {
         let path = Path::new("test.py");
         assert!(!has_valid_extension(path, &extensions));
 
-        let path = Path::new("test.RS");  // Test case insensitivity
+        let path = Path::new("test.RS"); // Test case insensitivity
         assert!(has_valid_extension(path, &extensions));
 
-        let path = Path::new("test");  // No extension
+        let path = Path::new("test"); // No extension
         assert!(!has_valid_extension(path, &extensions));
 
         let path = Path::new("test.rs");
@@ -81,22 +83,34 @@ mod tests {
     #[test]
     fn test_should_ignore() {
         let ignore_patterns = vec![
-            "target/**/*.rs".to_string(),  // All Rust files under target
-            ".git/*".to_string(),          // Direct children of .git
-            "**/*.tmp".to_string(),        // Any tmp files
+            "target/**/*.rs".to_string(), // All Rust files under target
+            ".git/*".to_string(),         // Direct children of .git
+            "**/*.tmp".to_string(),       // Any tmp files
         ];
 
         // Should ignore
-        assert!(should_ignore(Path::new("target/debug/main.rs"), &ignore_patterns));
-        assert!(should_ignore(Path::new("target/release/lib.rs"), &ignore_patterns));
+        assert!(should_ignore(
+            Path::new("target/debug/main.rs"),
+            &ignore_patterns
+        ));
+        assert!(should_ignore(
+            Path::new("target/release/lib.rs"),
+            &ignore_patterns
+        ));
         assert!(should_ignore(Path::new(".git/config"), &ignore_patterns));
         assert!(should_ignore(Path::new("src/temp.tmp"), &ignore_patterns));
-        assert!(should_ignore(Path::new("deep/path/file.tmp"), &ignore_patterns));
+        assert!(should_ignore(
+            Path::new("deep/path/file.tmp"),
+            &ignore_patterns
+        ));
 
         // Should not ignore
         assert!(!should_ignore(Path::new("src/main.rs"), &ignore_patterns));
         assert!(!should_ignore(Path::new(".git2/config"), &ignore_patterns));
-        assert!(!should_ignore(Path::new("target/debug/main.txt"), &ignore_patterns));
+        assert!(!should_ignore(
+            Path::new("target/debug/main.txt"),
+            &ignore_patterns
+        ));
         assert!(!should_ignore(Path::new(".gitignore"), &ignore_patterns));
     }
 
@@ -105,7 +119,7 @@ mod tests {
         assert!(is_likely_binary(Path::new("test.exe")));
         assert!(is_likely_binary(Path::new("test.dll")));
         assert!(is_likely_binary(Path::new("test.png")));
-        assert!(is_likely_binary(Path::new("test.PDF")));  // Test case insensitivity
+        assert!(is_likely_binary(Path::new("test.PDF"))); // Test case insensitivity
         assert!(!is_likely_binary(Path::new("test.rs")));
         assert!(!is_likely_binary(Path::new("test.txt")));
         assert!(!is_likely_binary(Path::new("test")));

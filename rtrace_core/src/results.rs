@@ -152,9 +152,9 @@ mod tests {
         };
         result.add_file_result(file_result2);
 
-        assert_eq!(result.total_matches, 2);  // Unchanged
-        assert_eq!(result.files_searched, 2);  // Incremented
-        assert_eq!(result.files_with_matches, 1);  // Unchanged
+        assert_eq!(result.total_matches, 2); // Unchanged
+        assert_eq!(result.files_searched, 2); // Incremented
+        assert_eq!(result.files_with_matches, 1); // Unchanged
     }
 
     #[test]
@@ -165,14 +165,12 @@ mod tests {
         // Add results to first SearchResult
         result1.add_file_result(FileResult {
             path: PathBuf::from("test1.txt"),
-            matches: vec![
-                Match {
-                    line_number: 1,
-                    line_content: "Hello".to_string(),
-                    start: 0,
-                    end: 5,
-                },
-            ],
+            matches: vec![Match {
+                line_number: 1,
+                line_content: "Hello".to_string(),
+                start: 0,
+                end: 5,
+            }],
         });
 
         // Add results to second SearchResult
@@ -209,9 +207,18 @@ mod tests {
         assert_eq!(result1.file_results.len(), 3);
 
         // Verify file paths are preserved
-        assert!(result1.file_results.iter().any(|fr| fr.path == PathBuf::from("test1.txt")));
-        assert!(result1.file_results.iter().any(|fr| fr.path == PathBuf::from("test2.txt")));
-        assert!(result1.file_results.iter().any(|fr| fr.path == PathBuf::from("test3.txt")));
+        assert!(result1
+            .file_results
+            .iter()
+            .any(|fr| fr.path == PathBuf::from("test1.txt")));
+        assert!(result1
+            .file_results
+            .iter()
+            .any(|fr| fr.path == PathBuf::from("test2.txt")));
+        assert!(result1
+            .file_results
+            .iter()
+            .any(|fr| fr.path == PathBuf::from("test3.txt")));
     }
 
     #[test]
@@ -222,14 +229,12 @@ mod tests {
         // Add some results to result1
         result1.add_file_result(FileResult {
             path: PathBuf::from("test.txt"),
-            matches: vec![
-                Match {
-                    line_number: 1,
-                    line_content: "Hello".to_string(),
-                    start: 0,
-                    end: 5,
-                },
-            ],
+            matches: vec![Match {
+                line_number: 1,
+                line_content: "Hello".to_string(),
+                start: 0,
+                end: 5,
+            }],
         });
 
         let initial_matches = result1.total_matches;

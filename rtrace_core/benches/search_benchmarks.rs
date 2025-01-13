@@ -1,5 +1,5 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
-use rtrace_core::{Config, search};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use rtrace_core::{search, Config};
 use std::fs::{self, create_dir_all};
 use std::path::Path;
 use tempfile::TempDir;
@@ -36,20 +36,14 @@ fn bench_search_varying_files(c: &mut Criterion) {
         let temp_dir = TempDir::new().unwrap();
         create_test_project(&temp_dir.path(), *files, 100, 5);
 
-        let config = Config::new(
-            "TODO: Fix this".to_string(),
-            temp_dir.path().to_path_buf(),
-        ).with_file_extensions(vec!["rs".to_string()]);
+        let config = Config::new("TODO: Fix this".to_string(), temp_dir.path().to_path_buf())
+            .with_file_extensions(vec!["rs".to_string()]);
 
-        group.bench_with_input(
-            BenchmarkId::from_parameter(files),
-            files,
-            |b, _| {
-                b.iter(|| {
-                    black_box(search::search(&config).unwrap());
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(files), files, |b, _| {
+            b.iter(|| {
+                black_box(search::search(&config).unwrap());
+            });
+        });
     }
     group.finish();
 }
@@ -62,20 +56,14 @@ fn bench_search_varying_file_sizes(c: &mut Criterion) {
         let temp_dir = TempDir::new().unwrap();
         create_test_project(&temp_dir.path(), 1, *lines, lines / 20);
 
-        let config = Config::new(
-            "TODO: Fix this".to_string(),
-            temp_dir.path().to_path_buf(),
-        ).with_file_extensions(vec!["rs".to_string()]);
+        let config = Config::new("TODO: Fix this".to_string(), temp_dir.path().to_path_buf())
+            .with_file_extensions(vec!["rs".to_string()]);
 
-        group.bench_with_input(
-            BenchmarkId::from_parameter(lines),
-            lines,
-            |b, _| {
-                b.iter(|| {
-                    black_box(search::search(&config).unwrap());
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(lines), lines, |b, _| {
+            b.iter(|| {
+                black_box(search::search(&config).unwrap());
+            });
+        });
     }
     group.finish();
 }
@@ -94,20 +82,14 @@ fn bench_search_varying_patterns(c: &mut Criterion) {
     ];
 
     for (name, pattern) in patterns.iter() {
-        let config = Config::new(
-            pattern.to_string(),
-            temp_dir.path().to_path_buf(),
-        ).with_file_extensions(vec!["rs".to_string()]);
+        let config = Config::new(pattern.to_string(), temp_dir.path().to_path_buf())
+            .with_file_extensions(vec!["rs".to_string()]);
 
-        group.bench_with_input(
-            BenchmarkId::from_parameter(name),
-            name,
-            |b, _| {
-                b.iter(|| {
-                    black_box(search::search(&config).unwrap());
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(name), name, |b, _| {
+            b.iter(|| {
+                black_box(search::search(&config).unwrap());
+            });
+        });
     }
     group.finish();
 }
@@ -118,22 +100,15 @@ fn bench_search_with_threads(c: &mut Criterion) {
     create_test_project(&temp_dir.path(), 100, 1000, 50);
 
     for threads in [1, 2, 4, 8].iter() {
-        let config = Config::new(
-            "TODO: Fix this".to_string(),
-            temp_dir.path().to_path_buf(),
-        )
-        .with_file_extensions(vec!["rs".to_string()])
-        .with_thread_count(std::num::NonZeroUsize::new(*threads).unwrap());
+        let config = Config::new("TODO: Fix this".to_string(), temp_dir.path().to_path_buf())
+            .with_file_extensions(vec!["rs".to_string()])
+            .with_thread_count(std::num::NonZeroUsize::new(*threads).unwrap());
 
-        group.bench_with_input(
-            BenchmarkId::from_parameter(threads),
-            threads,
-            |b, _| {
-                b.iter(|| {
-                    black_box(search::search(&config).unwrap());
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(threads), threads, |b, _| {
+            b.iter(|| {
+                black_box(search::search(&config).unwrap());
+            });
+        });
     }
     group.finish();
 }
@@ -145,4 +120,4 @@ criterion_group!(
     bench_search_varying_patterns,
     bench_search_with_threads
 );
-criterion_main!(benches); 
+criterion_main!(benches);

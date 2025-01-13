@@ -6,19 +6,19 @@ use std::path::PathBuf;
 pub struct Config {
     /// The pattern to search for (regex)
     pub pattern: String,
-    
+
     /// The root directory to start searching from
     pub root_path: PathBuf,
-    
+
     /// Number of threads to use for parallel search
     pub thread_count: NonZeroUsize,
-    
+
     /// File patterns to ignore (e.g. *.git/*)
     pub ignore_patterns: Vec<String>,
-    
+
     /// Whether to only show statistics instead of matches
     pub stats_only: bool,
-    
+
     /// File extensions to include in the search
     pub file_extensions: Option<Vec<String>>,
 }
