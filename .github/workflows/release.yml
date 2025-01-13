@@ -3,40 +3,77 @@ name: Release
 on:
   push:
     tags:
-      - 'v[0-9]+.*'
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   create-release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: taiki-e/create-gh-release-action@v1
+      - uses: actions/checkout@v4
         with:
+          fetch-depth: 0  # Fetch all history for changelog generation
+      
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Generate Changelog
+        run: |
+          chmod +x scripts/update_changelog.sh
+          ./scripts/update_changelog.sh ${{ github.ref_name }}
+      
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Release ${{ github.ref_name }}
+          body_path: CHANGELOG.md
+          draft: false
+          prerelease: false
           token: ${{ secrets.GITHUB_TOKEN }}
 
-  upload-assets:
+  build-release:
     needs: create-release
     strategy:
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-          - target: x86_64-apple-darwin
-            os: macos-latest
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: linux-amd64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: windows-amd64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            name: macos-amd64
+    
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v3
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v4
+      
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
           targets: ${{ matrix.target }}
-
-      - uses: taiki-e/upload-rust-binary-action@v1
+      
+      - name: Build Release Binary
+        run: cargo build --release --target ${{ matrix.target }}
+      
+      - name: Package Release Assets
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            7z a ../../../rustscout-${{ matrix.name }}.zip rustscout-cli.exe
+          else
+            tar czf ../../../rustscout-${{ matrix.name }}.tar.gz rustscout-cli
+          fi
+      
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v1
         with:
-          bin: rtrace_cli
-          target: ${{ matrix.target }}
+          files: |
+            rustscout-${{ matrix.name }}.*
           token: ${{ secrets.GITHUB_TOKEN }} 
