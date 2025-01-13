@@ -1,11 +1,11 @@
 [package]
-name = "rtrace_core"
+name = "rustscout"
 version = "0.1.0"
 edition = "2021"
-description = "High-performance, concurrent search library for Rust projects"
+description = "High-performance, concurrent code search tool written in Rust"
 license = "MIT"
-repository = "https://github.com/willibrandon/rtrace"
-documentation = "https://docs.rs/rtrace_core"
+repository = "https://github.com/willibrandon/rustscout"
+documentation = "https://docs.rs/rustscout"
 readme = "../README.md"
 keywords = ["search", "concurrency", "regex", "parallel", "filesystem"]
 categories = ["command-line-utilities", "development-tools::cargo-plugins", "filesystem"]
