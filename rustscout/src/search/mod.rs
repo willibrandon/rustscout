@@ -91,7 +91,6 @@
 /// let mut reader = BufReader::with_capacity(BUFFER_CAPACITY, file);
 /// let mut line_buffer = String::with_capacity(256);
 /// ```
-
 mod engine;
 mod matcher;
 mod processor;

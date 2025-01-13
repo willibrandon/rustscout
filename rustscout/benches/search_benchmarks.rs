@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use rtrace_core::{search::search, Config};
+use rustscout::{search, SearchConfig};
 use std::fs::File;
 use std::io::Write;
 use std::num::NonZeroUsize;
@@ -30,13 +30,14 @@ fn bench_simple_pattern(c: &mut Criterion) {
     let mut group = c.benchmark_group("Simple Pattern Search");
     group.sample_size(10);
 
-    let config = Config {
+    let config = SearchConfig {
         pattern: String::from("TODO"),
         root_path: PathBuf::from(dir.path()),
         ignore_patterns: vec![],
         file_extensions: None,
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
+        log_level: "warn".to_string(),
     };
 
     group.bench_function("search_todo", |b| {
@@ -55,13 +56,14 @@ fn bench_regex_pattern(c: &mut Criterion) {
     let mut group = c.benchmark_group("Regex Pattern Search");
     group.sample_size(10);
 
-    let config = Config {
+    let config = SearchConfig {
         pattern: String::from(r"FIXME:.*bug.*line \d+"),
         root_path: PathBuf::from(dir.path()),
         ignore_patterns: vec![],
         file_extensions: None,
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
+        log_level: "warn".to_string(),
     };
 
     group.bench_function("search_fixme_regex", |b| {
@@ -73,6 +75,41 @@ fn bench_regex_pattern(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_repeated_pattern(c: &mut Criterion) {
+    let dir = tempdir().unwrap();
+    create_test_files(&dir, 10, 100).unwrap();
+
+    let mut group = c.benchmark_group("Repeated Pattern Search");
+    group.sample_size(10);
+
+    let patterns = [
+        r"TODO",
+        r"FIXME:.*bug.*line \d+",
+        r"TODO",  // Repeated simple pattern
+        r"FIXME:.*bug.*line \d+",  // Repeated regex pattern
+    ];
+
+    for (i, pattern) in patterns.iter().enumerate() {
+        let config = SearchConfig {
+            pattern: pattern.to_string(),
+            root_path: PathBuf::from(dir.path()),
+            ignore_patterns: vec![],
+            file_extensions: None,
+            stats_only: false,
+            thread_count: NonZeroUsize::new(1).unwrap(),
+            log_level: "warn".to_string(),
+        };
+
+        group.bench_function(format!("search_pattern_{}", i), |b| {
+            b.iter(|| {
+                search(black_box(&config)).unwrap();
+            });
+        });
+    }
+
+    group.finish();
+}
+
 fn bench_file_scaling(c: &mut Criterion) {
     let dir = tempdir().unwrap();
     create_test_files(&dir, 50, 20).unwrap(); // More files, fewer lines each
@@ -80,13 +117,14 @@ fn bench_file_scaling(c: &mut Criterion) {
     let mut group = c.benchmark_group("File Count Scaling");
     group.sample_size(10);
 
-    let base_config = Config {
+    let base_config = SearchConfig {
         pattern: String::from("TODO"),
         root_path: PathBuf::from(dir.path()),
         ignore_patterns: vec![],
         file_extensions: None,
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
+        log_level: "warn".to_string(),
     };
 
     // Test with different subsets of files
@@ -110,6 +148,7 @@ criterion_group!(
     benches,
     bench_simple_pattern,
     bench_regex_pattern,
+    bench_repeated_pattern,
     bench_file_scaling
 );
 criterion_main!(benches);
