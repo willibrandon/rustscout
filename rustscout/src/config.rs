@@ -179,9 +179,8 @@ impl SearchConfig {
         if cli_config.stats_only {
             self.stats_only = true;
         }
-        if cli_config.thread_count != default_thread_count() {
-            self.thread_count = cli_config.thread_count;
-        }
+        // Always use CLI thread count if specified
+        self.thread_count = cli_config.thread_count;
         if cli_config.log_level != default_log_level() {
             self.log_level = cli_config.log_level;
         }
