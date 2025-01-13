@@ -5,18 +5,32 @@ on:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
 
-permissions:
-  contents: write
-  packages: write
-  issues: write
-
 env:
   CARGO_TERM_COLOR: always
-  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
-  create-release:
-    runs-on: ubuntu-latest
+  release:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: linux-amd64
+            binary_name: rustscout-cli
+            archive_ext: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: windows-amd64
+            binary_name: rustscout-cli.exe
+            archive_ext: zip
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            name: macos-amd64
+            binary_name: rustscout-cli
+            archive_ext: tar.gz
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,60 +38,40 @@ jobs:
       
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
-      
-      - name: Generate Changelog
-        run: |
-          chmod +x scripts/update_changelog.sh
-          ./scripts/update_changelog.sh ${{ github.ref_name }}
-      
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          name: Release ${{ github.ref_name }}
-          body_path: CHANGELOG.md
-          draft: false
-          prerelease: false
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-  build-release:
-    needs: create-release
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            name: linux-amd64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            name: windows-amd64
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            name: macos-amd64
-    
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       
-      - name: Build Release Binary
-        run: cargo build --release --target ${{ matrix.target }} -p rustscout-cli
-      
-      - name: Package Release Assets
-        shell: bash
+      - name: Generate Changelog
+        if: matrix.os == 'ubuntu-latest'
         run: |
-          cd target/${{ matrix.target }}/release
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            7z a ../../../rustscout-${{ matrix.name }}.zip rustscout-cli.exe
-          else
-            tar czf ../../../rustscout-${{ matrix.name }}.tar.gz rustscout-cli
-          fi
-      
-      - name: Upload Release Assets
+          chmod +x scripts/update_changelog.sh
+          ./scripts/update_changelog.sh ${{ github.ref_name }}
+
+      - name: Build Release Binary
+        run: |
+          cd rustscout-cli
+          cargo build --release --target ${{ matrix.target }}
+
+      - name: Package Release Asset (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          cd rustscout-cli/target/${{ matrix.target }}/release
+          tar czf ../../../../rustscout-${{ matrix.name }}.${{ matrix.archive_ext }} ${{ matrix.binary_name }}
+
+      - name: Package Release Asset (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          cd rustscout-cli/target/${{ matrix.target }}/release
+          7z a ../../../../rustscout-${{ matrix.name }}.${{ matrix.archive_ext }} ${{ matrix.binary_name }}
+
+      - name: Create Release and Upload Assets
         uses: softprops/action-gh-release@v1
+        if: success()
         with:
-          files: rustscout-${{ matrix.name }}.*
-          token: ${{ secrets.GITHUB_TOKEN }} 
+          name: Release ${{ github.ref_name }}
+          body_path: ${{ matrix.os == 'ubuntu-latest' && 'CHANGELOG.md' || '' }}
+          draft: false
+          prerelease: false
+          files: rustscout-${{ matrix.name }}.${{ matrix.archive_ext }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
