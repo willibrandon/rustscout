@@ -49,20 +49,19 @@ jobs:
 
       - name: Build Release Binary
         run: |
-          cd rustscout-cli
-          cargo build --release --target ${{ matrix.target }}
+          cargo build --release --target ${{ matrix.target }} -p rustscout-cli
 
       - name: Package Release Asset (Unix)
         if: matrix.os != 'windows-latest'
         run: |
-          cd rustscout-cli/target/${{ matrix.target }}/release
-          tar czf ../../../../rustscout-${{ matrix.name }}.${{ matrix.archive_ext }} ${{ matrix.binary_name }}
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../rustscout-${{ matrix.name }}.${{ matrix.archive_ext }} ${{ matrix.binary_name }}
 
       - name: Package Release Asset (Windows)
         if: matrix.os == 'windows-latest'
         run: |
-          cd rustscout-cli/target/${{ matrix.target }}/release
-          7z a ../../../../rustscout-${{ matrix.name }}.${{ matrix.archive_ext }} ${{ matrix.binary_name }}
+          cd target/${{ matrix.target }}/release
+          7z a ../../../rustscout-${{ matrix.name }}.${{ matrix.archive_ext }} ${{ matrix.binary_name }}
 
       - name: Create Release and Upload Assets
         uses: softprops/action-gh-release@v1
