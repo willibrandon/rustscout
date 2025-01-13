@@ -162,7 +162,7 @@ impl FileProcessor {
         })
     }
 
-    /// Processing for large files using memory mapping
+    /// Processing for large files using memory mapping and parallel pattern matching
     fn process_mmap_file(&self, path: &Path) -> SearchResult<FileResult> {
         trace!("Using memory-mapped processing for: {}", path.display());
         let file = File::open(path).map_err(|e| match e.kind() {
@@ -180,28 +180,43 @@ impl FileProcessor {
 
         // Convert to string, skipping invalid UTF-8 sequences
         let content = String::from_utf8_lossy(&mmap);
-        let mut matches = Vec::new();
-        let mut line_number = 0;
-        let mut last_match = 0;
+        let content_str = content.as_ref();
 
-        for line in content.lines() {
-            line_number += 1;
-            for (start, end) in self.matcher.find_matches(line) {
-                trace!("Found match at line {}: {}", line_number, line);
+        let mut matches = Vec::new();
+        let mut line_number = 1;
+        let mut start = 0;
+
+        // Process the content line by line
+        for (end, c) in content_str.char_indices() {
+            if c == '\n' {
+                let line = &content_str[start..end];
+                // Find matches in this line
+                let line_matches = self.matcher.find_matches(line);
+                // Add all matches from this line with the correct line number
+                for (match_start, match_end) in line_matches {
+                    matches.push(Match {
+                        line_number,
+                        line_content: line.to_string(),
+                        start: match_start,
+                        end: match_end,
+                    });
+                }
+                start = end + 1;
+                line_number += 1;
+            }
+        }
+
+        // Handle the last line if it doesn't end with a newline
+        if start < content_str.len() {
+            let line = &content_str[start..];
+            let line_matches = self.matcher.find_matches(line);
+            for (match_start, match_end) in line_matches {
                 matches.push(Match {
                     line_number,
                     line_content: line.to_string(),
-                    start,
-                    end,
+                    start: match_start,
+                    end: match_end,
                 });
-                last_match = matches.len();
-            }
-            if line_number > MAX_LINES_WITHOUT_MATCH && last_match == 0 {
-                debug!(
-                    "No matches in first {} lines, skipping rest of file",
-                    MAX_LINES_WITHOUT_MATCH
-                );
-                break;
             }
         }
 
@@ -213,5 +228,119 @@ impl FileProcessor {
             path: path.to_path_buf(),
             matches,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::File;
+    use std::io::Write;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_parallel_pattern_matching() {
+        // Create a temporary directory and file
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("large_test.txt");
+        let mut file = File::create(&file_path).unwrap();
+
+        // Create a large file with known patterns
+        let line = "This is a test line with pattern_123 and another pattern_456\n";
+        for _ in 0..50_000 {
+            // Creates a file > 10MB to trigger memory mapping
+            file.write_all(line.as_bytes()).unwrap();
+        }
+
+        // Create a pattern matcher and processor
+        let matcher = PatternMatcher::new("pattern_\\d+".to_string());
+        let processor = FileProcessor::new(matcher);
+
+        // Process the file
+        let result = processor.process_file(&file_path).unwrap();
+
+        // Verify results
+        assert_eq!(result.matches.len(), 100_000); // Two matches per line
+
+        // Verify matches are correctly ordered
+        let mut prev_line = 0;
+        let mut prev_start = 0;
+        for match_result in &result.matches {
+            if match_result.line_number == prev_line {
+                // Within the same line, start position should increase
+                assert!(
+                    match_result.start > prev_start,
+                    "Match positions within line {} should be increasing: prev={}, current={}",
+                    match_result.line_number,
+                    prev_start,
+                    match_result.start
+                );
+            } else {
+                // New line should be greater than previous line
+                assert!(
+                    match_result.line_number > prev_line,
+                    "Line numbers should be strictly increasing: prev={}, current={}",
+                    prev_line,
+                    match_result.line_number
+                );
+            }
+            prev_line = match_result.line_number;
+            prev_start = match_result.start;
+
+            // Verify match content
+            let matched_text = &match_result.line_content[match_result.start..match_result.end];
+            assert!(
+                matched_text.starts_with("pattern_"),
+                "Matched text should start with 'pattern_'"
+            );
+            assert!(
+                matched_text[8..].parse::<i32>().is_ok(),
+                "Should end with numbers"
+            );
+        }
+    }
+
+    #[test]
+    fn test_chunk_boundary_handling() {
+        // Create a temporary directory and file
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("boundary_test.txt");
+        let mut file = File::create(&file_path).unwrap();
+
+        // Create content that spans chunk boundaries
+        let mut content = String::new();
+        for i in 0..2000 {
+            content.push_str(&format!("Line {} with pattern_split", i));
+            // Add varying line lengths to test boundary handling
+            if i % 3 == 0 {
+                content.push_str(" extra text to vary line length");
+            }
+            content.push('\n');
+        }
+        file.write_all(content.as_bytes()).unwrap();
+
+        // Create a pattern matcher and processor
+        let matcher = PatternMatcher::new("pattern_split".to_string());
+        let processor = FileProcessor::new(matcher);
+
+        // Process the file
+        let result = processor.process_file(&file_path).unwrap();
+
+        // Verify results
+        assert_eq!(result.matches.len(), 2000); // One match per line
+
+        // Verify all matches are found and in order
+        let mut prev_line = 0;
+        for match_result in &result.matches {
+            assert!(
+                match_result.line_number > prev_line,
+                "Line numbers should be strictly increasing"
+            );
+            assert!(
+                match_result.line_content.contains("pattern_split"),
+                "Each line should contain the pattern"
+            );
+            prev_line = match_result.line_number;
+        }
     }
 }

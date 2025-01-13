@@ -150,6 +150,14 @@ impl MemoryMetrics {
             stats.mmap_files
         );
     }
+
+    pub fn cache_hits(&self) -> u64 {
+        self.cache_hits.load(Ordering::Relaxed)
+    }
+
+    pub fn cache_misses(&self) -> u64 {
+        self.cache_misses.load(Ordering::Relaxed)
+    }
 }
 
 impl Default for MemoryMetrics {

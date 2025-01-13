@@ -144,11 +144,60 @@ fn bench_file_scaling(c: &mut Criterion) {
     group.finish();
 }
 
+fn create_large_test_file(dir: &tempfile::TempDir, size_mb: usize) -> PathBuf {
+    let file_path = dir.path().join("large_test.txt");
+    let mut file = File::create(&file_path).unwrap();
+
+    // Create a line with a known pattern
+    let line = "This is a test line with pattern_123 and another pattern_456\n";
+    let lines_needed = (size_mb * 1024 * 1024) / line.len();
+
+    for _ in 0..lines_needed {
+        file.write_all(line.as_bytes()).unwrap();
+    }
+
+    file_path
+}
+
+fn bench_large_file_search(c: &mut Criterion) {
+    let dir = tempdir().unwrap();
+
+    // Create test files of different sizes
+    let sizes = [10, 50, 100]; // File sizes in MB
+
+    for &size in &sizes {
+        let file_path = create_large_test_file(&dir, size);
+
+        let mut group = c.benchmark_group(format!("large_file_{}mb", size));
+
+        // Benchmark with different thread counts
+        for threads in [1, 2, 4, 8].iter() {
+            group.bench_with_input(format!("threads_{}", threads), threads, |b, &threads| {
+                b.iter(|| {
+                    let config = SearchConfig {
+                        pattern: "pattern_\\d+".to_string(),
+                        root_path: file_path.parent().unwrap().to_path_buf(),
+                        ignore_patterns: vec![],
+                        file_extensions: None,
+                        stats_only: false,
+                        thread_count: NonZeroUsize::new(threads).unwrap(),
+                        log_level: "warn".to_string(),
+                    };
+                    search(&config).unwrap()
+                })
+            });
+        }
+
+        group.finish();
+    }
+}
+
 criterion_group!(
     benches,
     bench_simple_pattern,
     bench_regex_pattern,
     bench_repeated_pattern,
-    bench_file_scaling
+    bench_file_scaling,
+    bench_large_file_search
 );
 criterion_main!(benches);

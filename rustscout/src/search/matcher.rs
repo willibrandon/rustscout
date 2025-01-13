@@ -117,44 +117,23 @@ mod tests {
 
     #[test]
     fn test_pattern_caching() {
-        // Clear the cache before testing
-        PATTERN_CACHE.clear();
+        let metrics = MemoryMetrics::default();
+        let metrics = Arc::new(metrics);
 
-        // Create shared metrics
-        let metrics = Arc::new(MemoryMetrics::new());
+        // First creation should have no cache hits and one cache miss
+        let _matcher1 = PatternMatcher::with_metrics("test".to_string(), metrics.clone());
+        assert_eq!(metrics.cache_hits(), 0);
+        assert_eq!(metrics.cache_misses(), 1);
 
-        // First creation should be a cache miss
-        let _matcher1 = PatternMatcher::with_metrics("test".to_string(), Arc::clone(&metrics));
-        let stats1 = metrics.get_stats();
-        assert_eq!(
-            stats1.cache_hits, 0,
-            "First creation should have no cache hits"
-        );
-        assert_eq!(
-            stats1.cache_misses, 1,
-            "First creation should have one cache miss"
-        );
+        // Second creation should hit the cache
+        let _matcher2 = PatternMatcher::with_metrics("test".to_string(), metrics.clone());
+        assert_eq!(metrics.cache_hits(), 1);
+        assert_eq!(metrics.cache_misses(), 1);
 
-        // Second creation should be a cache hit
-        let _matcher2 = PatternMatcher::with_metrics("test".to_string(), Arc::clone(&metrics));
-        let stats2 = metrics.get_stats();
-        assert_eq!(
-            stats2.cache_hits, 1,
-            "Second creation should have one cache hit"
-        );
-        assert_eq!(
-            stats2.cache_misses, 1,
-            "Cache misses should not increase on second creation"
-        );
-
-        // Third creation should also be a cache hit
-        let _matcher3 = PatternMatcher::with_metrics("test".to_string(), Arc::clone(&metrics));
-        let stats3 = metrics.get_stats();
-        assert_eq!(
-            stats3.cache_hits, 2,
-            "Third creation should have two cache hits"
-        );
-        assert_eq!(stats3.cache_misses, 1, "Cache misses should still be one");
+        // Different pattern should not hit the cache
+        let _matcher3 = PatternMatcher::with_metrics("different".to_string(), metrics.clone());
+        assert_eq!(metrics.cache_hits(), 1);
+        assert_eq!(metrics.cache_misses(), 2);
     }
 
     #[test]
