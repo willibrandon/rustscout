@@ -1,79 +1,133 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
 use colored::*;
-use rustscout::{Config, SearchResult, search};
+use rustscout::search::search;
+use rustscout::Config;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use tracing::{info, Level};
+use tracing_subscriber::{fmt, EnvFilter};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Search pattern (regular expression)
+    /// Pattern to search for (supports regex)
     pattern: String,
 
-    /// Directory to search in
+    /// Root directory to search in
     #[arg(default_value = ".")]
-    path: PathBuf,
+    root_path: PathBuf,
 
-    /// Number of threads to use (default: number of CPU cores)
-    #[arg(short, long)]
-    threads: Option<NonZeroUsize>,
-
-    /// Ignore files/directories matching pattern
-    #[arg(short, long)]
-    ignore: Option<String>,
-
-    /// Show only summary statistics
-    #[arg(short, long)]
-    stats_only: bool,
-
-    /// Comma-separated list of file extensions to search
+    /// Comma-separated list of file extensions to search (e.g. "rs,toml")
     #[arg(short, long)]
     extensions: Option<String>,
+
+    /// Additional patterns to ignore (supports .gitignore syntax)
+    #[arg(short, long)]
+    ignore: Vec<String>,
+
+    /// Show only statistics, not individual matches
+    #[arg(long)]
+    stats_only: bool,
+
+    /// Number of threads to use for searching (default: number of CPU cores)
+    #[arg(short, long)]
+    threads: Option<usize>,
+
+    /// Log level (trace, debug, info, warn, error)
+    #[arg(short, long, default_value = "warn")]
+    log_level: String,
+}
+
+fn init_logging(level: &str) -> Result<()> {
+    let level = match level.to_lowercase().as_str() {
+        "trace" => Level::TRACE,
+        "debug" => Level::DEBUG,
+        "info" => Level::INFO,
+        "warn" => Level::WARN,
+        "error" => Level::ERROR,
+        _ => Level::WARN,
+    };
+
+    let env_filter = EnvFilter::from_default_env()
+        .add_directive(level.into());
+
+    fmt()
+        .with_env_filter(env_filter)
+        .with_target(false)
+        .with_thread_ids(true)
+        .with_thread_names(true)
+        .with_file(true)
+        .with_line_number(true)
+        .init();
+
+    info!("Logging initialized at level: {}", level);
+    Ok(())
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    init_logging(&args.log_level)?;
+
+    info!("Starting rustscout-cli with pattern: {}", args.pattern);
+
+    if let Some(thread_count) = args.threads {
+        info!("Setting thread pool size to {}", thread_count);
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(thread_count)
+            .build_global()?;
+    }
 
     let config = Config {
         pattern: args.pattern,
-        root_path: args.path,
-        thread_count: args.threads.unwrap_or_else(|| NonZeroUsize::new(1).unwrap()),
-        ignore_patterns: args.ignore.map(|p| vec![p]).unwrap_or_default(),
-        file_extensions: args.extensions.map(|e| {
-            e.split(',')
-                .map(|s| s.trim().to_string())
-                .collect()
-        }),
+        root_path: args.root_path,
+        file_extensions: args.extensions
+            .map(|s| s.split(',').map(String::from).collect::<Vec<_>>()),
+        ignore_patterns: args.ignore,
         stats_only: args.stats_only,
+        thread_count: NonZeroUsize::new(args.threads.unwrap_or_else(num_cpus::get))
+            .expect("Thread count cannot be zero"),
     };
 
-    let result = search::search(&config).context("Failed to perform search")?;
+    info!("Searching with config: {:?}", config);
+    let result = search(&config)?;
 
     if args.stats_only {
-        print_stats(&result);
+        println!(
+            "Found {} matches in {} files",
+            result.total_matches.to_string().green(),
+            result.files_with_matches.to_string().green()
+        );
     } else {
-        print_matches(&result);
+        for file_result in result.file_results {
+            println!(
+                "\n{}: {} matches",
+                file_result.path.display().to_string().blue(),
+                file_result.matches.len().to_string().green()
+            );
+
+            for m in file_result.matches {
+                let line_content = m.line_content.trim();
+                let before = &line_content[..m.start];
+                let matched = &line_content[m.start..m.end];
+                let after = &line_content[m.end..];
+
+                println!(
+                    "{}: {}{}{}",
+                    m.line_number.to_string().yellow(),
+                    before,
+                    matched.red(),
+                    after
+                );
+            }
+        }
+
+        println!(
+            "\nTotal: {} matches in {} files",
+            result.total_matches.to_string().green(),
+            result.files_with_matches.to_string().green()
+        );
     }
 
     Ok(())
-}
-
-fn print_matches(result: &SearchResult) {
-    for file_result in &result.file_results {
-        for m in &file_result.matches {
-            let line_num = format!("{:>6}:", m.line_number).blue();
-            println!("{}:{} {}", file_result.path.display(), line_num, m.line_content);
-        }
-    }
-
-    print_stats(result);
-}
-
-fn print_stats(result: &SearchResult) {
-    println!(
-        "\nFound {} matches in {} files",
-        result.total_matches.to_string().green(),
-        result.files_with_matches.to_string().green()
-    );
 }

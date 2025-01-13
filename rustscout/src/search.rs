@@ -95,12 +95,14 @@ use ignore::WalkBuilder;
 use rayon::prelude::*;
 use regex::Regex;
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader};
+use std::io::{BufRead, BufReader};
 use std::path::Path;
+use tracing::{debug, info, trace, warn};
 
 use crate::config::Config;
+use crate::errors::{SearchError, SearchResult};
 use crate::filters::should_include_file;
-use crate::results::{FileResult, Match, SearchResult};
+use crate::results::{FileResult, Match, SearchResult as SearchOutput};
 
 // Thresholds for optimization strategies
 const SMALL_FILE_THRESHOLD: u64 = 32 * 1024; // 32KB
@@ -122,8 +124,15 @@ const BUFFER_CAPACITY: usize = 8192; // Initial buffer size for reading files
 ///
 /// `true` if the pattern can use simple string matching, `false` if it needs regex
 fn is_simple_pattern(pattern: &str) -> bool {
-    pattern.len() < SIMPLE_PATTERN_THRESHOLD
-        && !pattern.contains(['*', '+', '?', '[', ']', '(', ')', '|', '^', '$', '.', '\\'])
+    let is_simple = pattern.len() < SIMPLE_PATTERN_THRESHOLD
+        && !pattern.contains(['*', '+', '?', '[', ']', '(', ')', '|', '^', '$', '.', '\\']);
+
+    debug!(
+        "Pattern '{}' is {}",
+        pattern,
+        if is_simple { "simple" } else { "complex" }
+    );
+    is_simple
 }
 
 /// Fast path for searching small files with simple patterns.
@@ -143,8 +152,14 @@ fn is_simple_pattern(pattern: &str) -> bool {
 /// # Error Handling
 ///
 /// Returns io::Error if file operations fail, similar to .NET's IOException
-fn search_file_simple(path: &Path, pattern: &str) -> io::Result<FileResult> {
-    let content = fs::read_to_string(path)?;
+fn search_file_simple(path: &Path, pattern: &str) -> SearchResult<FileResult> {
+    trace!("Simple search in file: {}", path.display());
+    let content = fs::read_to_string(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => SearchError::file_not_found(path),
+        std::io::ErrorKind::PermissionDenied => SearchError::permission_denied(path),
+        _ => SearchError::IoError(e),
+    })?;
+
     let mut matches = Vec::new();
     let mut line_number = 0;
     let mut last_match = 0;
@@ -152,6 +167,7 @@ fn search_file_simple(path: &Path, pattern: &str) -> io::Result<FileResult> {
     for line in content.lines() {
         line_number += 1;
         if let Some(index) = line.find(pattern) {
+            trace!("Found match at line {}: {}", line_number, line);
             matches.push(Match {
                 line_number,
                 line_content: line.to_string(),
@@ -160,12 +176,13 @@ fn search_file_simple(path: &Path, pattern: &str) -> io::Result<FileResult> {
             });
             last_match = matches.len();
         }
-        // Early exit if no matches found in first N lines
         if line_number > 100 && last_match == 0 {
+            debug!("No matches in first 100 lines, skipping rest of file");
             break;
         }
     }
 
+    debug!("Found {} matches in file {}", matches.len(), path.display());
     Ok(FileResult {
         path: path.to_path_buf(),
         matches,
@@ -198,8 +215,14 @@ fn search_file_simple(path: &Path, pattern: &str) -> io::Result<FileResult> {
 /// let mut reader = BufReader::with_capacity(BUFFER_CAPACITY, file);
 /// let mut line_buffer = String::with_capacity(256);
 /// ```
-fn search_file_regex(path: &Path, regex: &Regex) -> io::Result<FileResult> {
-    let file = File::open(path)?;
+fn search_file_regex(path: &Path, regex: &Regex) -> SearchResult<FileResult> {
+    trace!("Regex search in file: {}", path.display());
+    let file = File::open(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => SearchError::file_not_found(path),
+        std::io::ErrorKind::PermissionDenied => SearchError::permission_denied(path),
+        _ => SearchError::IoError(e),
+    })?;
+
     let mut reader = BufReader::with_capacity(BUFFER_CAPACITY, file);
     let mut matches = Vec::new();
     let mut line_buffer = String::with_capacity(256);
@@ -209,6 +232,7 @@ fn search_file_regex(path: &Path, regex: &Regex) -> io::Result<FileResult> {
     while reader.read_line(&mut line_buffer)? > 0 {
         line_number += 1;
         if regex.is_match(&line_buffer) {
+            trace!("Found match at line {}: {}", line_number, line_buffer.trim());
             for capture in regex.find_iter(&line_buffer) {
                 matches.push(Match {
                     line_number,
@@ -219,13 +243,14 @@ fn search_file_regex(path: &Path, regex: &Regex) -> io::Result<FileResult> {
                 last_match = line_number;
             }
         }
-        // Early exit if no matches found in first N lines
         if line_number > 100 && last_match == 0 {
+            debug!("No matches in first 100 lines, skipping rest of file");
             break;
         }
         line_buffer.clear();
     }
 
+    debug!("Found {} matches in file {}", matches.len(), path.display());
     Ok(FileResult {
         path: path.to_path_buf(),
         matches,
@@ -274,18 +299,18 @@ fn search_file_regex(path: &Path, regex: &Regex) -> io::Result<FileResult> {
 /// # Error Handling
 ///
 /// Returns io::Error for file operations or invalid regex patterns
-pub fn search(config: &Config) -> io::Result<SearchResult> {
+pub fn search(config: &Config) -> SearchResult<SearchOutput> {
+    info!("Starting search with pattern: {}", config.pattern);
+
     if config.pattern.is_empty() {
-        return Ok(SearchResult::new());
+        warn!("Empty search pattern provided");
+        return Ok(SearchOutput::new());
     }
 
-    // Determine search strategy
     let is_simple = is_simple_pattern(&config.pattern);
     let regex = if !is_simple {
-        Some(
-            Regex::new(&config.pattern)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?,
-        )
+        debug!("Compiling regex pattern: {}", config.pattern);
+        Some(Regex::new(&config.pattern).map_err(|e| SearchError::invalid_pattern(e.to_string()))?)
     } else {
         None
     };
@@ -293,40 +318,52 @@ pub fn search(config: &Config) -> io::Result<SearchResult> {
     let mut builder = WalkBuilder::new(&config.root_path);
     builder
         .hidden(true)
-        .standard_filters(true) // Enable standard filters for .git, target/, etc.
-        .require_git(false); // Don't require .gitignore to exist
+        .standard_filters(true)
+        .require_git(false);
 
-    // Add custom ignore patterns
     for pattern in &config.ignore_patterns {
+        debug!("Adding ignore pattern: {}", pattern);
         builder.add_ignore(pattern);
     }
 
-    // Add standard ignore patterns
     builder.add_custom_ignore_filename(".gitignore");
     builder.add_ignore("target");
     builder.add_ignore(".git");
 
     let walker = builder.build();
 
-    // Group files by size for optimized processing
     let mut small_files = Vec::new();
     let mut large_files = Vec::new();
 
+    debug!("Scanning directory: {}", config.root_path.display());
     for entry in walker
         .filter_map(Result::ok)
         .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
-        .filter(|e| should_include_file(e.path(), &config.file_extensions, &[]))
+        .filter(|e| should_include_file(e.path(), &config.file_extensions, &config.ignore_patterns))
     {
         match entry.metadata() {
-            Ok(metadata) if metadata.len() < SMALL_FILE_THRESHOLD => small_files.push(entry),
-            _ => large_files.push(entry),
+            Ok(metadata) if metadata.len() < SMALL_FILE_THRESHOLD => {
+                trace!("Adding small file: {}", entry.path().display());
+                small_files.push(entry)
+            }
+            _ => {
+                trace!("Adding large file: {}", entry.path().display());
+                large_files.push(entry)
+            }
         }
     }
 
-    let mut final_result = SearchResult::new();
+    info!(
+        "Found {} files to search ({} small, {} large)",
+        small_files.len() + large_files.len(),
+        small_files.len(),
+        large_files.len()
+    );
 
-    // Process small files with simple pattern matching
+    let mut final_result = SearchOutput::new();
+
     if !small_files.is_empty() {
+        debug!("Processing {} small files", small_files.len());
         let results: Vec<_> = if is_simple {
             small_files
                 .par_iter()
@@ -345,15 +382,17 @@ pub fn search(config: &Config) -> io::Result<SearchResult> {
             Vec::new()
         };
 
+        debug!("Found matches in {} small files", results.len());
         results
             .into_iter()
             .for_each(|r| final_result.add_file_result(r));
     }
 
-    // Process large files with chunked parallel processing
     if !large_files.is_empty() {
+        debug!("Processing {} large files", large_files.len());
         let chunk_size = (large_files.len() / rayon::current_num_threads())
             .clamp(MIN_CHUNK_SIZE, MAX_CHUNK_SIZE);
+        debug!("Using chunk size of {} for parallel processing", chunk_size);
 
         let results: Vec<_> = large_files
             .par_chunks(chunk_size)
@@ -373,10 +412,16 @@ pub fn search(config: &Config) -> io::Result<SearchResult> {
             })
             .collect();
 
+        debug!("Found matches in {} large files", results.len());
         results
             .into_iter()
             .for_each(|r| final_result.add_file_result(r));
     }
+
+    info!(
+        "Search completed: {} matches in {} files",
+        final_result.total_matches, final_result.files_with_matches
+    );
 
     Ok(final_result)
 }

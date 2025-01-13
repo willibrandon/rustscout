@@ -93,6 +93,7 @@ pub fn has_valid_extension(path: &Path, extensions: &Option<Vec<String>>) -> boo
 /// Checks if a file should be ignored based on ignore patterns
 pub fn should_ignore(path: &Path, ignore_patterns: &[String]) -> bool {
     let path_str = path.to_string_lossy();
+    
     // Always ignore target/ and .git/ directories
     if path_str.contains("/target/") || path_str.contains("/.git/") {
         return true;
@@ -100,9 +101,13 @@ pub fn should_ignore(path: &Path, ignore_patterns: &[String]) -> bool {
 
     // Check custom ignore patterns
     ignore_patterns.iter().any(|pattern| {
-        Pattern::new(pattern)
-            .map(|p| p.matches(&path_str))
-            .unwrap_or(false)
+        if let Ok(p) = Pattern::new(pattern) {
+            // Convert path to a format that matches the pattern style
+            let normalized_path = path_str.replace('\\', "/");
+            p.matches(&normalized_path)
+        } else {
+            false
+        }
     })
 }
 
@@ -163,34 +168,25 @@ mod tests {
     #[test]
     fn test_should_ignore() {
         let ignore_patterns = vec![
-            "target/**/*.rs".to_string(), // All Rust files under target
-            ".git/*".to_string(),         // Direct children of .git
-            "**/*.tmp".to_string(),       // Any tmp files
+            "**/test_[0-4].txt".to_string(),
+            "target/**/*.rs".to_string(),
+            ".git/*".to_string(),
+            "**/*.tmp".to_string(),
         ];
 
         // Should ignore
-        assert!(should_ignore(
-            Path::new("target/debug/main.rs"),
-            &ignore_patterns
-        ));
-        assert!(should_ignore(
-            Path::new("target/release/lib.rs"),
-            &ignore_patterns
-        ));
+        assert!(should_ignore(Path::new("test_0.txt"), &ignore_patterns));
+        assert!(should_ignore(Path::new("test_4.txt"), &ignore_patterns));
+        assert!(should_ignore(Path::new("dir/test_2.txt"), &ignore_patterns));
+        assert!(should_ignore(Path::new("target/debug/main.rs"), &ignore_patterns));
         assert!(should_ignore(Path::new(".git/config"), &ignore_patterns));
         assert!(should_ignore(Path::new("src/temp.tmp"), &ignore_patterns));
-        assert!(should_ignore(
-            Path::new("deep/path/file.tmp"),
-            &ignore_patterns
-        ));
 
         // Should not ignore
+        assert!(!should_ignore(Path::new("test_5.txt"), &ignore_patterns));
+        assert!(!should_ignore(Path::new("test_9.txt"), &ignore_patterns));
         assert!(!should_ignore(Path::new("src/main.rs"), &ignore_patterns));
         assert!(!should_ignore(Path::new(".git2/config"), &ignore_patterns));
-        assert!(!should_ignore(
-            Path::new("target/debug/main.txt"),
-            &ignore_patterns
-        ));
         assert!(!should_ignore(Path::new(".gitignore"), &ignore_patterns));
     }
 

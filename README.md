@@ -5,6 +5,7 @@
 [![Documentation](https://docs.rs/rustscout/badge.svg)](https://docs.rs/rustscout)
 [![License:MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Build Status](https://github.com/willibrandon/rustscout/workflows/CI/badge.svg)](https://github.com/willibrandon/rustscout/actions)
+[![codecov](https://codecov.io/gh/willibrandon/rustscout/branch/main/graph/badge.svg)](https://codecov.io/gh/willibrandon/rustscout)
 
 A high-performance, concurrent code search tool written in Rust. RustScout is designed for quickly searching and analyzing large codebases with a focus on performance and usability.
 
@@ -27,13 +28,23 @@ cargo install rustscout-cli
 Basic usage:
 
 ```bash
+# Simple text search
 rustscout-cli "pattern" /path/to/search
-```
 
-For more options:
+# Search with regex
+rustscout-cli "fn\s+\w+\s*\([^)]*\)" . # Find function definitions
 
-```bash
-rustscout-cli --help
+# Filter by file type
+rustscout-cli --extensions rs,toml "TODO" .
+
+# Show only statistics
+rustscout-cli --stats-only "FIXME" .
+
+# Ignore specific patterns
+rustscout-cli --ignore "target/*,*.tmp" "pattern" .
+
+# Control thread count
+rustscout-cli --threads 8 "pattern" .
 ```
 
 ## Installation
@@ -41,7 +52,11 @@ rustscout-cli --help
 ### From crates.io
 
 ```bash
+# Install CLI tool
 cargo install rustscout-cli
+
+# Or add library to your project
+cargo add rustscout
 ```
 
 ### From Source
@@ -49,29 +64,63 @@ cargo install rustscout-cli
 ```bash
 git clone https://github.com/willibrandon/rustscout.git
 cd rustscout
-cargo install --path rtrace_cli
+cargo install --path rustscout-cli
 ```
 
-## Usage
+## Usage Examples
 
 ### Basic Search
 ```bash
-rustscout-cli "search pattern" .
+# Search for a pattern in current directory
+rustscout-cli "pattern" .
+
+# Search in a specific directory
+rustscout-cli "pattern" /path/to/search
+
+# Case-sensitive search
+rustscout-cli "CamelCase" --case-sensitive .
 ```
 
-### With File Type Filter
+### Advanced Pattern Matching
 ```bash
-rustscout-cli "pattern" . --type rs,toml
+# Find function definitions
+rustscout-cli "fn\s+\w+\s*\([^)]*\)" .
+
+# Find TODO comments
+rustscout-cli "TODO:.*" .
+
+# Find multiple patterns
+rustscout-cli "(FIXME|TODO|XXX):" .
 ```
 
-### Ignore Patterns
+### File Filtering
 ```bash
-rustscout-cli "pattern" . --ignore "target/*"
+# Search only Rust files
+rustscout-cli --extensions rs "pattern" .
+
+# Search multiple file types
+rustscout-cli --extensions "rs,toml,md" "pattern" .
+
+# Ignore specific patterns
+rustscout-cli --ignore "target/*,*.tmp" "pattern" .
 ```
 
-### Statistics Only
+### Output Control
 ```bash
-rustscout-cli "pattern" . --stats-only
+# Show only statistics
+rustscout-cli --stats-only "pattern" .
+
+# Show line numbers
+rustscout-cli --line-numbers "pattern" .
+```
+
+### Performance Tuning
+```bash
+# Set thread count
+rustscout-cli --threads 8 "pattern" .
+
+# Process large files
+rustscout-cli --chunk-size 1024 "pattern" .
 ```
 
 ## Library Usage
@@ -84,21 +133,42 @@ rustscout = "0.1.0"
 ```
 
 ```rust
-use rustscout::search;
+use rustscout::{Config, search};
+use std::num::NonZeroUsize;
+use std::path::PathBuf;
 
-fn main() {
-    let results = search("pattern", ".", None).unwrap();
+fn main() -> anyhow::Result<()> {
+    let config = Config {
+        pattern: "TODO".to_string(),
+        root_path: PathBuf::from("."),
+        thread_count: NonZeroUsize::new(8).unwrap(),
+        ignore_patterns: vec!["target/*".to_string()],
+        file_extensions: Some(vec!["rs".to_string()]),
+        stats_only: false,
+    };
+
+    let results = search(&config)?;
     println!("Found {} matches", results.total_matches);
+    Ok(())
 }
 ```
 
 ## Configuration
 
-RustScout can be configured via command line arguments or configuration files. See the [documentation](https://docs.rs/rustscout) for more details.
+RustScout can be configured via command line arguments:
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| `--pattern` | Search pattern (regex supported) | `"fn\s+\w+"` |
+| `--path` | Directory to search | `./src` |
+| `--threads` | Number of threads to use | `8` |
+| `--ignore` | Ignore patterns | `"target/*"` |
+| `--extensions` | File extensions to search | `"rs,toml"` |
+| `--stats-only` | Show only summary statistics | `true` |
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome! Please feel free to submit a Pull Request. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 

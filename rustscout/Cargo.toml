@@ -17,10 +17,14 @@ regex = "1.10"
 ignore = "0.4"
 num_cpus = "1.16"
 glob = "0.3"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 tempfile = "3.9"
 criterion = { version = "0.5", features = ["html_reports"] }
+anyhow = "1.0"
 
 [[bench]]
 name = "search_benchmarks"
