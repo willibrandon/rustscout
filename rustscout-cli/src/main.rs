@@ -41,6 +41,18 @@ struct Args {
     /// Path to config file (default: .rustscout.yaml)
     #[arg(short, long)]
     config: Option<PathBuf>,
+
+    /// Number of context lines to show before each match
+    #[arg(short = 'B', long, default_value = "0")]
+    context_before: usize,
+
+    /// Number of context lines to show after each match
+    #[arg(short = 'A', long, default_value = "0")]
+    context_after: usize,
+
+    /// Number of context lines to show before and after each match
+    #[arg(short = 'C', long)]
+    context: Option<usize>,
 }
 
 fn init_logging(level: &str) -> Result<()> {
@@ -75,7 +87,7 @@ fn main() -> Result<()> {
     let config = if let Some(config_path) = args.config.as_deref() {
         SearchConfig::load_from(Some(config_path))?
     } else {
-        SearchConfig::load().unwrap_or_else(|_| SearchConfig {
+        SearchConfig {
             patterns: vec![args.pattern.clone()],
             pattern: args.pattern.clone(),
             root_path: args.root_path.clone(),
@@ -88,7 +100,9 @@ fn main() -> Result<()> {
             thread_count: NonZeroUsize::new(args.threads.unwrap_or_else(num_cpus::get))
                 .expect("Thread count cannot be zero"),
             log_level: args.log_level.clone(),
-        })
+            context_before: args.context.unwrap_or(args.context_before),
+            context_after: args.context.unwrap_or(args.context_after),
+        }
     };
 
     // Initialize logging with the configured level
@@ -122,6 +136,12 @@ fn main() -> Result<()> {
             );
 
             for m in file_result.matches {
+                // Print context before
+                for (line_num, line) in &m.context_before {
+                    println!("{}: {}", line_num.to_string().yellow(), line);
+                }
+
+                // Print the match
                 let line_content = m.line_content.trim();
                 let before = &line_content[..m.start];
                 let matched = &line_content[m.start..m.end];
@@ -134,6 +154,16 @@ fn main() -> Result<()> {
                     matched.red(),
                     after
                 );
+
+                // Print context after
+                for (line_num, line) in &m.context_after {
+                    println!("{}: {}", line_num.to_string().yellow(), line);
+                }
+
+                // Print separator between matches if there are context lines
+                if !m.context_before.is_empty() || !m.context_after.is_empty() {
+                    println!("--");
+                }
             }
         }
 

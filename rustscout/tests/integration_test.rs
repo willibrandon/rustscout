@@ -38,6 +38,8 @@ fn test_simple_pattern() -> Result<()> {
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
         log_level: "warn".to_string(),
+        context_before: 0,
+        context_after: 0,
     };
 
     let result = search(&config)?;
@@ -60,6 +62,8 @@ fn test_regex_pattern() -> Result<()> {
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
         log_level: "warn".to_string(),
+        context_before: 0,
+        context_after: 0,
     };
 
     let result = search(&config)?;
@@ -87,6 +91,8 @@ fn test_file_extensions() -> Result<()> {
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
         log_level: "warn".to_string(),
+        context_before: 0,
+        context_after: 0,
     };
 
     let result = search(&config)?;
@@ -109,6 +115,8 @@ fn test_ignore_patterns() -> Result<()> {
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
         log_level: "warn".to_string(),
+        context_before: 0,
+        context_after: 0,
     };
 
     let result = search(&config)?;
@@ -134,6 +142,8 @@ fn test_empty_pattern() -> Result<()> {
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
         log_level: "warn".to_string(),
+        context_before: 0,
+        context_after: 0,
     };
 
     let result = search(&config)?;
@@ -156,6 +166,8 @@ fn test_stats_only() -> Result<()> {
         stats_only: true,
         thread_count: NonZeroUsize::new(1).unwrap(),
         log_level: "warn".to_string(),
+        context_before: 0,
+        context_after: 0,
     };
 
     let result = search(&config)?;
@@ -178,6 +190,8 @@ fn test_multiple_patterns() -> Result<()> {
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
         log_level: "warn".to_string(),
+        context_before: 0,
+        context_after: 0,
     };
 
     let result = search(&config)?;
@@ -219,10 +233,163 @@ fn test_empty_patterns() -> Result<()> {
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
         log_level: "warn".to_string(),
+        context_before: 0,
+        context_after: 0,
     };
 
     let result = search(&config)?;
     assert_eq!(result.total_matches, 0);
     assert_eq!(result.files_with_matches, 0);
+    Ok(())
+}
+
+#[test]
+fn test_context_lines() -> Result<()> {
+    let dir = tempdir()?;
+    let file_path = dir.path().join("test.txt");
+    let mut file = File::create(&file_path)?;
+
+    // Create a file with known content for testing context lines
+    writeln!(file, "Line 1: Some content")?;
+    writeln!(file, "Line 2: More content")?;
+    writeln!(file, "Line 3: TODO: Fix this")?;
+    writeln!(file, "Line 4: Implementation")?;
+    writeln!(file, "Line 5: More code")?;
+
+    // Test context before
+    let config = SearchConfig {
+        patterns: vec!["TODO".to_string()],
+        pattern: String::from("TODO"),
+        root_path: PathBuf::from(dir.path()),
+        file_extensions: None,
+        ignore_patterns: vec![],
+        stats_only: false,
+        thread_count: NonZeroUsize::new(1).unwrap(),
+        log_level: "warn".to_string(),
+        context_before: 2,
+        context_after: 0,
+    };
+
+    let result = search(&config)?;
+    assert_eq!(result.total_matches, 1);
+    let m = &result.file_results[0].matches[0];
+    assert_eq!(m.context_before.len(), 2);
+    assert_eq!(m.context_before[0].0, 1);
+    assert_eq!(m.context_before[1].0, 2);
+    assert!(m.context_after.is_empty());
+
+    // Test context after
+    let config = SearchConfig {
+        context_before: 0,
+        context_after: 2,
+        ..config
+    };
+
+    let result = search(&config)?;
+    assert_eq!(result.total_matches, 1);
+    let m = &result.file_results[0].matches[0];
+    assert!(m.context_before.is_empty());
+    assert_eq!(m.context_after.len(), 2);
+    assert_eq!(m.context_after[0].0, 4);
+    assert_eq!(m.context_after[1].0, 5);
+
+    // Test both context before and after
+    let config = SearchConfig {
+        context_before: 1,
+        context_after: 1,
+        ..config
+    };
+
+    let result = search(&config)?;
+    assert_eq!(result.total_matches, 1);
+    let m = &result.file_results[0].matches[0];
+    assert_eq!(m.context_before.len(), 1);
+    assert_eq!(m.context_before[0].0, 2);
+    assert_eq!(m.context_after.len(), 1);
+    assert_eq!(m.context_after[0].0, 4);
+
+    Ok(())
+}
+
+#[test]
+fn test_context_lines_at_file_boundaries() -> Result<()> {
+    let dir = tempdir()?;
+    let file_path = dir.path().join("test.txt");
+    let mut file = File::create(&file_path)?;
+
+    // Create a file with matches at the start and end
+    writeln!(file, "TODO: First line")?;
+    writeln!(file, "Some content")?;
+    writeln!(file, "More content")?;
+    writeln!(file, "TODO: Last line")?;
+
+    let config = SearchConfig {
+        patterns: vec!["TODO".to_string()],
+        pattern: String::from("TODO"),
+        root_path: PathBuf::from(dir.path()),
+        file_extensions: None,
+        ignore_patterns: vec![],
+        stats_only: false,
+        thread_count: NonZeroUsize::new(1).unwrap(),
+        log_level: "warn".to_string(),
+        context_before: 2,
+        context_after: 2,
+    };
+
+    let result = search(&config)?;
+    assert_eq!(result.total_matches, 2);
+
+    // Check first match (at start of file)
+    let first_match = &result.file_results[0].matches[0];
+    assert!(first_match.context_before.is_empty()); // No lines before
+    assert_eq!(first_match.context_after.len(), 2); // Two lines after
+
+    // Check last match (at end of file)
+    let last_match = &result.file_results[0].matches[1];
+    assert_eq!(last_match.context_before.len(), 2); // Two lines before
+    assert!(last_match.context_after.is_empty()); // No lines after
+
+    Ok(())
+}
+
+#[test]
+fn test_overlapping_context() -> Result<()> {
+    let dir = tempdir()?;
+    let file_path = dir.path().join("test.txt");
+    let mut file = File::create(&file_path)?;
+
+    // Create a file with closely spaced matches
+    writeln!(file, "Line 1")?;
+    writeln!(file, "TODO: First")?;
+    writeln!(file, "Line 3")?;
+    writeln!(file, "TODO: Second")?;
+    writeln!(file, "Line 5")?;
+
+    let config = SearchConfig {
+        patterns: vec!["TODO".to_string()],
+        pattern: String::from("TODO"),
+        root_path: PathBuf::from(dir.path()),
+        file_extensions: None,
+        ignore_patterns: vec![],
+        stats_only: false,
+        thread_count: NonZeroUsize::new(1).unwrap(),
+        log_level: "warn".to_string(),
+        context_before: 1,
+        context_after: 1,
+    };
+
+    let result = search(&config)?;
+    assert_eq!(result.total_matches, 2);
+
+    // Check first match
+    let first_match = &result.file_results[0].matches[0];
+    assert_eq!(first_match.context_before.len(), 1);
+    assert_eq!(first_match.context_after.len(), 1);
+
+    // Check second match
+    let second_match = &result.file_results[0].matches[1];
+    assert_eq!(second_match.context_before.len(), 1);
+    assert_eq!(second_match.context_after.len(), 1);
+
     Ok(())
 }

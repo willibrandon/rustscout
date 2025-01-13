@@ -99,6 +99,10 @@ pub struct Match {
     pub start: usize,
     /// The end position of the match within the line
     pub end: usize,
+    /// Lines before the match for context
+    pub context_before: Vec<(usize, String)>,
+    /// Lines after the match for context
+    pub context_after: Vec<(usize, String)>,
 }
 
 /// Represents all matches found in a single file
@@ -159,6 +163,8 @@ mod tests {
             line_content: "Hello, world!".to_string(),
             start: 0,
             end: 5,
+            context_before: vec![],
+            context_after: vec![],
         };
 
         assert_eq!(m.line_number, 42);
@@ -176,12 +182,16 @@ mod tests {
                 line_content: "Hello".to_string(),
                 start: 0,
                 end: 5,
+                context_before: vec![],
+                context_after: vec![],
             },
             Match {
                 line_number: 2,
                 line_content: "World Hello".to_string(),
                 start: 6,
                 end: 11,
+                context_before: vec![],
+                context_after: vec![],
             },
         ];
 
@@ -218,12 +228,16 @@ mod tests {
                     line_content: "Hello".to_string(),
                     start: 0,
                     end: 5,
+                    context_before: vec![],
+                    context_after: vec![],
                 },
                 Match {
                     line_number: 2,
                     line_content: "Hello again".to_string(),
                     start: 0,
                     end: 5,
+                    context_before: vec![],
+                    context_after: vec![],
                 },
             ],
         };
@@ -258,6 +272,8 @@ mod tests {
                 line_content: "Hello".to_string(),
                 start: 0,
                 end: 5,
+                context_before: vec![],
+                context_after: vec![],
             }],
         });
 
@@ -270,12 +286,16 @@ mod tests {
                     line_content: "World".to_string(),
                     start: 0,
                     end: 5,
+                    context_before: vec![],
+                    context_after: vec![],
                 },
                 Match {
                     line_number: 2,
                     line_content: "Hello".to_string(),
                     start: 0,
                     end: 5,
+                    context_before: vec![],
+                    context_after: vec![],
                 },
             ],
         });
@@ -322,6 +342,8 @@ mod tests {
                 line_content: "Hello".to_string(),
                 start: 0,
                 end: 5,
+                context_before: vec![],
+                context_after: vec![],
             }],
         });
 

@@ -23,21 +23,24 @@ fn create_test_files(
     Ok(())
 }
 
-fn bench_simple_pattern(c: &mut Criterion) {
+fn bench_simple_pattern(c: &mut Criterion) -> std::io::Result<()> {
     let dir = tempdir().unwrap();
-    create_test_files(&dir, 10, 100).unwrap();
+    create_test_files(&dir, 10, 100)?;
 
     let mut group = c.benchmark_group("Simple Pattern Search");
     group.sample_size(10);
 
     let config = SearchConfig {
-        pattern: String::from("TODO"),
-        root_path: PathBuf::from(dir.path()),
+        patterns: vec!["TODO".to_string()],
+        pattern: String::new(),
+        root_path: dir.path().to_path_buf(),
         ignore_patterns: vec![],
         file_extensions: None,
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
         log_level: "warn".to_string(),
+        context_before: 0,
+        context_after: 0,
     };
 
     group.bench_function("search_todo", |b| {
@@ -47,23 +50,27 @@ fn bench_simple_pattern(c: &mut Criterion) {
     });
 
     group.finish();
+    Ok(())
 }
 
-fn bench_regex_pattern(c: &mut Criterion) {
+fn bench_regex_pattern(c: &mut Criterion) -> std::io::Result<()> {
     let dir = tempdir().unwrap();
-    create_test_files(&dir, 10, 100).unwrap();
+    create_test_files(&dir, 10, 100)?;
 
     let mut group = c.benchmark_group("Regex Pattern Search");
     group.sample_size(10);
 
     let config = SearchConfig {
-        pattern: String::from(r"FIXME:.*bug.*line \d+"),
-        root_path: PathBuf::from(dir.path()),
+        patterns: vec![r"FIXME:.*bug.*line \d+".to_string()],
+        pattern: String::new(),
+        root_path: dir.path().to_path_buf(),
         ignore_patterns: vec![],
         file_extensions: None,
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
         log_level: "warn".to_string(),
+        context_before: 0,
+        context_after: 0,
     };
 
     group.bench_function("search_fixme_regex", |b| {
@@ -73,11 +80,12 @@ fn bench_regex_pattern(c: &mut Criterion) {
     });
 
     group.finish();
+    Ok(())
 }
 
-fn bench_repeated_pattern(c: &mut Criterion) {
+fn bench_repeated_pattern(c: &mut Criterion) -> std::io::Result<()> {
     let dir = tempdir().unwrap();
-    create_test_files(&dir, 10, 100).unwrap();
+    create_test_files(&dir, 10, 100)?;
 
     let mut group = c.benchmark_group("Repeated Pattern Search");
     group.sample_size(10);
@@ -91,13 +99,16 @@ fn bench_repeated_pattern(c: &mut Criterion) {
 
     for (i, pattern) in patterns.iter().enumerate() {
         let config = SearchConfig {
-            pattern: pattern.to_string(),
-            root_path: PathBuf::from(dir.path()),
+            patterns: vec![pattern.to_string()],
+            pattern: String::new(),
+            root_path: dir.path().to_path_buf(),
             ignore_patterns: vec![],
             file_extensions: None,
             stats_only: false,
             thread_count: NonZeroUsize::new(1).unwrap(),
             log_level: "warn".to_string(),
+            context_before: 0,
+            context_after: 0,
         };
 
         group.bench_function(format!("search_pattern_{}", i), |b| {
@@ -108,23 +119,27 @@ fn bench_repeated_pattern(c: &mut Criterion) {
     }
 
     group.finish();
+    Ok(())
 }
 
-fn bench_file_scaling(c: &mut Criterion) {
+fn bench_file_scaling(c: &mut Criterion) -> std::io::Result<()> {
     let dir = tempdir().unwrap();
-    create_test_files(&dir, 50, 20).unwrap(); // More files, fewer lines each
+    create_test_files(&dir, 50, 20)?;
 
     let mut group = c.benchmark_group("File Count Scaling");
     group.sample_size(10);
 
     let base_config = SearchConfig {
-        pattern: String::from("TODO"),
-        root_path: PathBuf::from(dir.path()),
+        patterns: vec!["TODO".to_string()],
+        pattern: String::new(),
+        root_path: dir.path().to_path_buf(),
         ignore_patterns: vec![],
         file_extensions: None,
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
         log_level: "warn".to_string(),
+        context_before: 0,
+        context_after: 0,
     };
 
     // Test with different subsets of files
@@ -142,31 +157,32 @@ fn bench_file_scaling(c: &mut Criterion) {
     }
 
     group.finish();
+    Ok(())
 }
 
-fn create_large_test_file(dir: &tempfile::TempDir, size_mb: usize) -> PathBuf {
+fn create_large_test_file(dir: &tempfile::TempDir, size_mb: usize) -> std::io::Result<PathBuf> {
     let file_path = dir.path().join("large_test.txt");
-    let mut file = File::create(&file_path).unwrap();
+    let mut file = File::create(&file_path)?;
 
     // Create a line with a known pattern
     let line = "This is a test line with pattern_123 and another pattern_456\n";
     let lines_needed = (size_mb * 1024 * 1024) / line.len();
 
     for _ in 0..lines_needed {
-        file.write_all(line.as_bytes()).unwrap();
+        file.write_all(line.as_bytes())?;
     }
 
-    file_path
+    Ok(file_path)
 }
 
-fn bench_large_file_search(c: &mut Criterion) {
+fn bench_large_file_search(c: &mut Criterion) -> std::io::Result<()> {
     let dir = tempdir().unwrap();
 
     // Create test files of different sizes
     let sizes = [10, 50, 100]; // File sizes in MB
 
     for &size in &sizes {
-        let file_path = create_large_test_file(&dir, size);
+        let file_path = create_large_test_file(&dir, size)?;
 
         let mut group = c.benchmark_group(format!("large_file_{}mb", size));
 
@@ -175,13 +191,16 @@ fn bench_large_file_search(c: &mut Criterion) {
             group.bench_with_input(format!("threads_{}", threads), threads, |b, &threads| {
                 b.iter(|| {
                     let config = SearchConfig {
-                        pattern: "pattern_\\d+".to_string(),
+                        patterns: vec!["pattern_\\d+".to_string()],
+                        pattern: String::new(),
                         root_path: file_path.parent().unwrap().to_path_buf(),
                         ignore_patterns: vec![],
                         file_extensions: None,
                         stats_only: false,
                         thread_count: NonZeroUsize::new(threads).unwrap(),
                         log_level: "warn".to_string(),
+                        context_before: 0,
+                        context_after: 0,
                     };
                     search(&config).unwrap()
                 })
@@ -190,11 +209,13 @@ fn bench_large_file_search(c: &mut Criterion) {
 
         group.finish();
     }
+
+    Ok(())
 }
 
-fn bench_multiple_patterns(c: &mut Criterion) {
+fn bench_multiple_patterns(c: &mut Criterion) -> std::io::Result<()> {
     let dir = tempdir().unwrap();
-    create_test_files(&dir, 10, 100).unwrap();
+    create_test_files(&dir, 10, 100)?;
 
     let mut group = c.benchmark_group("Multiple Pattern Search");
     group.sample_size(10);
@@ -202,13 +223,15 @@ fn bench_multiple_patterns(c: &mut Criterion) {
     // Test with multiple simple patterns
     let simple_config = SearchConfig {
         patterns: vec!["TODO".to_string(), "FIXME".to_string()],
-        root_path: PathBuf::from(dir.path()),
+        pattern: String::new(),
+        root_path: dir.path().to_path_buf(),
         ignore_patterns: vec![],
         file_extensions: None,
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
         log_level: "warn".to_string(),
-        pattern: String::new(), // Legacy field
+        context_before: 0,
+        context_after: 0,
     };
 
     group.bench_function("search_multiple_simple", |b| {
@@ -220,13 +243,15 @@ fn bench_multiple_patterns(c: &mut Criterion) {
     // Test with mixed simple and regex patterns
     let mixed_config = SearchConfig {
         patterns: vec!["TODO".to_string(), r"FIXME:.*bug.*line \d+".to_string()],
-        root_path: PathBuf::from(dir.path()),
+        pattern: String::new(),
+        root_path: dir.path().to_path_buf(),
         ignore_patterns: vec![],
         file_extensions: None,
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
         log_level: "warn".to_string(),
-        pattern: String::new(), // Legacy field
+        context_before: 0,
+        context_after: 0,
     };
 
     group.bench_function("search_multiple_mixed", |b| {
@@ -236,15 +261,60 @@ fn bench_multiple_patterns(c: &mut Criterion) {
     });
 
     group.finish();
+    Ok(())
+}
+
+fn bench_context_lines(c: &mut Criterion) -> std::io::Result<()> {
+    let dir = tempdir().unwrap();
+
+    // Create test files of different sizes
+    let sizes = [10]; // Only use a small file for context line benchmarks
+
+    for &size in &sizes {
+        let file_path = create_large_test_file(&dir, size)?;
+
+        let mut group = c.benchmark_group("context_lines");
+
+        // Test different context configurations
+        let configs = [
+            (0, 0), // No context
+            (2, 0), // Before only
+            (0, 2), // After only
+            (2, 2), // Both before and after
+            (5, 5), // Larger context
+        ];
+
+        for (before, after) in configs.iter() {
+            group.bench_function(format!("context_b{}_a{}", before, after), |b| {
+                b.iter(|| {
+                    let config = SearchConfig {
+                        patterns: vec!["pattern_\\d+".to_string()],
+                        pattern: String::new(),
+                        root_path: file_path.parent().unwrap().to_path_buf(),
+                        ignore_patterns: vec![],
+                        file_extensions: None,
+                        stats_only: false,
+                        thread_count: NonZeroUsize::new(1).unwrap(),
+                        log_level: "warn".to_string(),
+                        context_before: *before,
+                        context_after: *after,
+                    };
+                    search(&config).unwrap()
+                })
+            });
+        }
+
+        group.finish();
+    }
+
+    Ok(())
 }
 
 criterion_group!(
-    benches,
-    bench_simple_pattern,
-    bench_regex_pattern,
-    bench_repeated_pattern,
-    bench_file_scaling,
-    bench_large_file_search,
-    bench_multiple_patterns,
+    name = benches;
+    config = Criterion::default();
+    targets = bench_simple_pattern, bench_regex_pattern, bench_repeated_pattern,
+              bench_file_scaling, bench_large_file_search, bench_context_lines,
+              bench_multiple_patterns
 );
 criterion_main!(benches);

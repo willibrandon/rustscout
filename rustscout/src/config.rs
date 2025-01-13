@@ -84,7 +84,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchConfig {
     /// The search patterns (supports regex)
-    #[serde(default = "Vec::new")]
+    #[serde(default)]
     pub patterns: Vec<String>,
 
     /// Deprecated: Use patterns instead
@@ -113,18 +113,21 @@ pub struct SearchConfig {
     pub stats_only: bool,
 
     /// Number of threads to use for searching
-    /// Defaults to the number of CPU cores if not specified
+    /// Defaults to number of CPU cores if not specified
     #[serde(default = "default_thread_count")]
     pub thread_count: NonZeroUsize,
 
-    /// Log level for output (trace, debug, info, warn, error)
-    /// - trace: Most verbose, shows all details
-    /// - debug: Shows detailed progress
-    /// - info: Shows important progress
-    /// - warn: Shows only warnings
-    /// - error: Shows only errors
+    /// Log level (trace, debug, info, warn, error)
     #[serde(default = "default_log_level")]
     pub log_level: String,
+
+    /// Number of context lines to show before each match
+    #[serde(default)]
+    pub context_before: usize,
+
+    /// Number of context lines to show after each match
+    #[serde(default)]
+    pub context_after: usize,
 }
 
 fn default_thread_count() -> NonZeroUsize {
@@ -244,6 +247,8 @@ mod tests {
             stats_only: false,
             thread_count: NonZeroUsize::new(4).unwrap(),
             log_level: "warn".to_string(),
+            context_before: 0,
+            context_after: 0,
         };
 
         let cli_config = SearchConfig {
@@ -255,6 +260,8 @@ mod tests {
             stats_only: true,
             thread_count: NonZeroUsize::new(8).unwrap(),
             log_level: "debug".to_string(),
+            context_before: 0,
+            context_after: 0,
         };
 
         let merged = config_file.merge_with_cli(cli_config);

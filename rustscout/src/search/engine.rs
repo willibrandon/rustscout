@@ -28,7 +28,7 @@ pub fn search(config: &SearchConfig) -> SearchResult<SearchOutput> {
 
     // Create pattern matcher and file processor
     let matcher = PatternMatcher::new(patterns);
-    let processor = FileProcessor::new(matcher);
+    let processor = FileProcessor::new(matcher, config.context_before, config.context_after);
     let metrics = processor.metrics().clone();
 
     // Set up file walker with ignore patterns
@@ -103,17 +103,19 @@ mod tests {
     fn test_search_with_metrics() {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("test.txt");
-        std::fs::write(&file_path, "test line\ntest line 2\n").unwrap();
+        std::fs::write(&file_path, "pattern_1\npattern_2\n").unwrap();
 
         let config = SearchConfig {
-            patterns: vec!["test".to_string()],
-            pattern: "test".to_string(),
-            root_path: dir.path().to_path_buf(),
+            patterns: vec!["pattern_\\d+".to_string()],
+            pattern: "pattern_\\d+".to_string(),
+            root_path: file_path.parent().unwrap().to_path_buf(),
             ignore_patterns: vec![],
             file_extensions: None,
             stats_only: false,
             thread_count: NonZeroUsize::new(1).unwrap(),
             log_level: "warn".to_string(),
+            context_before: 0,
+            context_after: 0,
         };
 
         let result = search(&config).unwrap();

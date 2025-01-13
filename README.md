@@ -16,6 +16,10 @@ A high-performance, concurrent code search tool written in Rust. RustScout is de
 - 📁 **File Filtering**: Flexible ignore patterns and file type filtering
 - 📊 **Rich Output**: Detailed search results with statistics
 - 🛠️ **Developer Friendly**: Clear documentation with .NET comparison examples
+- 📝 **Context Lines**: Show lines before and after matches for better understanding
+  - `--context-before N` or `-B N`: Show N lines before each match
+  - `--context-after N` or `-A N`: Show N lines after each match
+  - `--context N` or `-C N`: Show N lines before and after each match
 
 ## Quick Start
 
@@ -79,6 +83,11 @@ rustscout-cli "pattern" /path/to/search
 
 # Case-sensitive search
 rustscout-cli "CamelCase" --case-sensitive .
+
+# Show context lines around matches
+rustscout-cli -C 2 "pattern" .  # 2 lines before and after
+rustscout-cli -B 3 "pattern" .  # 3 lines before
+rustscout-cli -A 2 "pattern" .  # 2 lines after
 ```
 
 ### Advanced Pattern Matching
@@ -202,6 +211,12 @@ thread_count: 4
 
 # Log level (trace, debug, info, warn, error)
 log_level: "info"
+
+# Context lines before matches
+context_before: 2
+
+# Context lines after matches
+context_after: 2
 ```
 
 ### Command-Line Options
@@ -222,6 +237,9 @@ OPTIONS:
     -t, --threads <COUNT>           Number of threads to use for searching
     -l, --log-level <LEVEL>         Log level (trace, debug, info, warn, error) [default: warn]
     -c, --config <FILE>             Path to config file [default: .rustscout.yaml]
+    -B, --context-before <LINES>    Number of lines to show before each match [default: 0]
+    -A, --context-after <LINES>     Number of lines to show after each match [default: 0]
+    -C, --context <LINES>           Number of lines to show before and after each match
     -h, --help                      Print help information
     -V, --version                   Print version information
 ```

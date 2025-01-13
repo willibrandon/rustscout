@@ -1,5 +1,5 @@
 use memmap2::Mmap;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use tracing::{debug, trace, warn};
@@ -10,24 +10,38 @@ use crate::metrics::MemoryMetrics;
 use crate::results::{FileResult, Match};
 
 // Constants for file processing
-const BUFFER_CAPACITY: usize = 8192; // Initial buffer size for reading files
+const BUFFER_CAPACITY: usize = 65536; // Increased from 8192 for better I/O performance
 pub(crate) const SMALL_FILE_THRESHOLD: u64 = 32 * 1024; // 32KB
 pub(crate) const LARGE_FILE_THRESHOLD: u64 = 10 * 1024 * 1024; // 10MB
 const MAX_LINES_WITHOUT_MATCH: usize = 100; // Stop reading after this many lines without a match
+
+/// A single ring buffer slot with reusable `String`.
+/// We store:
+///  - line_number: which file line this slot corresponds to
+///  - text: the actual line text (reused for the lifetime of the buffer slot)
+#[derive(Debug)]
+struct RingSlot {
+    line_number: usize,
+    text: String,
+}
 
 /// Handles file processing operations
 #[derive(Debug)]
 pub struct FileProcessor {
     matcher: PatternMatcher,
     metrics: MemoryMetrics,
+    context_before: usize,
+    context_after: usize,
 }
 
 impl FileProcessor {
     /// Creates a new FileProcessor with the given pattern matcher
-    pub fn new(matcher: PatternMatcher) -> Self {
+    pub fn new(matcher: PatternMatcher, context_before: usize, context_after: usize) -> Self {
         Self {
             matcher,
             metrics: MemoryMetrics::new(),
+            context_before,
+            context_after,
         }
     }
 
@@ -51,97 +65,177 @@ impl FileProcessor {
                 } else if size >= LARGE_FILE_THRESHOLD {
                     self.process_mmap_file(path)
                 } else {
-                    self.process_buffered_file(path)
+                    self.process_file_buffered(path)
                 }
             }
             Err(e) => {
                 warn!("Failed to get metadata for {}: {}", path.display(), e);
-                self.process_buffered_file(path)
+                self.process_file_buffered(path)
             }
         }
     }
 
-    /// Optimized processing for small files using direct string operations
-    fn process_small_file(&self, path: &Path) -> SearchResult<FileResult> {
-        trace!("Using small file processing for: {}", path.display());
-        let content = fs::read_to_string(path).map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => SearchError::file_not_found(path),
-            std::io::ErrorKind::PermissionDenied => SearchError::permission_denied(path),
-            _ => SearchError::IoError(e),
-        })?;
+    /// Collect "before context" lines from the ring buffer.
+    ///
+    /// buffer: the ring buffer of lines
+    /// ring_size: total capacity of the ring buffer
+    /// current_pos: index of the *current* line in the buffer
+    /// current_line_num: the line number for the *current* line
+    /// count: how many lines of context to retrieve
+    ///
+    /// Returns up to `count` lines `(line_num, text)` in ascending line-number order.
+    fn collect_context_lines(
+        buffer: &[RingSlot],
+        ring_size: usize,
+        current_pos: usize,
+        current_line_num: usize,
+        count: usize,
+    ) -> Vec<(usize, String)> {
+        // We'll store them in reverse, then flip at the end
+        // so we get ascending line numbers in the final result.
+        let mut result_rev = Vec::with_capacity(count);
 
-        // Record memory allocation
-        self.metrics.record_allocation(content.len() as u64);
+        // If there's no valid line at the current position (line_number == 0),
+        // we can't proceed, so just return empty.
+        if buffer[current_pos].line_number == 0 {
+            return Vec::new();
+        }
 
-        let mut matches = Vec::new();
-        let mut line_number = 0;
-        let mut last_match = 0;
+        // Each offset is how many lines "back" we go.
+        for offset in 1..=count {
+            // If subtracting offset goes below line #1, stop (file boundary).
+            let wanted_line_num = match current_line_num.checked_sub(offset) {
+                Some(n) if n >= 1 => n,
+                _ => break,
+            };
 
-        for line in content.lines() {
-            line_number += 1;
-            for (start, end) in self.matcher.find_matches(line) {
-                trace!("Found match at line {}: {}", line_number, line);
-                matches.push(Match {
-                    line_number,
-                    line_content: line.to_string(),
-                    start,
-                    end,
-                });
-                last_match = matches.len();
-            }
-            if line_number > MAX_LINES_WITHOUT_MATCH && last_match == 0 {
-                debug!(
-                    "No matches in first {} lines, skipping rest of file",
-                    MAX_LINES_WITHOUT_MATCH
-                );
+            // Because we're storing lines sequentially in the ring,
+            // we can directly compute the index for the wanted line:
+            let index = (ring_size + current_pos - offset) % ring_size;
+
+            // If the ring has overwritten old lines, they may no longer match
+            // the wanted_line_num. So we verify:
+            if buffer[index].line_number == wanted_line_num {
+                // Clone out (line_num, text) for final result
+                result_rev.push((wanted_line_num, buffer[index].text.clone()));
+            } else {
+                // If it's not the line we want, it means it's overwritten or
+                // we had a ring size too small for how far back we want to go.
+                // Just stop collecting—older lines are no longer valid.
                 break;
             }
         }
 
-        // Record memory deallocation
-        self.metrics.record_deallocation(content.len() as u64);
-
-        debug!("Found {} matches in file {}", matches.len(), path.display());
-        Ok(FileResult {
-            path: path.to_path_buf(),
-            matches,
-        })
+        // Reverse so final order is ascending by line number
+        result_rev.reverse();
+        result_rev
     }
 
-    /// Processing for medium-sized files using buffered reading
-    fn process_buffered_file(&self, path: &Path) -> SearchResult<FileResult> {
-        trace!("Using buffered file processing for: {}", path.display());
+    /// Process a small file using simple line-by-line reading
+    fn process_small_file(&self, path: &Path) -> SearchResult<FileResult> {
+        trace!("Using simple file processing for: {}", path.display());
         let file = File::open(path).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => SearchError::file_not_found(path),
             std::io::ErrorKind::PermissionDenied => SearchError::permission_denied(path),
             _ => SearchError::IoError(e),
         })?;
 
-        // Record buffer allocation
-        self.metrics.record_allocation(BUFFER_CAPACITY as u64);
-
-        let mut reader = BufReader::with_capacity(BUFFER_CAPACITY, file);
+        let mut reader = BufReader::new(file);
         let mut matches = Vec::new();
-        let mut line_buffer = String::with_capacity(256);
         let mut line_number = 0;
         let mut last_match = 0;
 
-        while reader.read_line(&mut line_buffer)? > 0 {
+        // Ring buffer for context lines
+        let ring_size = self.context_before + 1;
+        let mut ring_buffer: Vec<RingSlot> = Vec::with_capacity(ring_size);
+        for _ in 0..ring_size {
+            ring_buffer.push(RingSlot {
+                line_number: 0,
+                text: String::new(),
+            });
+        }
+
+        let mut ring_pos = 0;
+        let mut pending_match: Option<Match> = None;
+        let mut context_after_count = 0;
+
+        let mut line_buf = String::new();
+
+        // Process each line
+        loop {
+            line_buf.clear();
+            let bytes_read = reader.read_line(&mut line_buf)?;
+            if bytes_read == 0 {
+                break; // End of file
+            }
             line_number += 1;
-            for (start, end) in self.matcher.find_matches(&line_buffer) {
-                trace!(
-                    "Found match at line {}: {}",
+
+            // Store current line in ring buffer (reuse the allocated String)
+            {
+                let slot = &mut ring_buffer[ring_pos];
+                slot.line_number = line_number;
+                slot.text.clear();
+                slot.text.push_str(&line_buf);
+            }
+
+            // Save the ring buffer position that just got updated
+            let current_pos = ring_pos;
+            // Advance for next line
+            ring_pos = (ring_pos + 1) % ring_size;
+
+            // Handle any pending match's "after context"
+            if let Some(mut m) = pending_match.take() {
+                if context_after_count < self.context_after {
+                    m.context_after.push((line_number, line_buf.clone()));
+                    context_after_count += 1;
+                    pending_match = Some(m);
+                } else {
+                    matches.push(m);
+                }
+            }
+
+            // Check for matches in the current line
+            let line_matches = self.matcher.find_matches(&line_buf);
+            if !line_matches.is_empty() {
+                // Because multiple matches in the same line share the same context,
+                // we only collect "before context" once for that line
+                let before_context = Self::collect_context_lines(
+                    &ring_buffer,
+                    ring_size,
+                    current_pos,
                     line_number,
-                    line_buffer.trim()
+                    self.context_before,
                 );
-                matches.push(Match {
-                    line_number,
-                    line_content: line_buffer.clone(),
-                    start,
-                    end,
-                });
+
+                for (start, end) in line_matches {
+                    // If we had a pending match waiting for after-context,
+                    // we must finalize it before adding a new one for this line
+                    if let Some(m) = pending_match.take() {
+                        matches.push(m);
+                    }
+
+                    let m = Match {
+                        line_number,
+                        line_content: line_buf.clone(),
+                        start,
+                        end,
+                        context_before: before_context.clone(),
+                        context_after: Vec::new(),
+                    };
+
+                    // If we do want after-context, store it for future lines
+                    if self.context_after > 0 {
+                        pending_match = Some(m);
+                        context_after_count = 0;
+                    } else {
+                        // No after-context—store right away
+                        matches.push(m);
+                    }
+                }
+
                 last_match = line_number;
             }
+
             if line_number > MAX_LINES_WITHOUT_MATCH && last_match == 0 {
                 debug!(
                     "No matches in first {} lines, skipping rest of file",
@@ -149,11 +243,12 @@ impl FileProcessor {
                 );
                 break;
             }
-            line_buffer.clear();
         }
 
-        // Record buffer deallocation
-        self.metrics.record_deallocation(BUFFER_CAPACITY as u64);
+        // If we exit the loop with a pending match, push it now
+        if let Some(m) = pending_match {
+            matches.push(m);
+        }
 
         debug!("Found {} matches in file {}", matches.len(), path.display());
         Ok(FileResult {
@@ -162,66 +257,249 @@ impl FileProcessor {
         })
     }
 
-    /// Processing for large files using memory mapping and parallel pattern matching
+    /// Process a file using buffered reading
+    fn process_file_buffered(&self, path: &Path) -> SearchResult<FileResult> {
+        let file = File::open(path)?;
+        let mut reader = BufReader::with_capacity(BUFFER_CAPACITY, file);
+        let mut line_number: usize = 0;
+        let mut matches = Vec::new();
+
+        // Ring buffer for *before* context
+        // We only need `context_before + 1` slots:
+        //   - up to `context_before` lines + 1 slot for the current line
+        let ring_size = self.context_before + 1;
+        let mut ring_buffer: Vec<RingSlot> = Vec::with_capacity(ring_size);
+        for _ in 0..ring_size {
+            ring_buffer.push(RingSlot {
+                line_number: 0,
+                text: String::new(),
+            });
+        }
+
+        let mut ring_pos = 0;
+
+        // Variables for handling "after context"
+        let mut pending_match: Option<Match> = None;
+        let mut context_after_count = 0;
+
+        let mut line_buf = String::new();
+        let mut lines_without_match = 0;
+
+        // Read lines in a loop
+        loop {
+            line_buf.clear();
+            let bytes_read = reader.read_line(&mut line_buf)?;
+            if bytes_read == 0 {
+                break; // End of file
+            }
+            line_number += 1;
+
+            // Store current line in ring buffer (reuse the allocated String)
+            {
+                let slot = &mut ring_buffer[ring_pos];
+                slot.line_number = line_number;
+                slot.text.clear();
+                slot.text.push_str(&line_buf);
+            }
+
+            // Save the ring buffer position that just got updated
+            let current_pos = ring_pos;
+            // Advance for next line
+            ring_pos = (ring_pos + 1) % ring_size;
+
+            // 1) Handle any pending match's "after context"
+            if let Some(mut m) = pending_match.take() {
+                if context_after_count < self.context_after {
+                    // Still collecting after-context lines
+                    m.context_after.push((line_number, line_buf.clone()));
+                    context_after_count += 1;
+                    pending_match = Some(m);
+                } else {
+                    // We've satisfied the after-context requirement, store match
+                    matches.push(m);
+                }
+            }
+
+            // 2) Check for new matches in the *current* line
+            let line_matches = self.matcher.find_matches(&line_buf);
+            if !line_matches.is_empty() {
+                lines_without_match = 0;
+
+                // Because multiple matches in the same line share the same context,
+                // we only collect "before context" once for that line
+                let before_context = Self::collect_context_lines(
+                    &ring_buffer,
+                    ring_size,
+                    current_pos,
+                    line_number,
+                    self.context_before,
+                );
+
+                for (start, end) in line_matches {
+                    // If we had a pending match waiting for after-context,
+                    // we must finalize it before adding a new one for this line
+                    if let Some(m) = pending_match.take() {
+                        matches.push(m);
+                    }
+
+                    let m = Match {
+                        line_number,
+                        line_content: line_buf.clone(),
+                        start,
+                        end,
+                        context_before: before_context.clone(),
+                        context_after: Vec::new(),
+                    };
+
+                    // If we do want after-context, store it for future lines
+                    if self.context_after > 0 {
+                        pending_match = Some(m);
+                        context_after_count = 0;
+                    } else {
+                        // No after-context—store right away
+                        matches.push(m);
+                    }
+                }
+            } else {
+                lines_without_match += 1;
+                if lines_without_match >= MAX_LINES_WITHOUT_MATCH {
+                    debug!(
+                        "No matches found in {} consecutive lines, stopping early",
+                        MAX_LINES_WITHOUT_MATCH
+                    );
+                    break;
+                }
+            }
+        }
+
+        // If we exit the loop with a pending match, push it now
+        if let Some(m) = pending_match {
+            matches.push(m);
+        }
+
+        Ok(FileResult {
+            path: path.to_path_buf(),
+            matches,
+        })
+    }
+
+    /// Process a file using memory mapping
     fn process_mmap_file(&self, path: &Path) -> SearchResult<FileResult> {
-        trace!("Using memory-mapped processing for: {}", path.display());
+        trace!(
+            "Using memory-mapped file processing for: {}",
+            path.display()
+        );
         let file = File::open(path).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => SearchError::file_not_found(path),
             std::io::ErrorKind::PermissionDenied => SearchError::permission_denied(path),
             _ => SearchError::IoError(e),
         })?;
 
-        let metadata = file.metadata()?;
-        let file_size = metadata.len();
-
-        // Create memory map and record allocation
-        let mmap = unsafe { Mmap::map(&file) }.map_err(SearchError::IoError)?;
-        self.metrics.record_mmap(file_size);
-
-        // Convert to string, skipping invalid UTF-8 sequences
-        let content = String::from_utf8_lossy(&mmap);
-        let content_str = content.as_ref();
-
+        let mmap = unsafe { Mmap::map(&file)? };
         let mut matches = Vec::new();
-        let mut line_number = 1;
-        let mut start = 0;
+        let mut line_number = 0;
+        let mut last_match = 0;
 
-        // Process the content line by line
-        for (end, c) in content_str.char_indices() {
-            if c == '\n' {
-                let line = &content_str[start..end];
-                // Find matches in this line
-                let line_matches = self.matcher.find_matches(line);
-                // Add all matches from this line with the correct line number
-                for (match_start, match_end) in line_matches {
-                    matches.push(Match {
-                        line_number,
-                        line_content: line.to_string(),
-                        start: match_start,
-                        end: match_end,
-                    });
+        // Ring buffer for context lines
+        let ring_size = self.context_before + 1;
+        let mut ring_buffer: Vec<RingSlot> = Vec::with_capacity(ring_size);
+        for _ in 0..ring_size {
+            ring_buffer.push(RingSlot {
+                line_number: 0,
+                text: String::new(),
+            });
+        }
+
+        let mut ring_pos = 0;
+        let mut pending_match: Option<Match> = None;
+        let mut context_after_count = 0;
+
+        // Process each line
+        for line in mmap.split(|&b| b == b'\n') {
+            line_number += 1;
+
+            // Convert bytes to string, skipping invalid UTF-8
+            let line_str = String::from_utf8_lossy(line);
+
+            // Store current line in ring buffer (reuse the allocated String)
+            {
+                let slot = &mut ring_buffer[ring_pos];
+                slot.line_number = line_number;
+                slot.text.clear();
+                slot.text.push_str(&line_str);
+            }
+
+            // Save the ring buffer position that just got updated
+            let current_pos = ring_pos;
+            // Advance for next line
+            ring_pos = (ring_pos + 1) % ring_size;
+
+            // Handle any pending match's "after context"
+            if let Some(mut m) = pending_match.take() {
+                if context_after_count < self.context_after {
+                    m.context_after.push((line_number, line_str.to_string()));
+                    context_after_count += 1;
+                    pending_match = Some(m);
+                } else {
+                    matches.push(m);
                 }
-                start = end + 1;
-                line_number += 1;
             }
-        }
 
-        // Handle the last line if it doesn't end with a newline
-        if start < content_str.len() {
-            let line = &content_str[start..];
-            let line_matches = self.matcher.find_matches(line);
-            for (match_start, match_end) in line_matches {
-                matches.push(Match {
+            // Check for matches in the current line
+            let line_matches = self.matcher.find_matches(&line_str);
+            if !line_matches.is_empty() {
+                // Because multiple matches in the same line share the same context,
+                // we only collect "before context" once for that line
+                let before_context = Self::collect_context_lines(
+                    &ring_buffer,
+                    ring_size,
+                    current_pos,
                     line_number,
-                    line_content: line.to_string(),
-                    start: match_start,
-                    end: match_end,
-                });
+                    self.context_before,
+                );
+
+                for (start, end) in line_matches {
+                    // If we had a pending match waiting for after-context,
+                    // we must finalize it before adding a new one for this line
+                    if let Some(m) = pending_match.take() {
+                        matches.push(m);
+                    }
+
+                    let m = Match {
+                        line_number,
+                        line_content: line_str.to_string(),
+                        start,
+                        end,
+                        context_before: before_context.clone(),
+                        context_after: Vec::new(),
+                    };
+
+                    // If we do want after-context, store it for future lines
+                    if self.context_after > 0 {
+                        pending_match = Some(m);
+                        context_after_count = 0;
+                    } else {
+                        // No after-context—store right away
+                        matches.push(m);
+                    }
+                }
+
+                last_match = line_number;
+            }
+
+            if line_number > MAX_LINES_WITHOUT_MATCH && last_match == 0 {
+                debug!(
+                    "No matches in first {} lines, skipping rest of file",
+                    MAX_LINES_WITHOUT_MATCH
+                );
+                break;
             }
         }
 
-        // Record memory unmap
-        self.metrics.record_munmap(file_size);
+        // If we exit the loop with a pending match, push it now
+        if let Some(m) = pending_match {
+            matches.push(m);
+        }
 
         debug!("Found {} matches in file {}", matches.len(), path.display());
         Ok(FileResult {
@@ -254,7 +532,7 @@ mod tests {
 
         // Create a pattern matcher and processor
         let matcher = PatternMatcher::new(vec!["pattern_\\d+".to_string()]);
-        let processor = FileProcessor::new(matcher);
+        let processor = FileProcessor::new(matcher, 0, 0);
 
         // Process the file
         let result = processor.process_file(&file_path).unwrap();
@@ -321,7 +599,7 @@ mod tests {
 
         // Create a pattern matcher and processor
         let matcher = PatternMatcher::new(vec!["pattern_split".to_string()]);
-        let processor = FileProcessor::new(matcher);
+        let processor = FileProcessor::new(matcher, 0, 0);
 
         // Process the file
         let result = processor.process_file(&file_path).unwrap();
