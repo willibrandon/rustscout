@@ -23,6 +23,24 @@ fn create_test_files(
     Ok(())
 }
 
+fn create_large_test_file(dir: &tempfile::TempDir, size_mb: usize) -> std::io::Result<PathBuf> {
+    let file_path = dir.path().join("large_test.txt");
+    let mut file = File::create(&file_path)?;
+    let lines_needed = (size_mb * 1024 * 1024) / 100; // Approximate lines needed for target size
+    
+    for i in 0..lines_needed {
+        writeln!(
+            file,
+            "This is line {} with some searchable content: TODO implement feature XYZ\n\
+             Here's another line {} with different content: nothing special\n\
+             And a third line {} with a FIXME: need to optimize this",
+            i, i, i
+        )?;
+    }
+    
+    Ok(file_path)
+}
+
 fn bench_simple_pattern(c: &mut Criterion) {
     let dir = tempdir().unwrap();
     create_test_files(&dir, 10, 100).unwrap();
@@ -85,8 +103,8 @@ fn bench_repeated_pattern(c: &mut Criterion) {
     let patterns = [
         r"TODO",
         r"FIXME:.*bug.*line \d+",
-        r"TODO",                  // Repeated simple pattern
-        r"FIXME:.*bug.*line \d+", // Repeated regex pattern
+        r"TODO",  // Repeated simple pattern
+        r"FIXME:.*bug.*line \d+",  // Repeated regex pattern
     ];
 
     for (i, pattern) in patterns.iter().enumerate() {
@@ -144,11 +162,55 @@ fn bench_file_scaling(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_large_file(c: &mut Criterion) {
+    let dir = tempdir().unwrap();
+    let large_file = create_large_test_file(&dir, 20).unwrap(); // 20MB file
+
+    let mut group = c.benchmark_group("Large File Processing");
+    group.sample_size(10);
+
+    let config = SearchConfig {
+        pattern: String::from("TODO"),
+        root_path: PathBuf::from(dir.path()),
+        ignore_patterns: vec![],
+        file_extensions: None,
+        stats_only: false,
+        thread_count: NonZeroUsize::new(1).unwrap(),
+        log_level: "warn".to_string(),
+    };
+
+    group.bench_function("search_large_file", |b| {
+        b.iter(|| {
+            search(black_box(&config)).unwrap();
+        });
+    });
+
+    // Test regex pattern on large file
+    let regex_config = SearchConfig {
+        pattern: String::from(r"FIXME:.*optimize.*\d+"),
+        root_path: PathBuf::from(dir.path()),
+        ignore_patterns: vec![],
+        file_extensions: None,
+        stats_only: false,
+        thread_count: NonZeroUsize::new(1).unwrap(),
+        log_level: "warn".to_string(),
+    };
+
+    group.bench_function("search_large_file_regex", |b| {
+        b.iter(|| {
+            search(black_box(&regex_config)).unwrap();
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_simple_pattern,
     bench_regex_pattern,
     bench_repeated_pattern,
-    bench_file_scaling
+    bench_file_scaling,
+    bench_large_file
 );
-criterion_main!(benches);
+criterion_main!(benches); 
