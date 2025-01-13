@@ -2,6 +2,14 @@
 name = "rtrace_core"
 version = "0.1.0"
 edition = "2021"
+description = "High-performance, concurrent search library for Rust projects"
+license = "MIT"
+repository = "https://github.com/willibrandon/rtrace"
+documentation = "https://docs.rs/rtrace_core"
+readme = "../README.md"
+keywords = ["search", "concurrency", "regex", "parallel"]
+categories = ["command-line-utilities", "development-tools"]
+authors = ["Brandon Williams"]
 
 [dependencies]
 rayon = "1.8"

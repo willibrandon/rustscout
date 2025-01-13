@@ -1,148 +1,110 @@
-# RTrace 🚀
+# RTrace
 
-[![Crates.io](https://img.shields.io/crates/v/rtrace_cli.svg)](https://crates.io/crates/rtrace_cli)
-[![Build Status](https://github.com/willibrandon/rtrace/workflows/CI/badge.svg)](https://github.com/willibrandon/rtrace/actions)
-[![License](https://img.shields.io/crates/l/rtrace_cli.svg)](LICENSE)
+[![CI](https://github.com/willibrandon/rtrace/actions/workflows/ci.yml/badge.svg)](https://github.com/willibrandon/rtrace/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/willibrandon/rtrace/branch/main/graph/badge.svg)](https://codecov.io/gh/willibrandon/rtrace)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> Lightning-fast code search with smart pattern matching and parallel processing
+A high-performance, cross-platform CLI tool for searching and analyzing large codebases or text files. RTrace leverages Rust's concurrency features to provide fast, parallel search capabilities.
 
-RTrace is a modern code search tool written in Rust that delivers blazing-fast performance through intelligent pattern detection and adaptive parallel processing. It automatically optimizes search strategies based on file sizes and pattern complexity.
+## Features
 
-## ⚡ Performance
+- 🚀 **Concurrent File Scanning:** Automatically distributes scanning across multiple threads
+- 🎯 **File Type Filters:** Search specific file types (e.g., `*.rs`, `*.cs`, `*.fs`)
+- 🔍 **Regex-Based Search:** Fast pattern matching with regular expressions
+- 📊 **Result Summaries:** Detailed matches or high-level statistics
+- ⚙️ **Configurable Options:** Control threads, ignore patterns, and output format
+- 🖥️ **Cross-Platform:** Works on Windows, Linux, and macOS
 
-Recent benchmarks show significant performance improvements:
+## Installation
 
-### Pattern Matching Speed
-- **46% faster** for comment patterns
-- **39% faster** for simple patterns
-- **15% faster** for complex regex patterns
-
-### File Processing
-- **27% faster** for small codebases (10 files)
-- **16% faster** for medium projects (50 files)
-- **44% faster** parallel processing across all thread counts
-
-## 🚀 Quick Start
-
-### Installation
+### Using Cargo
 
 ```bash
-# Install from crates.io
 cargo install rtrace_cli
-
-# Or download pre-built binaries from releases
 ```
 
-### Basic Usage
+### From Source
 
 ```bash
-# Search for a pattern in current directory
-rtrace "TODO"
-
-# Search in specific directory with file extension filter
-rtrace "fn.*\(" --path src --ext rs
-
-# Search with ignore patterns
-rtrace "TODO" --ignore "target/**" --ignore ".git/**"
+git clone https://github.com/willibrandon/rtrace.git
+cd rtrace
+cargo build --release
 ```
 
-## ✨ Features
+The binary will be available at `target/release/rtrace_cli`.
 
-- **Smart Pattern Detection**: Automatically uses optimized search strategies for different pattern types
-- **Parallel Processing**: Efficiently utilizes all CPU cores with consistent performance scaling
-- **Adaptive Search**: Optimizes for both small and large files
-- **Rich Output**: Colored matches with line numbers and context
-- **Flexible Filtering**: File extension and ignore pattern support
-- **Memory Efficient**: Streaming processing for large files
+## Usage
 
-## 🔍 Advanced Usage
-
-### Pattern Types
-
-RTrace automatically detects pattern complexity and uses the most efficient search strategy:
-
+Basic search:
 ```bash
-# Simple literal search (fastest)
-rtrace "findThis"
-
-# Word boundary search
-rtrace "\bword\b"
-
-# Complex regex pattern
-rtrace "fn\s+\w+\s*\([^)]*\)"
+rtrace_cli --pattern "TODO|FIXME" --path ./src
 ```
 
-### File Filtering
-
+Search with specific file types:
 ```bash
-# Multiple file extensions
-rtrace "pattern" --ext rs,go,js
-
-# Complex ignore patterns
-rtrace "pattern" --ignore "**/*.min.js" --ignore "node_modules/**"
+rtrace_cli --pattern "fn.*main" --path ./src --extensions rs,toml
 ```
 
-### Performance Tuning
-
+Get only statistics:
 ```bash
-# Specify thread count for parallel processing
-rtrace "pattern" --threads 8
-
-# Statistics only mode for large searches
-rtrace "pattern" --stats-only
+rtrace_cli --pattern "unsafe" --path ./src --stats-only
 ```
 
-## 🔧 Configuration
-
-RTrace can be configured through command line flags or a config file:
-
-```toml
-# .rtrace.toml
-extensions = ["rs", "go", "js"]
-ignore_patterns = ["target/**", ".git/**"]
-thread_count = 8
+Control thread count:
+```bash
+rtrace_cli --pattern "error" --path ./logs --threads 8
 ```
 
-## 🤝 Contributing
+### Command Line Options
 
-We welcome contributions! See our [Contributing Guide](CONTRIBUTING.md) for details.
+- `--pattern <regex>`: Search pattern (regular expression)
+- `--path <dir>`: Directory to search in
+- `--threads <n>`: Number of threads to use (default: number of CPU cores)
+- `--ignore <pattern>`: Ignore files/directories matching pattern
+- `--stats-only`: Show only summary statistics
+- `--extensions <list>`: Comma-separated list of file extensions to search
 
-### Good First Issues
+## For .NET Developers
 
-- [ ] Add support for custom output formats
-- [ ] Implement file size-based buffer tuning
-- [ ] Add more test cases
+RTrace demonstrates several Rust concepts that parallel .NET patterns:
 
-## 📈 Benchmarks
+- **Concurrency:** Uses Rayon's parallel iterators (similar to .NET's Parallel.ForEach)
+- **Error Handling:** Result types (analogous to Try/Catch but more explicit)
+- **Modularity:** Workspace with multiple crates (similar to .NET solution with multiple projects)
 
-Detailed performance comparisons:
+## Development
 
-```
-Pattern Matching (μs)
-┌─────────────┬────────┬─────────┬──────────┐
-│ Pattern     │ Before │  After  │ Speedup  │
-├─────────────┼────────┼─────────┼──────────┤
-│ Simple      │   576  │   347   │   39%    │
-│ Complex     │   698  │   603   │   14%    │
-│ Comments    │   557  │   302   │   46%    │
-└─────────────┴────────┴─────────┴──────────┘
+### Project Structure
 
-File Processing (μs)
-┌─────────────┬────────┬─────────┬──────────┐
-│ Files       │ Before │  After  │ Speedup  │
-├─────────────┼────────┼─────────┼──────────┤
-│ 10 files    │   423  │   308   │   27%    │
-│ 50 files    │   807  │   675   │   16%    │
-│ 100 files   │  1160  │  1103   │    5%    │
-└─────────────┴────────┴─────────┴──────────┘
+- `rtrace_cli/`: Binary crate for the command-line interface
+- `rtrace_core/`: Library crate with the core search functionality
+
+### Building and Testing
+
+Run tests:
+```bash
+cargo test
 ```
 
-## ⭐ Support
+Run benchmarks:
+```bash
+cargo bench
+```
 
-If you find RTrace useful, please consider giving it a star on GitHub! Your support helps us improve the tool and add more features.
+Check formatting:
+```bash
+cargo fmt --all -- --check
+```
 
-## 📄 License
+Run linter:
+```bash
+cargo clippy
+```
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details. 
-
-Check out our [GitHub repository](https://github.com/willibrandon/rtrace) and consider giving us a star if you find RTrace useful! 
