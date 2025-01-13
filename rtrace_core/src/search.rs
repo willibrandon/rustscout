@@ -157,8 +157,7 @@ pub fn search(config: &Config) -> io::Result<SearchResult> {
     // Process large files with chunked parallel processing
     if !large_files.is_empty() {
         let chunk_size = (large_files.len() / rayon::current_num_threads())
-            .max(MIN_CHUNK_SIZE)
-            .min(MAX_CHUNK_SIZE);
+            .clamp(MIN_CHUNK_SIZE, MAX_CHUNK_SIZE);
 
         let results: Vec<_> = large_files
             .par_chunks(chunk_size)
