@@ -74,6 +74,21 @@ pub enum SearchError {
     /// Invalid file encoding error
     #[error("Invalid file encoding: {path}")]
     InvalidEncoding { path: PathBuf },
+
+    #[error("No undo directory available")]
+    NoUndoDir,
+
+    #[error("Serialization error: {0}")]
+    SerializationError(String),
+
+    #[error("Invalid undo ID: {0}")]
+    InvalidUndoId(usize),
+
+    #[error("Backup file not found: {0}")]
+    BackupNotFound(PathBuf),
+
+    #[error("Configuration error: {message}")]
+    ConfigError { message: String },
 }
 
 /// Type alias for Results that may return a SearchError
@@ -151,6 +166,12 @@ impl SearchError {
     /// Returns true if this is an InvalidEncoding error
     pub fn is_invalid_encoding(&self) -> bool {
         matches!(self, SearchError::InvalidEncoding { .. })
+    }
+
+    pub fn config_error<S: Into<String>>(message: S) -> Self {
+        SearchError::ConfigError {
+            message: message.into(),
+        }
     }
 }
 

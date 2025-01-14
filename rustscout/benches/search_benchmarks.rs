@@ -1,4 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use rustscout::replace::{FileReplacementPlan, ReplacementConfig, ReplacementSet, ReplacementTask};
 use rustscout::{search, SearchConfig};
 use std::fs::File;
 use std::io::Write;
@@ -310,11 +311,150 @@ fn bench_context_lines(c: &mut Criterion) -> std::io::Result<()> {
     Ok(())
 }
 
-criterion_group!(
+fn bench_replacement_small_file(c: &mut Criterion) -> std::io::Result<()> {
+    let dir = tempdir().unwrap();
+    let file_path = dir.path().join("test.txt");
+    let test_content = "Hello world! This is a test file.\n".repeat(100);
+
+    let mut group = c.benchmark_group("Small File Replacement");
+    group.sample_size(10);
+
+    let config = ReplacementConfig {
+        pattern: "Hello".to_string(),
+        replacement: "Hi".to_string(),
+        is_regex: false,
+        backup_enabled: false,
+        dry_run: false,
+        backup_dir: None,
+        preserve_metadata: true,
+    };
+
+    group.bench_function("replace_hello", |b| {
+        b.iter_batched(
+            // Setup: Reset file content before each iteration
+            || {
+                std::fs::write(&file_path, &test_content).unwrap();
+                file_path.clone()
+            },
+            // Benchmark: Perform the replacement
+            |path| {
+                let mut set = ReplacementSet::new(config.clone());
+                let mut plan = FileReplacementPlan::new(path.clone()).unwrap();
+                plan.add_replacement(ReplacementTask {
+                    file_path: path,
+                    original_range: (0, 4),
+                    replacement_text: "Hi".to_string(),
+                });
+                set.add_plan(plan);
+                set.apply().unwrap()
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+
+    group.finish();
+    Ok(())
+}
+
+fn bench_replacement_medium_file(c: &mut Criterion) -> std::io::Result<()> {
+    let dir = tempdir().unwrap();
+    let file_path = dir.path().join("test.txt");
+
+    // Create a medium-sized file (~1MB)
+    let mut content = String::with_capacity(1_000_000);
+    for i in 0..10_000 {
+        content.push_str(&format!("Line {} with some text to replace.\n", i));
+    }
+    std::fs::write(&file_path, content)?;
+
+    let mut group = c.benchmark_group("Medium File Replacement");
+    group.sample_size(10);
+
+    let config = ReplacementConfig {
+        pattern: "Line".to_string(),
+        replacement: "Entry".to_string(),
+        is_regex: false,
+        backup_enabled: false,
+        dry_run: false,
+        backup_dir: None,
+        preserve_metadata: true,
+    };
+
+    group.bench_function("replace_lines", |b| {
+        b.iter(|| {
+            let mut set = ReplacementSet::new(config.clone());
+            let mut plan = FileReplacementPlan::new(file_path.clone()).unwrap();
+            for i in 0..5 {
+                let start = i * 40; // Approximate line length
+                plan.add_replacement(ReplacementTask {
+                    file_path: file_path.clone(),
+                    original_range: (start, start + 4),
+                    replacement_text: "Entry".to_string(),
+                });
+            }
+            set.add_plan(plan);
+            set.apply().unwrap();
+        });
+    });
+
+    group.finish();
+    Ok(())
+}
+
+fn bench_replacement_large_file(c: &mut Criterion) -> std::io::Result<()> {
+    let dir = tempdir().unwrap();
+    let file_path = dir.path().join("test.txt");
+
+    // Create a large file (~10MB)
+    let mut content = String::with_capacity(10_000_000);
+    for i in 0..100_000 {
+        content.push_str(&format!("Line {} with pattern_123 and pattern_456\n", i));
+    }
+    std::fs::write(&file_path, content)?;
+
+    let mut group = c.benchmark_group("Large File Replacement");
+    group.sample_size(10);
+
+    let config = ReplacementConfig {
+        pattern: r"pattern_\d+".to_string(),
+        replacement: "replaced".to_string(),
+        is_regex: true,
+        backup_enabled: false,
+        dry_run: false,
+        backup_dir: None,
+        preserve_metadata: true,
+    };
+
+    group.bench_function("replace_patterns", |b| {
+        b.iter(|| {
+            let mut set = ReplacementSet::new(config.clone());
+            let mut plan = FileReplacementPlan::new(file_path.clone()).unwrap();
+            plan.add_replacement(ReplacementTask {
+                file_path: file_path.clone(),
+                original_range: (15, 25),
+                replacement_text: "replaced_1".to_string(),
+            });
+            plan.add_replacement(ReplacementTask {
+                file_path: file_path.clone(),
+                original_range: (30, 40),
+                replacement_text: "replaced_2".to_string(),
+            });
+            set.add_plan(plan);
+            set.apply().unwrap();
+        });
+    });
+
+    group.finish();
+    Ok(())
+}
+
+criterion_group! {
     name = benches;
     config = Criterion::default();
     targets = bench_simple_pattern, bench_regex_pattern, bench_repeated_pattern,
               bench_file_scaling, bench_large_file_search, bench_context_lines,
-              bench_multiple_patterns
-);
+              bench_multiple_patterns, bench_replacement_small_file,
+              bench_replacement_medium_file, bench_replacement_large_file
+}
+
 criterion_main!(benches);

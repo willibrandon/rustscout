@@ -1,8 +1,10 @@
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use colored::*;
 use rustscout::search::search;
-use rustscout::SearchConfig;
+use rustscout::{
+    FileReplacementPlan, ReplacementConfig, ReplacementSet, ReplacementTask, SearchConfig,
+};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use tracing::{info, Level};
@@ -11,48 +13,124 @@ use tracing_subscriber::{fmt, EnvFilter};
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Pattern to search for (supports regex)
-    pattern: String,
+    #[command(subcommand)]
+    command: Commands,
+}
 
-    /// Root directory to search in
-    #[arg(default_value = ".")]
-    root_path: PathBuf,
+#[derive(Subcommand)]
+enum Commands {
+    /// Search for patterns in files
+    Search {
+        /// Pattern to search for (supports regex)
+        pattern: String,
 
-    /// Comma-separated list of file extensions to search (e.g. "rs,toml")
-    #[arg(short, long)]
-    extensions: Option<String>,
+        /// Root directory to search in
+        #[arg(default_value = ".")]
+        root_path: PathBuf,
 
-    /// Additional patterns to ignore (supports .gitignore syntax)
-    #[arg(short, long)]
-    ignore: Vec<String>,
+        /// Comma-separated list of file extensions to search (e.g. "rs,toml")
+        #[arg(short, long)]
+        extensions: Option<String>,
 
-    /// Show only statistics, not individual matches
-    #[arg(long)]
-    stats_only: bool,
+        /// Additional patterns to ignore (supports .gitignore syntax)
+        #[arg(short, long)]
+        ignore: Vec<String>,
 
-    /// Number of threads to use for searching (default: number of CPU cores)
-    #[arg(short, long)]
-    threads: Option<usize>,
+        /// Show only statistics, not individual matches
+        #[arg(long)]
+        stats_only: bool,
 
-    /// Log level (trace, debug, info, warn, error)
-    #[arg(short, long, default_value = "warn")]
-    log_level: String,
+        /// Number of threads to use for searching (default: number of CPU cores)
+        #[arg(short, long)]
+        threads: Option<usize>,
 
-    /// Path to config file (default: .rustscout.yaml)
-    #[arg(short, long)]
-    config: Option<PathBuf>,
+        /// Log level (trace, debug, info, warn, error)
+        #[arg(short, long, default_value = "warn")]
+        log_level: String,
 
-    /// Number of context lines to show before each match
-    #[arg(short = 'B', long, default_value = "0")]
-    context_before: usize,
+        /// Path to config file (default: .rustscout.yaml)
+        #[arg(short, long)]
+        config: Option<PathBuf>,
 
-    /// Number of context lines to show after each match
-    #[arg(short = 'A', long, default_value = "0")]
-    context_after: usize,
+        /// Number of context lines to show before each match
+        #[arg(short = 'B', long, default_value = "0")]
+        context_before: usize,
 
-    /// Number of context lines to show before and after each match
-    #[arg(short = 'C', long)]
-    context: Option<usize>,
+        /// Number of context lines to show after each match
+        #[arg(short = 'A', long, default_value = "0")]
+        context_after: usize,
+
+        /// Number of context lines to show before and after each match
+        #[arg(short = 'C', long)]
+        context: Option<usize>,
+    },
+
+    /// Search and replace patterns in files
+    Replace {
+        /// Pattern to search for (supports regex)
+        pattern: String,
+
+        /// Files or directories to process
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+
+        /// The replacement text (for simple text)
+        #[arg(short = 'r', long = "replace")]
+        replacement: Option<String>,
+
+        /// The regex pattern to search for
+        #[arg(short = 'R', long = "regex")]
+        regex_pattern: Option<String>,
+
+        /// Use capture groups in the replacement (e.g. "$1, $2")
+        #[arg(short = 'g', long = "capture-groups")]
+        capture_groups: Option<String>,
+
+        /// Show what would be changed, but don't modify files
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+
+        /// Create backups of modified files
+        #[arg(short, long)]
+        backup: bool,
+
+        /// Directory for backups / temp files
+        #[arg(short = 'o', long = "output-dir")]
+        backup_dir: Option<PathBuf>,
+
+        /// Load additional config
+        #[arg(short = 'f', long = "config-file")]
+        config_file: Option<PathBuf>,
+
+        /// Show detailed preview of changes
+        #[arg(short = 'p', long)]
+        preview: bool,
+
+        /// Preserve file permissions and timestamps
+        #[arg(long)]
+        preserve: bool,
+
+        /// Additional patterns to ignore (supports .gitignore syntax)
+        #[arg(short, long)]
+        ignore: Vec<String>,
+
+        /// Number of threads to use (default: number of CPU cores)
+        #[arg(short, long)]
+        threads: Option<usize>,
+
+        /// Log level (trace, debug, info, warn, error)
+        #[arg(short, long, default_value = "warn")]
+        log_level: String,
+    },
+
+    /// List available undo operations
+    ListUndo,
+
+    /// Undo a previous replacement operation
+    Undo {
+        /// ID of the operation to undo (from list-undo)
+        id: usize,
+    },
 }
 
 fn init_logging(level: &str) -> Result<()> {
@@ -83,95 +161,279 @@ fn init_logging(level: &str) -> Result<()> {
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Load config file if it exists
-    let config = if let Some(config_path) = args.config.as_deref() {
-        SearchConfig::load_from(Some(config_path))?
-    } else {
-        SearchConfig {
-            patterns: vec![args.pattern.clone()],
-            pattern: args.pattern.clone(),
-            root_path: args.root_path.clone(),
-            file_extensions: args
-                .extensions
-                .as_ref()
-                .map(|s| s.split(',').map(String::from).collect()),
-            ignore_patterns: args.ignore.clone(),
-            stats_only: args.stats_only,
-            thread_count: NonZeroUsize::new(args.threads.unwrap_or_else(num_cpus::get))
-                .expect("Thread count cannot be zero"),
-            log_level: args.log_level.clone(),
-            context_before: args.context.unwrap_or(args.context_before),
-            context_after: args.context.unwrap_or(args.context_after),
-        }
-    };
+    match args.command {
+        Commands::Search {
+            pattern,
+            root_path,
+            extensions,
+            ignore,
+            stats_only,
+            threads,
+            log_level,
+            config,
+            context_before,
+            context_after,
+            context,
+        } => {
+            init_logging(&log_level)?;
 
-    // Initialize logging with the configured level
-    init_logging(&config.log_level)?;
+            // Set up thread pool if specified
+            if let Some(threads) = threads {
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build_global()?;
+            }
 
-    info!("Starting rustscout-cli with pattern: {}", config.pattern);
-
-    // Set up thread pool if specified
-    if config.thread_count.get() != num_cpus::get() {
-        info!("Setting thread pool size to {}", config.thread_count);
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(config.thread_count.get())
-            .build_global()?;
-    }
-
-    info!("Searching with config: {:?}", config);
-    let result = search(&config)?;
-
-    if config.stats_only {
-        println!(
-            "Found {} matches in {} files",
-            result.total_matches.to_string().green(),
-            result.files_with_matches.to_string().green()
-        );
-    } else {
-        for file_result in result.file_results {
-            println!(
-                "\n{}: {} matches",
-                file_result.path.display().to_string().blue(),
-                file_result.matches.len().to_string().green()
-            );
-
-            for m in file_result.matches {
-                // Print context before
-                for (line_num, line) in &m.context_before {
-                    println!("{}: {}", line_num.to_string().yellow(), line);
+            // Create search config
+            let config = if let Some(config_path) = config.as_deref() {
+                SearchConfig::load_from(Some(config_path))?
+            } else {
+                SearchConfig {
+                    patterns: vec![pattern.clone()],
+                    pattern,
+                    root_path,
+                    file_extensions: extensions
+                        .as_ref()
+                        .map(|s| s.split(',').map(String::from).collect()),
+                    ignore_patterns: ignore,
+                    stats_only,
+                    thread_count: NonZeroUsize::new(threads.unwrap_or_else(num_cpus::get))
+                        .expect("Thread count cannot be zero"),
+                    log_level,
+                    context_before: context.unwrap_or(context_before),
+                    context_after: context.unwrap_or(context_after),
                 }
+            };
 
-                // Print the match
-                let line_content = m.line_content.trim();
-                let before = &line_content[..m.start];
-                let matched = &line_content[m.start..m.end];
-                let after = &line_content[m.end..];
+            // Perform search
+            let result = search(&config)?;
+
+            // Display results
+            if config.stats_only {
+                println!(
+                    "Found {} matches in {} files",
+                    result.total_matches.to_string().green(),
+                    result.files_with_matches.to_string().green()
+                );
+            } else {
+                for file_result in result.file_results {
+                    println!(
+                        "\n{}: {} matches",
+                        file_result.path.display().to_string().blue(),
+                        file_result.matches.len().to_string().green()
+                    );
+
+                    for m in file_result.matches {
+                        // Print context before
+                        for (line_num, line) in &m.context_before {
+                            println!("{}: {}", line_num.to_string().yellow(), line);
+                        }
+
+                        // Print the match
+                        let line_content = m.line_content.trim();
+                        let before = &line_content[..m.start];
+                        let matched = &line_content[m.start..m.end];
+                        let after = &line_content[m.end..];
+
+                        println!(
+                            "{}: {}{}{}",
+                            m.line_number.to_string().yellow(),
+                            before,
+                            matched.red(),
+                            after
+                        );
+
+                        // Print context after
+                        for (line_num, line) in &m.context_after {
+                            println!("{}: {}", line_num.to_string().yellow(), line);
+                        }
+
+                        // Print separator between matches if there are context lines
+                        if !m.context_before.is_empty() || !m.context_after.is_empty() {
+                            println!("--");
+                        }
+                    }
+                }
 
                 println!(
-                    "{}: {}{}{}",
-                    m.line_number.to_string().yellow(),
-                    before,
-                    matched.red(),
-                    after
+                    "\nTotal: {} matches in {} files",
+                    result.total_matches.to_string().green(),
+                    result.files_with_matches.to_string().green()
                 );
+            }
+        }
 
-                // Print context after
-                for (line_num, line) in &m.context_after {
-                    println!("{}: {}", line_num.to_string().yellow(), line);
+        Commands::Replace {
+            pattern,
+            files,
+            replacement,
+            regex_pattern,
+            capture_groups,
+            dry_run,
+            backup,
+            backup_dir,
+            config_file,
+            preview,
+            preserve,
+            ignore: _,
+            threads,
+            log_level,
+        } => {
+            init_logging(&log_level)?;
+
+            // Set up thread pool if specified
+            if let Some(threads) = threads {
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .build_global()?;
+            }
+
+            let mut config = if let Some(path) = config_file {
+                ReplacementConfig::load_from(&path)?
+            } else {
+                ReplacementConfig {
+                    pattern: pattern.clone(),
+                    replacement: replacement
+                        .as_ref()
+                        .map(|s| s.to_string())
+                        .unwrap_or_default(),
+                    is_regex: regex_pattern.is_some(),
+                    backup_enabled: backup,
+                    dry_run,
+                    backup_dir: backup_dir.clone(),
+                    preserve_metadata: preserve,
+                    capture_groups: capture_groups.clone(),
+                }
+            };
+
+            // CLI options take precedence over config file
+            config.merge_with_cli(ReplacementConfig {
+                pattern: pattern.clone(),
+                replacement: replacement
+                    .as_ref()
+                    .map(|s| s.to_string())
+                    .unwrap_or_default(),
+                is_regex: regex_pattern.is_some(),
+                backup_enabled: backup,
+                dry_run,
+                backup_dir,
+                preserve_metadata: preserve,
+                capture_groups,
+            });
+
+            let search_pattern = regex_pattern.as_ref().unwrap_or(&pattern).clone();
+
+            let search_config = SearchConfig {
+                patterns: vec![search_pattern.clone()],
+                pattern: search_pattern,
+                root_path: files[0].clone(),
+                file_extensions: None,
+                ignore_patterns: vec![],
+                stats_only: false,
+                thread_count: NonZeroUsize::new(threads.unwrap_or_else(num_cpus::get))
+                    .expect("Thread count cannot be zero"),
+                log_level: "warn".to_string(),
+                context_before: 0,
+                context_after: 0,
+            };
+
+            // Perform search
+            let result = search(&search_config)?;
+
+            let mut replacement_set = ReplacementSet::new(config.clone());
+
+            // Create replacement plans from search results
+            for file_result in &result.file_results {
+                let mut plan = FileReplacementPlan::new(file_result.path.clone())?;
+
+                for m in &file_result.matches {
+                    plan.add_replacement(ReplacementTask::new(
+                        file_result.path.clone(),
+                        (m.start, m.end),
+                        replacement
+                            .as_ref()
+                            .map(|s| s.to_string())
+                            .unwrap_or_default(),
+                        config.clone(),
+                    ));
                 }
 
-                // Print separator between matches if there are context lines
-                if !m.context_before.is_empty() || !m.context_after.is_empty() {
-                    println!("--");
+                replacement_set.add_plan(plan);
+            }
+
+            // Show preview if requested
+            if preview {
+                println!("\nPreview of changes:");
+                for preview in replacement_set.preview()? {
+                    println!(
+                        "\n{}: {} changes",
+                        preview.file_path.display().to_string().blue(),
+                        preview.original_lines.len().to_string().green()
+                    );
+
+                    for i in 0..preview.original_lines.len() {
+                        println!(
+                            "{}: {}",
+                            preview.line_numbers[i].to_string().yellow(),
+                            preview.original_lines[i].red()
+                        );
+                        println!(
+                            "{}: {}",
+                            preview.line_numbers[i].to_string().yellow(),
+                            preview.new_lines[i].green()
+                        );
+                        println!("--");
+                    }
+                }
+
+                if !dry_run {
+                    print!("Apply these changes? [y/N] ");
+                    std::io::Write::flush(&mut std::io::stdout())?;
+                    let mut response = String::new();
+                    std::io::stdin().read_line(&mut response)?;
+                    if !response.trim().eq_ignore_ascii_case("y") {
+                        println!("Aborting.");
+                        return Ok(());
+                    }
+                }
+            }
+
+            // Apply replacements with progress reporting
+            if dry_run {
+                println!("\nDry run - no files will be modified");
+            }
+            let undo_metadata = replacement_set.apply_with_progress()?;
+
+            println!(
+                "\nReplaced {} occurrences in {} files",
+                result.total_matches.to_string().green(),
+                result.files_with_matches.to_string().green()
+            );
+
+            if !dry_run && !undo_metadata.is_empty() {
+                println!("\nTo undo these changes later, use:");
+                println!("  rustscout list-undo    # to see available undo operations");
+                println!("  rustscout undo <id>    # to undo this operation");
+            }
+        }
+
+        Commands::ListUndo => {
+            let operations = ReplacementSet::list_undo_operations()?;
+            if operations.is_empty() {
+                println!("No undo operations available");
+            } else {
+                println!("Available undo operations:");
+                for (i, (desc, _)) in operations.iter().enumerate() {
+                    println!("[{}] {}", i.to_string().yellow(), desc);
                 }
             }
         }
 
-        println!(
-            "\nTotal: {} matches in {} files",
-            result.total_matches.to_string().green(),
-            result.files_with_matches.to_string().green()
-        );
+        Commands::Undo { id } => {
+            println!("Undoing operation {}...", id);
+            ReplacementSet::undo_by_id(id)?;
+            println!("Undo complete");
+        }
     }
 
     Ok(())
