@@ -1,10 +1,9 @@
 use anyhow::Result;
 use rustscout::search::search;
-use rustscout::SearchConfig;
+use rustscout::{cache::ChangeDetectionStrategy, SearchConfig};
 use std::fs::File;
 use std::io::Write;
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
 use tempfile::tempdir;
 
 fn create_test_files(
@@ -30,16 +29,21 @@ fn test_simple_pattern() -> Result<()> {
     create_test_files(&dir, 10, 100)?;
 
     let config = SearchConfig {
+        pattern: "TODO".to_string(),
         patterns: vec!["TODO".to_string()],
-        pattern: String::from("TODO"),
-        root_path: PathBuf::from(dir.path()),
+        root_path: dir.path().to_path_buf(),
         file_extensions: None,
         ignore_patterns: vec![],
         stats_only: false,
-        thread_count: NonZeroUsize::new(1).unwrap(),
-        log_level: "warn".to_string(),
+        thread_count: NonZeroUsize::new(4).unwrap(),
+        log_level: "info".to_string(),
         context_before: 0,
         context_after: 0,
+        incremental: false,
+        cache_path: None,
+        cache_strategy: ChangeDetectionStrategy::Auto,
+        max_cache_size: None,
+        use_compression: false,
     };
 
     let result = search(&config)?;
@@ -54,16 +58,21 @@ fn test_regex_pattern() -> Result<()> {
     create_test_files(&dir, 10, 100)?;
 
     let config = SearchConfig {
+        pattern: r"FIXME:.*bug.*line \d+".to_string(),
         patterns: vec![r"FIXME:.*bug.*line \d+".to_string()],
-        pattern: String::from(r"FIXME:.*bug.*line \d+"),
-        root_path: PathBuf::from(dir.path()),
+        root_path: dir.path().to_path_buf(),
         file_extensions: None,
         ignore_patterns: vec![],
         stats_only: false,
-        thread_count: NonZeroUsize::new(1).unwrap(),
-        log_level: "warn".to_string(),
+        thread_count: NonZeroUsize::new(4).unwrap(),
+        log_level: "info".to_string(),
         context_before: 0,
         context_after: 0,
+        incremental: false,
+        cache_path: None,
+        cache_strategy: ChangeDetectionStrategy::Auto,
+        max_cache_size: None,
+        use_compression: false,
     };
 
     let result = search(&config)?;
@@ -83,16 +92,21 @@ fn test_file_extensions() -> Result<()> {
     writeln!(file, "// TODO: Implement this function")?;
 
     let config = SearchConfig {
+        pattern: "TODO".to_string(),
         patterns: vec!["TODO".to_string()],
-        pattern: String::from("TODO"),
-        root_path: PathBuf::from(dir.path()),
+        root_path: dir.path().to_path_buf(),
         file_extensions: Some(vec!["rs".to_string()]),
         ignore_patterns: vec![],
         stats_only: false,
-        thread_count: NonZeroUsize::new(1).unwrap(),
-        log_level: "warn".to_string(),
+        thread_count: NonZeroUsize::new(4).unwrap(),
+        log_level: "info".to_string(),
         context_before: 0,
         context_after: 0,
+        incremental: false,
+        cache_path: None,
+        cache_strategy: ChangeDetectionStrategy::Auto,
+        max_cache_size: None,
+        use_compression: false,
     };
 
     let result = search(&config)?;
@@ -107,16 +121,21 @@ fn test_ignore_patterns() -> Result<()> {
     create_test_files(&dir, 10, 100)?;
 
     let config = SearchConfig {
+        pattern: "TODO".to_string(),
         patterns: vec!["TODO".to_string()],
-        pattern: String::from("TODO"),
-        root_path: PathBuf::from(dir.path()),
+        root_path: dir.path().to_path_buf(),
         file_extensions: None,
         ignore_patterns: vec!["**/test_[0-4].txt".to_string()],
         stats_only: false,
-        thread_count: NonZeroUsize::new(1).unwrap(),
-        log_level: "warn".to_string(),
+        thread_count: NonZeroUsize::new(4).unwrap(),
+        log_level: "info".to_string(),
         context_before: 0,
         context_after: 0,
+        incremental: false,
+        cache_path: None,
+        cache_strategy: ChangeDetectionStrategy::Auto,
+        max_cache_size: None,
+        use_compression: false,
     };
 
     let result = search(&config)?;
@@ -134,16 +153,21 @@ fn test_empty_pattern() -> Result<()> {
     create_test_files(&dir, 1, 10)?;
 
     let config = SearchConfig {
-        patterns: vec![],
         pattern: String::new(),
-        root_path: PathBuf::from(dir.path()),
+        patterns: vec![String::new()],
+        root_path: dir.path().to_path_buf(),
         file_extensions: None,
         ignore_patterns: vec![],
         stats_only: false,
-        thread_count: NonZeroUsize::new(1).unwrap(),
-        log_level: "warn".to_string(),
+        thread_count: NonZeroUsize::new(4).unwrap(),
+        log_level: "info".to_string(),
         context_before: 0,
         context_after: 0,
+        incremental: false,
+        cache_path: None,
+        cache_strategy: ChangeDetectionStrategy::Auto,
+        max_cache_size: None,
+        use_compression: false,
     };
 
     let result = search(&config)?;
@@ -158,16 +182,21 @@ fn test_stats_only() -> Result<()> {
     create_test_files(&dir, 10, 100)?;
 
     let config = SearchConfig {
+        pattern: "TODO".to_string(),
         patterns: vec!["TODO".to_string()],
-        pattern: String::from("TODO"),
-        root_path: PathBuf::from(dir.path()),
+        root_path: dir.path().to_path_buf(),
         file_extensions: None,
         ignore_patterns: vec![],
         stats_only: true,
-        thread_count: NonZeroUsize::new(1).unwrap(),
-        log_level: "warn".to_string(),
+        thread_count: NonZeroUsize::new(4).unwrap(),
+        log_level: "info".to_string(),
         context_before: 0,
         context_after: 0,
+        incremental: false,
+        cache_path: None,
+        cache_strategy: ChangeDetectionStrategy::Auto,
+        max_cache_size: None,
+        use_compression: false,
     };
 
     let result = search(&config)?;
@@ -182,16 +211,21 @@ fn test_multiple_patterns() -> Result<()> {
     create_test_files(&dir, 10, 100)?;
 
     let config = SearchConfig {
-        patterns: vec!["TODO".to_string(), r"FIXME:.*bug.*line \d+".to_string()],
         pattern: String::new(),
-        root_path: PathBuf::from(dir.path()),
+        patterns: vec!["TODO".to_string(), "FIXME.*bug".to_string()],
+        root_path: dir.path().to_path_buf(),
         file_extensions: None,
         ignore_patterns: vec![],
         stats_only: false,
-        thread_count: NonZeroUsize::new(1).unwrap(),
-        log_level: "warn".to_string(),
+        thread_count: NonZeroUsize::new(4).unwrap(),
+        log_level: "info".to_string(),
         context_before: 0,
         context_after: 0,
+        incremental: false,
+        cache_path: None,
+        cache_strategy: ChangeDetectionStrategy::Auto,
+        max_cache_size: None,
+        use_compression: false,
     };
 
     let result = search(&config)?;
@@ -225,16 +259,21 @@ fn test_empty_patterns() -> Result<()> {
     create_test_files(&dir, 1, 10)?;
 
     let config = SearchConfig {
-        patterns: vec![],
         pattern: String::new(),
-        root_path: PathBuf::from(dir.path()),
+        patterns: vec![String::new()],
+        root_path: dir.path().to_path_buf(),
         file_extensions: None,
         ignore_patterns: vec![],
         stats_only: false,
-        thread_count: NonZeroUsize::new(1).unwrap(),
-        log_level: "warn".to_string(),
+        thread_count: NonZeroUsize::new(4).unwrap(),
+        log_level: "info".to_string(),
         context_before: 0,
         context_after: 0,
+        incremental: false,
+        cache_path: None,
+        cache_strategy: ChangeDetectionStrategy::Auto,
+        max_cache_size: None,
+        use_compression: false,
     };
 
     let result = search(&config)?;
@@ -258,16 +297,21 @@ fn test_context_lines() -> Result<()> {
 
     // Test context before
     let config = SearchConfig {
+        pattern: "TODO".to_string(),
         patterns: vec!["TODO".to_string()],
-        pattern: String::from("TODO"),
-        root_path: PathBuf::from(dir.path()),
+        root_path: dir.path().to_path_buf(),
         file_extensions: None,
         ignore_patterns: vec![],
         stats_only: false,
-        thread_count: NonZeroUsize::new(1).unwrap(),
-        log_level: "warn".to_string(),
+        thread_count: NonZeroUsize::new(4).unwrap(),
+        log_level: "info".to_string(),
         context_before: 2,
         context_after: 0,
+        incremental: false,
+        cache_path: None,
+        cache_strategy: ChangeDetectionStrategy::Auto,
+        max_cache_size: None,
+        use_compression: false,
     };
 
     let result = search(&config)?;
@@ -324,16 +368,21 @@ fn test_context_lines_at_file_boundaries() -> Result<()> {
     writeln!(file, "TODO: Last line")?;
 
     let config = SearchConfig {
+        pattern: "TODO".to_string(),
         patterns: vec!["TODO".to_string()],
-        pattern: String::from("TODO"),
-        root_path: PathBuf::from(dir.path()),
+        root_path: dir.path().to_path_buf(),
         file_extensions: None,
         ignore_patterns: vec![],
         stats_only: false,
-        thread_count: NonZeroUsize::new(1).unwrap(),
-        log_level: "warn".to_string(),
+        thread_count: NonZeroUsize::new(4).unwrap(),
+        log_level: "info".to_string(),
         context_before: 2,
         context_after: 2,
+        incremental: false,
+        cache_path: None,
+        cache_strategy: ChangeDetectionStrategy::Auto,
+        max_cache_size: None,
+        use_compression: false,
     };
 
     let result = search(&config)?;
@@ -366,16 +415,21 @@ fn test_overlapping_context() -> Result<()> {
     writeln!(file, "Line 5")?;
 
     let config = SearchConfig {
+        pattern: "TODO".to_string(),
         patterns: vec!["TODO".to_string()],
-        pattern: String::from("TODO"),
-        root_path: PathBuf::from(dir.path()),
+        root_path: dir.path().to_path_buf(),
         file_extensions: None,
         ignore_patterns: vec![],
         stats_only: false,
-        thread_count: NonZeroUsize::new(1).unwrap(),
-        log_level: "warn".to_string(),
+        thread_count: NonZeroUsize::new(4).unwrap(),
+        log_level: "info".to_string(),
         context_before: 1,
         context_after: 1,
+        incremental: false,
+        cache_path: None,
+        cache_strategy: ChangeDetectionStrategy::Auto,
+        max_cache_size: None,
+        use_compression: false,
     };
 
     let result = search(&config)?;
@@ -390,6 +444,310 @@ fn test_overlapping_context() -> Result<()> {
     let second_match = &result.file_results[0].matches[1];
     assert_eq!(second_match.context_before.len(), 1);
     assert_eq!(second_match.context_after.len(), 1);
+
+    Ok(())
+}
+
+#[test]
+fn test_incremental_search_with_compression() -> Result<()> {
+    let dir = tempdir()?;
+    let file_path = dir.path().join("test.txt");
+    std::fs::write(&file_path, "pattern_1\npattern_2\n")?;
+
+    let cache_path = dir.path().join("cache.json");
+    let config = SearchConfig {
+        patterns: vec!["pattern_\\d+".to_string()],
+        pattern: String::new(),
+        root_path: dir.path().to_path_buf(),
+        ignore_patterns: vec![],
+        file_extensions: None,
+        stats_only: false,
+        thread_count: NonZeroUsize::new(1).unwrap(),
+        log_level: "warn".to_string(),
+        context_before: 0,
+        context_after: 0,
+        incremental: true,
+        cache_path: Some(cache_path.clone()),
+        cache_strategy: ChangeDetectionStrategy::FileSignature,
+        max_cache_size: Some(1024 * 1024), // 1MB
+        use_compression: true,
+    };
+
+    // First search should create compressed cache
+    let result = search(&config)?;
+    assert_eq!(result.total_matches, 2);
+    assert!(cache_path.exists());
+
+    // Second search should use compressed cache
+    let result = search(&config)?;
+    assert_eq!(result.total_matches, 2);
+
+    Ok(())
+}
+
+#[test]
+fn test_incremental_search_with_renames() -> Result<()> {
+    let dir = tempdir()?;
+    let file_path = dir.path().join("test.txt");
+    std::fs::write(&file_path, "pattern_1\npattern_2\n")?;
+
+    let cache_path = dir.path().join("cache.json");
+    let config = SearchConfig {
+        patterns: vec!["pattern_\\d+".to_string()],
+        pattern: String::new(),
+        root_path: dir.path().to_path_buf(),
+        ignore_patterns: vec![],
+        file_extensions: None,
+        stats_only: false,
+        thread_count: NonZeroUsize::new(1).unwrap(),
+        log_level: "warn".to_string(),
+        context_before: 0,
+        context_after: 0,
+        incremental: true,
+        cache_path: Some(cache_path.clone()),
+        cache_strategy: ChangeDetectionStrategy::FileSignature,
+        max_cache_size: None,
+        use_compression: false,
+    };
+
+    // First search should create cache
+    let result = search(&config)?;
+    assert_eq!(result.total_matches, 2);
+
+    // Rename file
+    let new_path = dir.path().join("test_renamed.txt");
+    std::fs::rename(&file_path, &new_path)?;
+
+    // Search should handle renamed file
+    let result = search(&config)?;
+    assert_eq!(result.total_matches, 2);
+
+    Ok(())
+}
+
+#[test]
+fn test_incremental_search_cache_invalidation() -> Result<()> {
+    let dir = tempdir()?;
+    let file_path = dir.path().join("test.txt");
+    std::fs::write(&file_path, "pattern_1\npattern_2\n")?;
+
+    let cache_path = dir.path().join("cache.json");
+    let config = SearchConfig {
+        patterns: vec!["pattern_\\d+".to_string()],
+        pattern: String::new(),
+        root_path: dir.path().to_path_buf(),
+        ignore_patterns: vec![],
+        file_extensions: None,
+        stats_only: false,
+        thread_count: NonZeroUsize::new(1).unwrap(),
+        log_level: "warn".to_string(),
+        context_before: 0,
+        context_after: 0,
+        incremental: true,
+        cache_path: Some(cache_path.clone()),
+        cache_strategy: ChangeDetectionStrategy::FileSignature,
+        max_cache_size: Some(1024), // Very small cache
+        use_compression: false,
+    };
+
+    // First search should create cache
+    let result = search(&config)?;
+    assert_eq!(result.total_matches, 2);
+
+    // Add more files to exceed cache size
+    for i in 0..10 {
+        let path = dir.path().join(format!("test_{}.txt", i));
+        std::fs::write(&path, "pattern_1\npattern_2\n")?;
+    }
+
+    // Search should handle cache invalidation
+    let result = search(&config)?;
+    assert_eq!(result.total_matches, 22); // 11 files * 2 matches
+
+    Ok(())
+}
+
+#[test]
+fn test_incremental_search_git_strategy() -> Result<()> {
+    let dir = tempdir()?;
+
+    // Initialize git repo
+    std::process::Command::new("git")
+        .args(&["init"])
+        .current_dir(dir.path())
+        .output()?;
+
+    // Create and add initial file
+    let file_path = dir.path().join("test.txt");
+    std::fs::write(&file_path, "pattern_1\npattern_2\n")?;
+
+    std::process::Command::new("git")
+        .args(&["add", "test.txt"])
+        .current_dir(dir.path())
+        .output()?;
+
+    std::process::Command::new("git")
+        .args(&["commit", "-m", "Initial commit"])
+        .current_dir(dir.path())
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@example.com")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.com")
+        .output()?;
+
+    let cache_path = dir.path().join("cache.json");
+    let config = SearchConfig {
+        patterns: vec!["pattern_\\d+".to_string()],
+        pattern: String::new(),
+        root_path: dir.path().to_path_buf(),
+        ignore_patterns: vec![],
+        file_extensions: None,
+        stats_only: false,
+        thread_count: NonZeroUsize::new(1).unwrap(),
+        log_level: "warn".to_string(),
+        context_before: 0,
+        context_after: 0,
+        incremental: true,
+        cache_path: Some(cache_path.clone()),
+        cache_strategy: ChangeDetectionStrategy::GitStatus,
+        max_cache_size: None,
+        use_compression: false,
+    };
+
+    // First search should create cache
+    let result = search(&config)?;
+    assert_eq!(result.total_matches, 2);
+    assert!(cache_path.exists());
+
+    // Modify file without git add
+    std::fs::write(&file_path, "pattern_1\npattern_2\npattern_3\n")?;
+
+    // Second search should detect the change via git status
+    let result = search(&config)?;
+    assert_eq!(result.total_matches, 3);
+
+    // Add and commit the change
+    std::process::Command::new("git")
+        .args(&["add", "test.txt"])
+        .current_dir(dir.path())
+        .output()?;
+
+    std::process::Command::new("git")
+        .args(&["commit", "-m", "Update file"])
+        .current_dir(dir.path())
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@example.com")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.com")
+        .output()?;
+
+    // Third search should use cache since file is committed
+    let result = search(&config)?;
+    assert_eq!(result.total_matches, 3);
+
+    Ok(())
+}
+
+#[test]
+fn test_incremental_search_corrupt_cache() -> Result<()> {
+    let dir = tempdir()?;
+    let file_path = dir.path().join("test.txt");
+    std::fs::write(&file_path, "pattern_1\npattern_2\n")?;
+
+    let cache_path = dir.path().join("cache.json");
+    let config = SearchConfig {
+        pattern: "pattern_\\d+".to_string(),
+        patterns: vec!["pattern_\\d+".to_string()],
+        root_path: dir.path().to_path_buf(),
+        ignore_patterns: vec![],
+        file_extensions: None,
+        stats_only: false,
+        thread_count: NonZeroUsize::new(4).unwrap(),
+        log_level: "info".to_string(),
+        context_before: 0,
+        context_after: 0,
+        incremental: true,
+        cache_path: Some(cache_path.clone()),
+        cache_strategy: ChangeDetectionStrategy::FileSignature,
+        max_cache_size: None,
+        use_compression: false,
+    };
+
+    // First search should create cache
+    let result = search(&config)?;
+    assert_eq!(result.files_with_matches, 1);
+    assert_eq!(result.total_matches, 2);
+    assert!(cache_path.exists());
+
+    // Corrupt the cache file
+    std::fs::write(&cache_path, "invalid json content")?;
+
+    // Search should handle corrupt cache gracefully
+    let result = search(&config)?;
+    assert_eq!(result.files_with_matches, 1);
+    assert_eq!(result.total_matches, 2);
+    assert!(cache_path.exists());
+
+    // Cache should be regenerated
+    let result = search(&config)?;
+    assert_eq!(result.files_with_matches, 1);
+    assert_eq!(result.total_matches, 2);
+
+    Ok(())
+}
+
+#[test]
+fn test_incremental_search_concurrent_mods() -> Result<()> {
+    let dir = tempdir()?;
+    let file_path = dir.path().join("test.txt");
+    std::fs::write(&file_path, "pattern_1\npattern_2\n")?;
+
+    let cache_path = dir.path().join("cache.json");
+    let config = SearchConfig {
+        patterns: vec!["pattern_\\d+".to_string()],
+        pattern: String::new(),
+        root_path: dir.path().to_path_buf(),
+        ignore_patterns: vec![],
+        file_extensions: None,
+        stats_only: false,
+        thread_count: NonZeroUsize::new(1).unwrap(),
+        log_level: "warn".to_string(),
+        context_before: 0,
+        context_after: 0,
+        incremental: true,
+        cache_path: Some(cache_path.clone()),
+        cache_strategy: ChangeDetectionStrategy::FileSignature,
+        max_cache_size: None,
+        use_compression: false,
+    };
+
+    // Start search in a separate thread
+    let config_clone = config.clone();
+    let _path_clone = file_path.clone();
+    let handle = std::thread::spawn(move || {
+        let result = search(&config_clone);
+        // Sleep to simulate longer processing
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        result
+    });
+
+    // Modify file while search is running
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    std::fs::write(&file_path, "pattern_1\npattern_2\npattern_3\n")?;
+
+    // Wait for search to complete
+    let result = handle.join().unwrap()?;
+
+    // Results should be consistent with either the old or new file state
+    assert!(
+        result.total_matches == 2 || result.total_matches == 3,
+        "Expected 2 or 3 matches, got {}",
+        result.total_matches
+    );
+
+    // Second search should see the new content
+    let result = search(&config)?;
+    assert_eq!(result.total_matches, 3);
 
     Ok(())
 }

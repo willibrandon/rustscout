@@ -1,324 +1,271 @@
-use config::{Config as ConfigBuilder, ConfigError, File};
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
-/// Configuration for the search operation, demonstrating Rust's strong typing
-/// compared to .NET's optional configuration pattern.
-///
-/// # Configuration Locations
-///
-/// The configuration can be loaded from multiple locations in order of precedence:
-/// 1. Custom config file specified via `--config` flag
-/// 2. Local `.rustscout.yaml` in the current directory
-/// 3. Global `$HOME/.config/rustscout/config.yaml`
-///
-/// # Configuration Format
-///
-/// The configuration uses YAML format. Example:
-/// ```yaml
-/// # Search pattern (supports regex)
-/// pattern: "TODO|FIXME"
-///
-/// # Root directory to search in
-/// root_path: "."
-///
-/// # File extensions to include
-/// file_extensions:
-///   - "rs"
-///   - "toml"
-///
-/// # Patterns to ignore (glob syntax)
-/// ignore_patterns:
-///   - "target/**"
-///   - ".git/**"
-///
-/// # Show only statistics
-/// stats_only: false
-///
-/// # Thread count (default: CPU cores)
-/// thread_count: 4
-///
-/// # Log level (trace, debug, info, warn, error)
-/// log_level: "info"
-/// ```
-///
-/// # CLI Integration
-///
-/// When using the CLI, command-line arguments take precedence over config file values.
-/// The merging behavior is defined in the `merge_with_cli` method.
-///
-/// # Error Handling
-///
-/// Configuration errors are handled using Rust's Result type with ConfigError:
-/// ```rust,ignore
-/// match SearchConfig::load() {
-///     Ok(config) => // Use config,
-///     Err(e) => eprintln!("Failed to load config: {}", e)
-/// }
-/// ```
-///
-/// # Rust vs .NET Configuration
-///
-/// .NET's IConfiguration pattern:
-/// ```csharp
-/// public class SearchOptions
-/// {
-///     public string Pattern { get; set; }
-///     public string RootPath { get; set; }
-///     public List<string> FileExtensions { get; set; }
-///     // No compile-time guarantees for null values
-/// }
-/// ```
-///
-/// Rust's strongly-typed configuration:
-/// ```rust,ignore
-/// #[derive(Deserialize)]
-/// pub struct SearchConfig {
-///     pub pattern: String,
-///     pub root_path: PathBuf,
-///     pub file_extensions: Option<Vec<String>>,
-///     // Option explicitly handles missing values
-/// }
-/// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+use crate::cache::ChangeDetectionStrategy;
+use crate::errors::{SearchError, SearchResult};
+
+/// Configuration for search operations
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SearchConfig {
-    /// The search patterns (supports regex)
-    #[serde(default)]
+    /// Search patterns (supports multiple patterns)
     pub patterns: Vec<String>,
-
-    /// Deprecated: Use patterns instead
-    #[serde(skip)]
+    /// Legacy single pattern field (for backward compatibility)
     pub pattern: String,
-
-    /// Root directory to start search from
+    /// Root directory to search in
     pub root_path: PathBuf,
-
-    /// Optional list of file extensions to include (e.g., ["rs", "toml"])
-    /// If None, all file extensions are included
-    #[serde(default)]
+    /// File extensions to include (None means all)
     pub file_extensions: Option<Vec<String>>,
-
-    /// Patterns to ignore (supports glob syntax)
-    /// Examples:
-    /// - "target/**": Ignore everything under target/
-    /// - "**/*.min.js": Ignore all minified JS files
-    /// - ".git/*": Ignore direct children of .git/
-    #[serde(default)]
+    /// Patterns to ignore
     pub ignore_patterns: Vec<String>,
-
-    /// Whether to only show statistics instead of individual matches
-    /// When true, only displays total match count and file count
-    #[serde(default)]
+    /// Only show statistics, not matches
     pub stats_only: bool,
-
-    /// Number of threads to use for searching
-    /// Defaults to number of CPU cores if not specified
-    #[serde(default = "default_thread_count")]
+    /// Number of threads to use
     pub thread_count: NonZeroUsize,
-
-    /// Log level (trace, debug, info, warn, error)
-    #[serde(default = "default_log_level")]
+    /// Log level
     pub log_level: String,
-
-    /// Number of context lines to show before each match
-    #[serde(default)]
+    /// Number of context lines before matches
     pub context_before: usize,
-
-    /// Number of context lines to show after each match
-    #[serde(default)]
+    /// Number of context lines after matches
     pub context_after: usize,
+    /// Whether to use incremental search
+    pub incremental: bool,
+    /// Path to the cache file
+    pub cache_path: Option<PathBuf>,
+    /// Strategy for detecting changes
+    pub cache_strategy: ChangeDetectionStrategy,
+    /// Maximum cache size in bytes
+    pub max_cache_size: Option<u64>,
+    /// Whether to use compression for cache
+    pub use_compression: bool,
 }
 
-fn default_thread_count() -> NonZeroUsize {
-    NonZeroUsize::new(num_cpus::get()).unwrap()
-}
-
-fn default_log_level() -> String {
-    "warn".to_string()
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            patterns: Vec::new(),
+            pattern: String::new(),
+            root_path: PathBuf::from("."),
+            file_extensions: None,
+            ignore_patterns: Vec::new(),
+            stats_only: false,
+            thread_count: NonZeroUsize::new(4).unwrap(),
+            log_level: "info".to_string(),
+            context_before: 0,
+            context_after: 0,
+            incremental: false,
+            cache_path: None,
+            cache_strategy: ChangeDetectionStrategy::Auto,
+            max_cache_size: None,
+            use_compression: false,
+        }
+    }
 }
 
 impl SearchConfig {
-    /// Loads configuration from the default locations
-    pub fn load() -> Result<Self, ConfigError> {
-        Self::load_from(None)
+    /// Loads configuration from a file
+    pub fn load_from(path: impl AsRef<Path>) -> SearchResult<Self> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| SearchError::config_error(format!("Failed to read config: {}", e)))?;
+
+        serde_yaml::from_str(&content)
+            .map_err(|e| SearchError::config_error(format!("Failed to parse config: {}", e)))
     }
 
-    /// Loads configuration from a specific file
-    pub fn load_from(config_path: Option<&Path>) -> Result<Self, ConfigError> {
-        let mut builder = ConfigBuilder::builder();
-
-        // Default config locations
-        let config_files = [
-            // Global config
-            dirs::config_dir().map(|p| p.join("rustscout/config.yaml")),
-            // Local config
-            Some(PathBuf::from(".rustscout.yaml")),
-            // Custom config
-            config_path.map(PathBuf::from),
-        ];
-
-        // Add existing config files
-        for path in config_files.iter().flatten() {
-            if path.exists() {
-                builder = builder.add_source(File::from(path.as_path()));
-            }
-        }
-
-        // Build and deserialize
-        builder.build()?.try_deserialize()
+    /// Gets the default cache path
+    pub fn default_cache_path(&self) -> PathBuf {
+        self.root_path.join(".rustscout").join("cache.json")
     }
 
-    /// Merges CLI arguments with configuration file values
-    pub fn merge_with_cli(mut self, cli_config: SearchConfig) -> Self {
-        // CLI values take precedence over config file values
-        if !cli_config.patterns.is_empty() {
-            self.patterns = cli_config.patterns;
-        } else if !cli_config.pattern.is_empty() {
-            // Support legacy single pattern
-            self.patterns = vec![cli_config.pattern];
+    /// Gets the effective cache path
+    pub fn get_cache_path(&self) -> PathBuf {
+        self.cache_path
+            .clone()
+            .unwrap_or_else(|| self.default_cache_path())
+    }
+
+    pub fn merge_with_cli(&mut self, cli: &SearchConfig) {
+        if !cli.patterns.is_empty() {
+            self.patterns = cli.patterns.clone();
         }
-        if cli_config.root_path != PathBuf::from(".") {
-            self.root_path = cli_config.root_path;
+        if !cli.pattern.is_empty() {
+            self.pattern = cli.pattern.clone();
         }
-        if cli_config.file_extensions.is_some() {
-            self.file_extensions = cli_config.file_extensions;
+        if cli.root_path != PathBuf::from(".") {
+            self.root_path = cli.root_path.clone();
         }
-        if !cli_config.ignore_patterns.is_empty() {
-            self.ignore_patterns = cli_config.ignore_patterns;
+        if cli.file_extensions.is_some() {
+            self.file_extensions = cli.file_extensions.clone();
         }
-        if cli_config.stats_only {
+        if !cli.ignore_patterns.is_empty() {
+            self.ignore_patterns = cli.ignore_patterns.clone();
+        }
+        if cli.stats_only {
             self.stats_only = true;
         }
-        // Always use CLI thread count if specified
-        self.thread_count = cli_config.thread_count;
-        if cli_config.log_level != default_log_level() {
-            self.log_level = cli_config.log_level;
+        if cli.thread_count.get() != 4 {
+            self.thread_count = cli.thread_count;
         }
-        self
+        if cli.log_level != "info" {
+            self.log_level = cli.log_level.clone();
+        }
+        if cli.context_before != 0 {
+            self.context_before = cli.context_before;
+        }
+        if cli.context_after != 0 {
+            self.context_after = cli.context_after;
+        }
+        if cli.incremental {
+            self.incremental = true;
+        }
+        if cli.cache_path.is_some() {
+            self.cache_path = cli.cache_path.clone();
+        }
+        if cli.cache_strategy != ChangeDetectionStrategy::Auto {
+            self.cache_strategy = cli.cache_strategy;
+        }
+        if cli.max_cache_size.is_some() {
+            self.max_cache_size = cli.max_cache_size;
+        }
+        if cli.use_compression {
+            self.use_compression = true;
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::fs::File;
     use std::io::Write;
     use tempfile::tempdir;
 
     #[test]
-    fn test_load_config_file() {
-        let dir = tempdir().unwrap();
-        let config_path = dir.path().join("config.yaml");
-        let config_content = r#"
-            patterns: ["TODO|FIXME"]
-            root_path: "src"
-            file_extensions: ["rs", "toml"]
-            ignore_patterns: ["target/*"]
-            stats_only: true
-            thread_count: 4
-            log_level: "debug"
-        "#;
-
-        let mut file = File::create(&config_path).unwrap();
-        file.write_all(config_content.as_bytes()).unwrap();
-
-        let config = SearchConfig::load_from(Some(&config_path)).unwrap();
-        assert_eq!(config.patterns, vec!["TODO|FIXME"]);
-        assert_eq!(config.root_path, PathBuf::from("src"));
-        assert_eq!(
-            config.file_extensions,
-            Some(vec!["rs".to_string(), "toml".to_string()])
-        );
-        assert_eq!(config.ignore_patterns, vec!["target/*".to_string()]);
-        assert!(config.stats_only);
-        assert_eq!(config.thread_count, NonZeroUsize::new(4).unwrap());
-        assert_eq!(config.log_level, "debug");
-    }
-
-    #[test]
-    fn test_merge_with_cli() {
-        let config_file = SearchConfig {
-            patterns: vec!["TODO".to_string()],
-            pattern: "TODO".to_string(),
-            root_path: PathBuf::from("src"),
-            file_extensions: Some(vec!["rs".to_string()]),
-            ignore_patterns: vec!["target/*".to_string()],
-            stats_only: false,
-            thread_count: NonZeroUsize::new(4).unwrap(),
-            log_level: "warn".to_string(),
-            context_before: 0,
-            context_after: 0,
-        };
-
-        let cli_config = SearchConfig {
-            patterns: vec!["FIXME".to_string()],
-            pattern: "FIXME".to_string(),
-            root_path: PathBuf::from("tests"),
-            file_extensions: None,
-            ignore_patterns: vec!["*.tmp".to_string()],
-            stats_only: true,
-            thread_count: NonZeroUsize::new(8).unwrap(),
-            log_level: "debug".to_string(),
-            context_before: 0,
-            context_after: 0,
-        };
-
-        let merged = config_file.merge_with_cli(cli_config);
-        assert_eq!(merged.patterns, vec!["FIXME"]); // CLI value
-        assert_eq!(merged.root_path, PathBuf::from("tests")); // CLI value
-        assert_eq!(merged.file_extensions, Some(vec!["rs".to_string()])); // File value (CLI None)
-        assert_eq!(merged.ignore_patterns, vec!["*.tmp".to_string()]); // CLI value
-        assert!(merged.stats_only); // CLI value
-        assert_eq!(merged.thread_count, NonZeroUsize::new(8).unwrap()); // CLI value
-        assert_eq!(merged.log_level, "debug"); // CLI value
-    }
-
-    #[test]
     fn test_default_values() {
-        let config_content = r#"
-            patterns: ["test"]
-            root_path: "."
-        "#;
-
-        let dir = tempdir().unwrap();
-        let config_path = dir.path().join("config.yaml");
-        let mut file = File::create(&config_path).unwrap();
-        file.write_all(config_content.as_bytes()).unwrap();
-
-        let config = SearchConfig::load_from(Some(&config_path)).unwrap();
-        assert_eq!(config.patterns, vec!["test"]);
+        let config = SearchConfig::default();
+        assert!(config.patterns.is_empty());
+        assert!(config.pattern.is_empty());
         assert_eq!(config.root_path, PathBuf::from("."));
-        assert_eq!(config.file_extensions, None);
+        assert!(config.file_extensions.is_none());
         assert!(config.ignore_patterns.is_empty());
         assert!(!config.stats_only);
-        assert_eq!(
-            config.thread_count,
-            NonZeroUsize::new(num_cpus::get()).unwrap()
-        );
-        assert_eq!(config.log_level, "warn");
+        assert_eq!(config.thread_count.get(), 4);
+        assert_eq!(config.log_level, "info");
+        assert_eq!(config.context_before, 0);
+        assert_eq!(config.context_after, 0);
+        assert!(!config.incremental);
+        assert!(config.cache_path.is_none());
+        assert_eq!(config.cache_strategy, ChangeDetectionStrategy::Auto);
+        assert!(config.max_cache_size.is_none());
+        assert!(!config.use_compression);
     }
 
     #[test]
-    fn test_invalid_config() {
-        let config_content = r#"
-            pattern: 123  # Should be string
-            root_path: []  # Should be string
-            thread_count: "invalid"  # Should be number
-        "#;
-
-        let dir = tempdir().unwrap();
+    fn test_load_config_file() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
         let config_path = dir.path().join("config.yaml");
-        let mut file = File::create(&config_path).unwrap();
-        file.write_all(config_content.as_bytes()).unwrap();
 
-        let result = SearchConfig::load_from(Some(&config_path));
-        assert!(result.is_err(), "Expected error loading invalid config");
+        let config_content = r#"
+pattern: test
+patterns: []
+root_path: .
+file_extensions: null
+ignore_patterns: []
+stats_only: false
+thread_count: 4
+log_level: info
+context_before: 0
+context_after: 0
+incremental: false
+cache_path: null
+cache_strategy: Auto
+max_cache_size: null
+use_compression: false
+"#;
+        fs::write(&config_path, config_content)?;
+
+        let config = SearchConfig::load_from(&config_path)?;
+        assert_eq!(config.pattern, "test");
+        assert!(config.patterns.is_empty());
+        assert_eq!(config.root_path, PathBuf::from("."));
+        assert!(config.file_extensions.is_none());
+        assert!(config.ignore_patterns.is_empty());
+        assert!(!config.stats_only);
+        assert_eq!(config.thread_count.get(), 4);
+        assert_eq!(config.log_level, "info");
+        assert_eq!(config.context_before, 0);
+        assert_eq!(config.context_after, 0);
+        assert!(!config.incremental);
+        assert!(config.cache_path.is_none());
+        assert_eq!(config.cache_strategy, ChangeDetectionStrategy::Auto);
+        assert!(config.max_cache_size.is_none());
+        assert!(!config.use_compression);
+
+        Ok(())
     }
 
     #[test]
     fn test_load_nonexistent_file() {
-        let result = SearchConfig::load_from(Some(Path::new("nonexistent.yaml")));
+        let path = Path::new("nonexistent.yaml");
+        let result = SearchConfig::load_from(path);
         assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("Failed to read config"),
+            "Error message was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_invalid_config() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("invalid.yaml");
+        let mut file = File::create(&config_path).unwrap();
+        writeln!(file, "invalid: yaml: content").unwrap();
+
+        assert!(SearchConfig::load_from(config_path).is_err());
+    }
+
+    #[test]
+    fn test_merge_with_cli() {
+        let mut config = SearchConfig::default();
+        let cli = SearchConfig {
+            patterns: vec!["TODO".to_string()],
+            pattern: "FIXME".to_string(),
+            root_path: PathBuf::from("/search"),
+            file_extensions: Some(vec!["rs".to_string()]),
+            ignore_patterns: vec!["target".to_string()],
+            stats_only: true,
+            thread_count: NonZeroUsize::new(4).unwrap(),
+            log_level: "debug".to_string(),
+            context_before: 2,
+            context_after: 2,
+            incremental: true,
+            cache_path: Some(PathBuf::from("/cache")),
+            cache_strategy: ChangeDetectionStrategy::GitStatus,
+            max_cache_size: Some(104857600),
+            use_compression: true,
+            ..SearchConfig::default()
+        };
+
+        config.merge_with_cli(&cli);
+
+        assert_eq!(config.patterns, vec!["TODO"]);
+        assert_eq!(config.pattern, "FIXME");
+        assert_eq!(config.root_path, PathBuf::from("/search"));
+        assert_eq!(config.file_extensions, Some(vec!["rs".to_string()]));
+        assert_eq!(config.ignore_patterns, vec!["target"]);
+        assert!(config.stats_only);
+        assert_eq!(config.thread_count.get(), 4);
+        assert_eq!(config.log_level, "debug");
+        assert_eq!(config.context_before, 2);
+        assert_eq!(config.context_after, 2);
+        assert!(config.incremental);
+        assert_eq!(config.cache_path, Some(PathBuf::from("/cache")));
+        assert_eq!(config.cache_strategy, ChangeDetectionStrategy::GitStatus);
+        assert_eq!(config.max_cache_size, Some(104857600));
+        assert!(config.use_compression);
     }
 }

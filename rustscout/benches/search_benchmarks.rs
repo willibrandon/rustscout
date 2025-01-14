@@ -1,10 +1,11 @@
+#![allow(unused_must_use)]
+
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use rustscout::replace::{FileReplacementPlan, ReplacementConfig, ReplacementSet, ReplacementTask};
-use rustscout::{search, SearchConfig};
-use std::fs::File;
-use std::io::Write;
-use std::num::NonZeroUsize;
-use std::path::PathBuf;
+use rustscout::{
+    cache::{ChangeDetectionStrategy, IncrementalCache},
+    search, SearchConfig,
+};
+use std::{fs::File, io::Write, num::NonZeroUsize};
 use tempfile::tempdir;
 
 fn create_test_files(
@@ -16,22 +17,18 @@ fn create_test_files(
         let file_path = dir.path().join(format!("test_{}.txt", i));
         let mut file = File::create(file_path)?;
         for j in 0..lines_per_file {
-            writeln!(file, "Line {} in file {}: TODO implement this", j, i)?;
-            writeln!(file, "Another line {} in file {}: nothing special", j, i)?;
-            writeln!(file, "FIXME: This is a bug in file {} line {}", i, j)?;
+            writeln!(
+                file,
+                "Line {} TODO: fix bug {} FIXME: optimize line {} NOTE: important task {}",
+                j, j, j, j
+            )?;
         }
     }
     Ok(())
 }
 
-fn bench_simple_pattern(c: &mut Criterion) -> std::io::Result<()> {
-    let dir = tempdir().unwrap();
-    create_test_files(&dir, 10, 100)?;
-
-    let mut group = c.benchmark_group("Simple Pattern Search");
-    group.sample_size(10);
-
-    let config = SearchConfig {
+fn create_base_config(dir: &tempfile::TempDir) -> SearchConfig {
+    SearchConfig {
         patterns: vec!["TODO".to_string()],
         pattern: String::new(),
         root_path: dir.path().to_path_buf(),
@@ -42,358 +39,143 @@ fn bench_simple_pattern(c: &mut Criterion) -> std::io::Result<()> {
         log_level: "warn".to_string(),
         context_before: 0,
         context_after: 0,
-    };
-
-    group.bench_function("search_todo", |b| {
-        b.iter(|| {
-            search(black_box(&config)).unwrap();
-        });
-    });
-
-    group.finish();
-    Ok(())
-}
-
-fn bench_regex_pattern(c: &mut Criterion) -> std::io::Result<()> {
-    let dir = tempdir().unwrap();
-    create_test_files(&dir, 10, 100)?;
-
-    let mut group = c.benchmark_group("Regex Pattern Search");
-    group.sample_size(10);
-
-    let config = SearchConfig {
-        patterns: vec![r"FIXME:.*bug.*line \d+".to_string()],
-        pattern: String::new(),
-        root_path: dir.path().to_path_buf(),
-        ignore_patterns: vec![],
-        file_extensions: None,
-        stats_only: false,
-        thread_count: NonZeroUsize::new(1).unwrap(),
-        log_level: "warn".to_string(),
-        context_before: 0,
-        context_after: 0,
-    };
-
-    group.bench_function("search_fixme_regex", |b| {
-        b.iter(|| {
-            search(black_box(&config)).unwrap();
-        });
-    });
-
-    group.finish();
-    Ok(())
+        incremental: false,
+        cache_path: None,
+        cache_strategy: ChangeDetectionStrategy::Auto,
+        max_cache_size: None,
+        use_compression: false,
+    }
 }
 
 fn bench_repeated_pattern(c: &mut Criterion) -> std::io::Result<()> {
     let dir = tempdir().unwrap();
-    create_test_files(&dir, 10, 100)?;
+    create_test_files(&dir, 1, 10)?;
 
-    let mut group = c.benchmark_group("Repeated Pattern Search");
-    group.sample_size(10);
-
-    let patterns = [
-        r"TODO",
+    let patterns = vec![
+        "TODO",
+        r"TODO:.*\d+",
         r"FIXME:.*bug.*line \d+",
-        r"TODO",                  // Repeated simple pattern
-        r"FIXME:.*bug.*line \d+", // Repeated regex pattern
+        r"NOTE:.*important.*\d+",
     ];
 
+    let mut group = c.benchmark_group("Repeated Pattern");
     for (i, pattern) in patterns.iter().enumerate() {
-        let config = SearchConfig {
-            patterns: vec![pattern.to_string()],
-            pattern: String::new(),
-            root_path: dir.path().to_path_buf(),
-            ignore_patterns: vec![],
-            file_extensions: None,
-            stats_only: false,
-            thread_count: NonZeroUsize::new(1).unwrap(),
-            log_level: "warn".to_string(),
-            context_before: 0,
-            context_after: 0,
-        };
+        let mut config = create_base_config(&dir);
+        config.pattern = pattern.to_string();
+        config.patterns = vec![pattern.to_string()];
 
-        group.bench_function(format!("search_pattern_{}", i), |b| {
-            b.iter(|| {
-                search(black_box(&config)).unwrap();
-            });
+        group.bench_function(format!("pattern_{}", i), |b| {
+            b.iter(|| black_box(search(&config).unwrap()));
         });
     }
-
     group.finish();
     Ok(())
 }
 
 fn bench_file_scaling(c: &mut Criterion) -> std::io::Result<()> {
     let dir = tempdir().unwrap();
-    create_test_files(&dir, 50, 20)?;
+    let file_counts = vec![1, 10, 100, 1000];
+    let base_config = create_base_config(&dir);
 
-    let mut group = c.benchmark_group("File Count Scaling");
-    group.sample_size(10);
+    let mut group = c.benchmark_group("File Scaling");
+    for &count in &file_counts {
+        create_test_files(&dir, count, 10)?;
 
-    let base_config = SearchConfig {
-        patterns: vec!["TODO".to_string()],
-        pattern: String::new(),
-        root_path: dir.path().to_path_buf(),
-        ignore_patterns: vec![],
-        file_extensions: None,
-        stats_only: false,
-        thread_count: NonZeroUsize::new(1).unwrap(),
-        log_level: "warn".to_string(),
-        context_before: 0,
-        context_after: 0,
-    };
-
-    // Test with different subsets of files
-    for &file_count in &[5, 10, 25, 50] {
-        group.bench_function(format!("files_{}", file_count), |b| {
-            b.iter(|| {
-                let mut config = base_config.clone();
-                // Limit search to first n files
-                config.ignore_patterns = (file_count..50)
-                    .map(|i| format!("test_{}.txt", i))
-                    .collect();
-                search(black_box(&config)).unwrap();
-            });
+        group.bench_function(format!("files_{}", count), |b| {
+            b.iter(|| black_box(search(&base_config).unwrap()));
         });
     }
-
     group.finish();
     Ok(())
 }
 
-fn create_large_test_file(dir: &tempfile::TempDir, size_mb: usize) -> std::io::Result<PathBuf> {
-    let file_path = dir.path().join("large_test.txt");
-    let mut file = File::create(&file_path)?;
+fn bench_incremental_search(c: &mut Criterion) -> std::io::Result<()> {
+    let dir = tempdir()?;
+    create_test_files(&dir, 20, 50)?;
+    let cache_path = dir.path().join("cache.json");
 
-    // Create a line with a known pattern
-    let line = "This is a test line with pattern_123 and another pattern_456\n";
-    let lines_needed = (size_mb * 1024 * 1024) / line.len();
+    let mut base_config = create_base_config(&dir);
+    base_config.incremental = true;
+    base_config.cache_path = Some(cache_path.clone());
 
-    for _ in 0..lines_needed {
-        file.write_all(line.as_bytes())?;
-    }
+    let mut group = c.benchmark_group("Incremental Search");
 
-    Ok(file_path)
-}
-
-fn bench_large_file_search(c: &mut Criterion) -> std::io::Result<()> {
-    let dir = tempdir().unwrap();
-
-    // Create test files of different sizes
-    let sizes = [10, 50, 100]; // File sizes in MB
-
-    for &size in &sizes {
-        let file_path = create_large_test_file(&dir, size)?;
-
-        let mut group = c.benchmark_group(format!("large_file_{}mb", size));
-
-        // Benchmark with different thread counts
-        for threads in [1, 2, 4, 8].iter() {
-            group.bench_with_input(format!("threads_{}", threads), threads, |b, &threads| {
-                b.iter(|| {
-                    let config = SearchConfig {
-                        patterns: vec!["pattern_\\d+".to_string()],
-                        pattern: String::new(),
-                        root_path: file_path.parent().unwrap().to_path_buf(),
-                        ignore_patterns: vec![],
-                        file_extensions: None,
-                        stats_only: false,
-                        thread_count: NonZeroUsize::new(threads).unwrap(),
-                        log_level: "warn".to_string(),
-                        context_before: 0,
-                        context_after: 0,
-                    };
-                    search(&config).unwrap()
-                })
-            });
-        }
-
-        group.finish();
-    }
-
-    Ok(())
-}
-
-fn bench_multiple_patterns(c: &mut Criterion) -> std::io::Result<()> {
-    let dir = tempdir().unwrap();
-    create_test_files(&dir, 10, 100)?;
-
-    let mut group = c.benchmark_group("Multiple Pattern Search");
-    group.sample_size(10);
-
-    // Test with multiple simple patterns
-    let simple_config = SearchConfig {
-        patterns: vec!["TODO".to_string(), "FIXME".to_string()],
-        pattern: String::new(),
-        root_path: dir.path().to_path_buf(),
-        ignore_patterns: vec![],
-        file_extensions: None,
-        stats_only: false,
-        thread_count: NonZeroUsize::new(1).unwrap(),
-        log_level: "warn".to_string(),
-        context_before: 0,
-        context_after: 0,
-    };
-
-    group.bench_function("search_multiple_simple", |b| {
+    // Initial search (no cache)
+    group.bench_function("initial_search", |b| {
         b.iter(|| {
-            search(black_box(&simple_config)).unwrap();
+            let config = base_config.clone();
+            black_box(search(&config).unwrap());
         });
     });
 
-    // Test with mixed simple and regex patterns
-    let mixed_config = SearchConfig {
-        patterns: vec!["TODO".to_string(), r"FIXME:.*bug.*line \d+".to_string()],
-        pattern: String::new(),
-        root_path: dir.path().to_path_buf(),
-        ignore_patterns: vec![],
-        file_extensions: None,
-        stats_only: false,
-        thread_count: NonZeroUsize::new(1).unwrap(),
-        log_level: "warn".to_string(),
-        context_before: 0,
-        context_after: 0,
-    };
-
-    group.bench_function("search_multiple_mixed", |b| {
+    // Subsequent search (with cache, no changes)
+    group.bench_function("cached_search", |b| {
         b.iter(|| {
-            search(black_box(&mixed_config)).unwrap();
+            let config = base_config.clone();
+            search(black_box(&config)).unwrap();
         });
     });
 
-    group.finish();
-    Ok(())
-}
-
-fn bench_context_lines(c: &mut Criterion) -> std::io::Result<()> {
-    let dir = tempdir().unwrap();
-
-    // Create test files of different sizes
-    let sizes = [10]; // Only use a small file for context line benchmarks
-
-    for &size in &sizes {
-        let file_path = create_large_test_file(&dir, size)?;
-
-        let mut group = c.benchmark_group("context_lines");
-
-        // Test different context configurations
-        let configs = [
-            (0, 0), // No context
-            (2, 0), // Before only
-            (0, 2), // After only
-            (2, 2), // Both before and after
-            (5, 5), // Larger context
-        ];
-
-        for (before, after) in configs.iter() {
-            group.bench_function(format!("context_b{}_a{}", before, after), |b| {
-                b.iter(|| {
-                    let config = SearchConfig {
-                        patterns: vec!["pattern_\\d+".to_string()],
-                        pattern: String::new(),
-                        root_path: file_path.parent().unwrap().to_path_buf(),
-                        ignore_patterns: vec![],
-                        file_extensions: None,
-                        stats_only: false,
-                        thread_count: NonZeroUsize::new(1).unwrap(),
-                        log_level: "warn".to_string(),
-                        context_before: *before,
-                        context_after: *after,
-                    };
-                    search(&config).unwrap()
-                })
-            });
-        }
-
-        group.finish();
-    }
-
-    Ok(())
-}
-
-fn bench_replacement_small_file(c: &mut Criterion) -> std::io::Result<()> {
-    let dir = tempdir().unwrap();
-    let file_path = dir.path().join("test.txt");
-    let test_content = "Hello world! This is a test file.\n".repeat(100);
-
-    let mut group = c.benchmark_group("Small File Replacement");
-    group.sample_size(10);
-
-    let config = ReplacementConfig {
-        pattern: "Hello".to_string(),
-        replacement: "Hi".to_string(),
-        is_regex: false,
-        backup_enabled: false,
-        dry_run: false,
-        backup_dir: None,
-        preserve_metadata: true,
-    };
-
-    group.bench_function("replace_hello", |b| {
+    // Search with some changes
+    group.bench_function("search_with_changes", |b| {
         b.iter_batched(
-            // Setup: Reset file content before each iteration
             || {
-                std::fs::write(&file_path, &test_content).unwrap();
-                file_path.clone()
+                // Setup: Modify 20% of files
+                for i in 0..4 {
+                    let file_path = dir.path().join(format!("test_{}.txt", i));
+                    let mut content = std::fs::read_to_string(&file_path).unwrap();
+                    content.push_str("\nNew TODO item added\n");
+                    std::fs::write(&file_path, content).unwrap();
+                }
+                base_config.clone()
             },
-            // Benchmark: Perform the replacement
-            |path| {
-                let mut set = ReplacementSet::new(config.clone());
-                let mut plan = FileReplacementPlan::new(path.clone()).unwrap();
-                plan.add_replacement(ReplacementTask {
-                    file_path: path,
-                    original_range: (0, 4),
-                    replacement_text: "Hi".to_string(),
-                });
-                set.add_plan(plan);
-                set.apply().unwrap()
+            |config| {
+                search(black_box(&config)).unwrap();
             },
             criterion::BatchSize::SmallInput,
-        )
+        );
     });
 
     group.finish();
     Ok(())
 }
 
-fn bench_replacement_medium_file(c: &mut Criterion) -> std::io::Result<()> {
+fn bench_cache_operations(c: &mut Criterion) -> std::io::Result<()> {
     let dir = tempdir().unwrap();
-    let file_path = dir.path().join("test.txt");
+    create_test_files(&dir, 100, 20)?; // More files for cache benchmarks
+    let cache_path = dir.path().join("cache.json");
 
-    // Create a medium-sized file (~1MB)
-    let mut content = String::with_capacity(1_000_000);
-    for i in 0..10_000 {
-        content.push_str(&format!("Line {} with some text to replace.\n", i));
-    }
-    std::fs::write(&file_path, content)?;
+    let mut base_config = create_base_config(&dir);
+    base_config.incremental = true;
+    base_config.cache_path = Some(cache_path.clone());
 
-    let mut group = c.benchmark_group("Medium File Replacement");
-    group.sample_size(10);
+    let mut group = c.benchmark_group("Cache Operations");
 
-    let config = ReplacementConfig {
-        pattern: "Line".to_string(),
-        replacement: "Entry".to_string(),
-        is_regex: false,
-        backup_enabled: false,
-        dry_run: false,
-        backup_dir: None,
-        preserve_metadata: true,
-    };
-
-    group.bench_function("replace_lines", |b| {
+    // Cache creation
+    group.bench_function("cache_creation", |b| {
         b.iter(|| {
-            let mut set = ReplacementSet::new(config.clone());
-            let mut plan = FileReplacementPlan::new(file_path.clone()).unwrap();
-            for i in 0..5 {
-                let start = i * 40; // Approximate line length
-                plan.add_replacement(ReplacementTask {
-                    file_path: file_path.clone(),
-                    original_range: (start, start + 4),
-                    replacement_text: "Entry".to_string(),
-                });
+            let config = base_config.clone();
+            if cache_path.exists() {
+                std::fs::remove_file(&cache_path).unwrap();
             }
-            set.add_plan(plan);
-            set.apply().unwrap();
+            search(black_box(&config)).unwrap();
+        });
+    });
+
+    // Cache loading
+    group.bench_function("cache_loading", |b| {
+        b.iter(|| {
+            let cache = IncrementalCache::load_from(black_box(&cache_path)).unwrap();
+            black_box(cache);
+        });
+    });
+
+    // Cache with compression
+    group.bench_function("compressed_cache", |b| {
+        b.iter(|| {
+            let mut config = base_config.clone();
+            config.use_compression = true;
+            search(black_box(&config)).unwrap();
         });
     });
 
@@ -401,46 +183,57 @@ fn bench_replacement_medium_file(c: &mut Criterion) -> std::io::Result<()> {
     Ok(())
 }
 
-fn bench_replacement_large_file(c: &mut Criterion) -> std::io::Result<()> {
+fn bench_change_detection(c: &mut Criterion) -> std::io::Result<()> {
     let dir = tempdir().unwrap();
-    let file_path = dir.path().join("test.txt");
+    create_test_files(&dir, 50, 20)?;
 
-    // Create a large file (~10MB)
-    let mut content = String::with_capacity(10_000_000);
-    for i in 0..100_000 {
-        content.push_str(&format!("Line {} with pattern_123 and pattern_456\n", i));
-    }
-    std::fs::write(&file_path, content)?;
+    // Initialize git repo for git strategy testing
+    std::process::Command::new("git")
+        .args(&["init"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(&["add", "."])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(&["commit", "-m", "Initial commit"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
 
-    let mut group = c.benchmark_group("Large File Replacement");
-    group.sample_size(10);
+    let mut base_config = create_base_config(&dir);
+    base_config.incremental = true;
+    base_config.cache_path = Some(dir.path().join("cache.json"));
 
-    let config = ReplacementConfig {
-        pattern: r"pattern_\d+".to_string(),
-        replacement: "replaced".to_string(),
-        is_regex: true,
-        backup_enabled: false,
-        dry_run: false,
-        backup_dir: None,
-        preserve_metadata: true,
-    };
+    let mut group = c.benchmark_group("Change Detection");
 
-    group.bench_function("replace_patterns", |b| {
+    // FileSignature strategy
+    group.bench_function("filesig_detection", |b| {
         b.iter(|| {
-            let mut set = ReplacementSet::new(config.clone());
-            let mut plan = FileReplacementPlan::new(file_path.clone()).unwrap();
-            plan.add_replacement(ReplacementTask {
-                file_path: file_path.clone(),
-                original_range: (15, 25),
-                replacement_text: "replaced_1".to_string(),
-            });
-            plan.add_replacement(ReplacementTask {
-                file_path: file_path.clone(),
-                original_range: (30, 40),
-                replacement_text: "replaced_2".to_string(),
-            });
-            set.add_plan(plan);
-            set.apply().unwrap();
+            let mut config = base_config.clone();
+            config.cache_strategy = ChangeDetectionStrategy::FileSignature;
+            search(black_box(&config)).unwrap();
+        });
+    });
+
+    // Git strategy
+    group.bench_function("git_detection", |b| {
+        b.iter(|| {
+            let mut config = base_config.clone();
+            config.cache_strategy = ChangeDetectionStrategy::GitStatus;
+            search(black_box(&config)).unwrap();
+        });
+    });
+
+    // Auto strategy
+    group.bench_function("auto_detection", |b| {
+        b.iter(|| {
+            let mut config = base_config.clone();
+            config.cache_strategy = ChangeDetectionStrategy::Auto;
+            search(black_box(&config)).unwrap();
         });
     });
 
@@ -451,10 +244,14 @@ fn bench_replacement_large_file(c: &mut Criterion) -> std::io::Result<()> {
 criterion_group! {
     name = benches;
     config = Criterion::default();
-    targets = bench_simple_pattern, bench_regex_pattern, bench_repeated_pattern,
-              bench_file_scaling, bench_large_file_search, bench_context_lines,
-              bench_multiple_patterns, bench_replacement_small_file,
-              bench_replacement_medium_file, bench_replacement_large_file
+    targets = bench_repeated_pattern, bench_file_scaling,
+              bench_incremental_search, bench_cache_operations,
+              bench_change_detection
+}
+
+#[test]
+fn ensure_benchmarks_valid() {
+    benches();
 }
 
 criterion_main!(benches);

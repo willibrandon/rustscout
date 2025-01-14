@@ -40,189 +40,111 @@
 /// 3. **Type Safety**
 ///    - .NET exceptions are discovered at runtime
 ///    - Rust errors are checked at compile time
-use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use thiserror::Error;
 
-/// Custom error types for search operations
-#[derive(Error, Debug)]
-pub enum SearchError {
-    /// File not found error
-    #[error("File not found: {path}")]
-    FileNotFound { path: PathBuf },
-
-    /// Permission denied error
-    #[error("Permission denied: {path}")]
-    PermissionDenied { path: PathBuf },
-
-    /// Invalid pattern error
-    #[error("Invalid pattern: {message}")]
-    InvalidPattern { message: String },
-
-    /// File too large error
-    #[error("File too large: {path} ({size} bytes)")]
-    FileTooLarge { path: PathBuf, size: u64 },
-
-    /// Thread pool error
-    #[error("Thread pool error: {message}")]
-    ThreadPoolError { message: String },
-
-    /// I/O error
-    #[error(transparent)]
-    IoError(#[from] io::Error),
-
-    /// Invalid file encoding error
-    #[error("Invalid file encoding: {path}")]
-    InvalidEncoding { path: PathBuf },
-
-    #[error("No undo directory available")]
-    NoUndoDir,
-
-    #[error("Serialization error: {0}")]
-    SerializationError(String),
-
-    #[error("Invalid undo ID: {0}")]
-    InvalidUndoId(usize),
-
-    #[error("Backup file not found: {0}")]
-    BackupNotFound(PathBuf),
-
-    #[error("Configuration error: {message}")]
-    ConfigError { message: String },
-}
-
-/// Type alias for Results that may return a SearchError
+/// Result type for search operations
 pub type SearchResult<T> = Result<T, SearchError>;
 
+/// Errors that can occur during search operations
+#[derive(Error, Debug)]
+pub enum SearchError {
+    #[error("File not found: {0}")]
+    FileNotFound(PathBuf),
+    #[error("Permission denied: {0}")]
+    PermissionDenied(PathBuf),
+    #[error("Invalid pattern: {0}")]
+    InvalidPattern(String),
+    #[error("Cache error: {0}")]
+    CacheError(String),
+    #[error("Cache version mismatch: expected {current_version}, found {cache_version}")]
+    CacheVersionMismatch {
+        cache_version: String,
+        current_version: String,
+    },
+    #[error("Configuration error: {0}")]
+    ConfigError(String),
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+}
+
 impl SearchError {
-    /// Creates a new FileNotFound error
-    pub fn file_not_found(path: &Path) -> Self {
-        SearchError::FileNotFound {
-            path: path.to_path_buf(),
+    pub fn file_not_found(path: impl Into<PathBuf>) -> Self {
+        Self::FileNotFound(path.into())
+    }
+
+    pub fn permission_denied(path: impl Into<PathBuf>) -> Self {
+        Self::PermissionDenied(path.into())
+    }
+
+    pub fn invalid_pattern(pattern: impl Into<String>) -> Self {
+        Self::InvalidPattern(pattern.into())
+    }
+
+    pub fn cache_error(msg: impl Into<String>) -> Self {
+        Self::CacheError(msg.into())
+    }
+
+    pub fn cache_version_mismatch(
+        cache_version: impl Into<String>,
+        current_version: impl Into<String>,
+    ) -> Self {
+        Self::CacheVersionMismatch {
+            cache_version: cache_version.into(),
+            current_version: current_version.into(),
         }
     }
 
-    /// Creates a new PermissionDenied error
-    pub fn permission_denied(path: &Path) -> Self {
-        SearchError::PermissionDenied {
-            path: path.to_path_buf(),
-        }
-    }
-
-    /// Creates a new InvalidPattern error
-    pub fn invalid_pattern<S: Into<String>>(message: S) -> Self {
-        SearchError::InvalidPattern {
-            message: message.into(),
-        }
-    }
-
-    /// Creates a new FileTooLarge error
-    pub fn file_too_large(path: &Path, size: u64) -> Self {
-        SearchError::FileTooLarge {
-            path: path.to_path_buf(),
-            size,
-        }
-    }
-
-    /// Creates a new ThreadPoolError error
-    pub fn thread_pool_error<S: Into<String>>(message: S) -> Self {
-        SearchError::ThreadPoolError {
-            message: message.into(),
-        }
-    }
-
-    /// Creates a new InvalidEncoding error
-    pub fn invalid_encoding(path: &Path) -> Self {
-        SearchError::InvalidEncoding {
-            path: path.to_path_buf(),
-        }
-    }
-
-    /// Returns true if this is a FileNotFound error
-    pub fn is_not_found(&self) -> bool {
-        matches!(self, SearchError::FileNotFound { .. })
-    }
-
-    /// Returns true if this is a PermissionDenied error
-    pub fn is_permission_denied(&self) -> bool {
-        matches!(self, SearchError::PermissionDenied { .. })
-    }
-
-    /// Returns true if this is an InvalidPattern error
-    pub fn is_invalid_pattern(&self) -> bool {
-        matches!(self, SearchError::InvalidPattern { .. })
-    }
-
-    /// Returns true if this is a FileTooLarge error
-    pub fn is_file_too_large(&self) -> bool {
-        matches!(self, SearchError::FileTooLarge { .. })
-    }
-
-    /// Returns true if this is a ThreadPoolError error
-    pub fn is_thread_pool_error(&self) -> bool {
-        matches!(self, SearchError::ThreadPoolError { .. })
-    }
-
-    /// Returns true if this is an InvalidEncoding error
-    pub fn is_invalid_encoding(&self) -> bool {
-        matches!(self, SearchError::InvalidEncoding { .. })
-    }
-
-    pub fn config_error<S: Into<String>>(message: S) -> Self {
-        SearchError::ConfigError {
-            message: message.into(),
-        }
+    pub fn config_error(msg: impl Into<String>) -> Self {
+        Self::ConfigError(msg.into())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::path::Path;
 
     #[test]
     fn test_error_creation() {
-        let path = PathBuf::from("test.txt");
+        let path = Path::new("test.txt");
+        let err = SearchError::file_not_found(path);
+        assert!(matches!(err, SearchError::FileNotFound(_)));
 
-        let err = SearchError::file_not_found(&path);
-        assert!(err.is_not_found());
+        let err = SearchError::permission_denied(path);
+        assert!(matches!(err, SearchError::PermissionDenied(_)));
 
-        let err = SearchError::permission_denied(&path);
-        assert!(err.is_permission_denied());
+        let err = SearchError::invalid_pattern("Invalid regex");
+        assert!(matches!(err, SearchError::InvalidPattern(_)));
 
-        let err = SearchError::invalid_pattern("invalid[regex");
-        assert!(err.is_invalid_pattern());
+        let err = SearchError::cache_error("Cache corrupted");
+        assert!(matches!(err, SearchError::CacheError(_)));
 
-        let err = SearchError::file_too_large(&path, 1024);
-        assert!(err.is_file_too_large());
-
-        let err = SearchError::thread_pool_error("thread error");
-        assert!(err.is_thread_pool_error());
-
-        let err = SearchError::invalid_encoding(&path);
-        assert!(err.is_invalid_encoding());
+        let err = SearchError::cache_version_mismatch("1.0.0".to_string(), "2.0.0".to_string());
+        assert!(matches!(err, SearchError::CacheVersionMismatch { .. }));
     }
 
     #[test]
     fn test_error_messages() {
-        let path = PathBuf::from("test.txt");
+        let err = SearchError::cache_version_mismatch("1.0.0", "2.0.0");
+        assert_eq!(
+            err.to_string(),
+            "Cache version mismatch: expected 2.0.0, found 1.0.0"
+        );
 
-        let err = SearchError::file_not_found(&path);
+        let err = SearchError::invalid_pattern("Invalid regex: missing closing brace".to_string());
+        assert_eq!(
+            err.to_string(),
+            "Invalid pattern: Invalid regex: missing closing brace"
+        );
+
+        let err = SearchError::config_error("Missing required field".to_string());
+        assert_eq!(
+            err.to_string(),
+            "Configuration error: Missing required field"
+        );
+
+        let err = SearchError::file_not_found("test.txt");
         assert_eq!(err.to_string(), "File not found: test.txt");
-
-        let err = SearchError::permission_denied(&path);
-        assert_eq!(err.to_string(), "Permission denied: test.txt");
-
-        let err = SearchError::invalid_pattern("bad pattern");
-        assert_eq!(err.to_string(), "Invalid pattern: bad pattern");
-
-        let err = SearchError::file_too_large(&path, 1024);
-        assert_eq!(err.to_string(), "File too large: test.txt (1024 bytes)");
-
-        let err = SearchError::thread_pool_error("thread error");
-        assert_eq!(err.to_string(), "Thread pool error: thread error");
-
-        let err = SearchError::invalid_encoding(&path);
-        assert_eq!(err.to_string(), "Invalid file encoding: test.txt");
     }
 }

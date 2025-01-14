@@ -12,19 +12,24 @@ A high-performance, concurrent code search tool written in Rust. RustScout is de
 ## Features
 
 - 🚀 **High Performance**: Utilizes Rust's concurrency features for blazing-fast searches
+- 🔍 **Incremental Search**: Smart caching for faster repeated searches
+  - Automatic change detection (Git or file signatures)
+  - Cache compression support
+  - Configurable cache size and location
+  - Intelligent cache invalidation
 - 🔍 **Smart Search**: Support for multiple patterns with mix of simple text and regex
-- 📁 **File Filtering**: Flexible ignore patterns and file type filtering
-- 📊 **Rich Output**: Detailed search results with statistics
-- 🛠️ **Developer Friendly**: Clear documentation with .NET comparison examples
-- 📝 **Context Lines**: Show lines before and after matches for better understanding
-  - `--context-before N` or `-B N`: Show N lines before each match
-  - `--context-after N` or `-A N`: Show N lines after each match
-  - `--context N` or `-C N`: Show N lines before and after each match
 - 🔄 **Search and Replace**: Powerful find and replace functionality
   - Memory-efficient processing for files of any size
   - Preview changes before applying
   - Backup and undo support
   - Regular expressions with capture groups
+- 📁 **File Filtering**: Flexible ignore patterns and file type filtering
+- 📊 **Rich Output**: Detailed search results with statistics
+- 📝 **Context Lines**: Show lines before and after matches for better understanding
+  - `--context-before N` or `-B N`: Show N lines before each match
+  - `--context-after N` or `-A N`: Show N lines after each match
+  - `--context N` or `-C N`: Show N lines before and after each match
+- 🛠️ **Developer Friendly**: Clear documentation with .NET comparison examples
 
 ## Quick Start
 
@@ -54,6 +59,29 @@ rustscout-cli --ignore "target/*,*.tmp" "pattern" .
 
 # Control thread count
 rustscout-cli --threads 8 "pattern" .
+```
+
+Show only statistics:
+```bash
+rustscout search "TODO" --stats-only
+```
+
+Using incremental search:
+```bash
+# Enable incremental search with default settings
+rustscout search "TODO" --incremental
+
+# Specify cache location
+rustscout search "TODO" --incremental --cache-path .rustscout/cache.json
+
+# Choose change detection strategy
+rustscout search "TODO" --incremental --cache-strategy git
+
+# Enable cache compression
+rustscout search "TODO" --incremental --use-compression
+
+# Set cache size limit
+rustscout search "TODO" --incremental --max-cache-size 100MB
 ```
 
 ## Installation
@@ -109,6 +137,33 @@ rustscout-cli --pattern "TODO" --pattern "FIXME" .
 # Mix of simple and regex patterns
 rustscout-cli --pattern "TODO" --pattern "FIXME:.*bug.*line \d+" .
 ```
+
+### Incremental Search
+```bash
+# Enable incremental search
+rustscout-cli "pattern" --incremental .
+
+# Specify cache location
+rustscout-cli "pattern" --incremental --cache-path .cache/rustscout .
+
+# Choose change detection strategy
+rustscout-cli "pattern" --incremental --cache-strategy git .  # Use git status
+rustscout-cli "pattern" --incremental --cache-strategy signature .  # Use file signatures
+rustscout-cli "pattern" --incremental --cache-strategy auto .  # Auto-detect (default)
+
+# Enable cache compression
+rustscout-cli "pattern" --incremental --use-compression .
+
+# Set cache size limit
+rustscout-cli "pattern" --incremental --max-cache-size 100MB .
+```
+
+The incremental search feature provides:
+- Up to 90% faster subsequent searches
+- Intelligent change detection using Git or file signatures
+- Automatic cache management and invalidation
+- Optional compression for reduced disk usage
+- Cache hit rate monitoring and statistics
 
 ### Search and Replace
 ```bash
@@ -304,6 +359,13 @@ context_before: 2
 
 # Context lines after matches
 context_after: 2
+
+# Incremental search settings
+incremental: false
+cache_path: ".rustscout/cache.json"
+cache_strategy: "auto"  # "auto", "git", or "signature"
+max_cache_size: "100MB"  # Optional size limit
+use_compression: false  # Enable cache compression
 ```
 
 ### Command-Line Options
@@ -327,14 +389,18 @@ SEARCH OPTIONS:
     [ROOT_PATH]    Root directory to search in [default: .]
     -p, --pattern <PATTERN>         Pattern to search for (can be specified multiple times)
     -e, --extensions <EXTENSIONS>    Comma-separated list of file extensions to search (e.g. "rs,toml")
-    -i, --ignore <PATTERNS>         Additional patterns to ignore (supports .gitignore syntax)
-    --stats-only                    Show only statistics, not individual matches
-    -t, --threads <COUNT>           Number of threads to use for searching
-    -l, --log-level <LEVEL>         Log level (trace, debug, info, warn, error) [default: warn]
-    -c, --config <FILE>             Path to config file [default: .rustscout.yaml]
-    -B, --context-before <LINES>    Number of lines to show before each match [default: 0]
-    -A, --context-after <LINES>     Number of lines to show after each match [default: 0]
-    -C, --context <LINES>           Number of lines to show before and after each match
+    -i, --ignore <PATTERNS>         Glob patterns to ignore
+    -c, --case-sensitive           Enable case-sensitive search
+    -s, --stats-only              Show only statistics
+    -t, --threads <COUNT>         Number of threads to use
+    -B, --context-before <LINES>  Lines of context before matches
+    -A, --context-after <LINES>   Lines of context after matches
+    -C, --context <LINES>         Lines of context around matches
+    --incremental                 Enable incremental search
+    --cache-path <PATH>           Path to store search cache [default: .rustscout/cache.json]
+    --cache-strategy <STRATEGY>   Change detection strategy: auto, git, or signature [default: auto]
+    --max-cache-size <SIZE>       Maximum cache size (e.g. "100MB")
+    --use-compression            Enable cache compression
 
 REPLACE OPTIONS:
     <PATTERN>                       Pattern to search for

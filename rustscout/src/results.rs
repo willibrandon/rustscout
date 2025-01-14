@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 /// This module implements search result types, demonstrating key differences between
 /// Rust's ownership system and .NET's reference types.
 ///
@@ -89,7 +90,7 @@
 use std::path::PathBuf;
 
 /// Represents a single match in a file
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Match {
     /// The line number where the match was found
     pub line_number: usize,
