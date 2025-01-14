@@ -1,15 +1,15 @@
 use anyhow::{anyhow, Result};
-use clap::{ArgMatches, Command, CommandFactory, Parser, Subcommand};
-use colored::{Colorize, *};
+use clap::{Parser, Subcommand};
+use colored::Colorize;
 use rustscout::search::search;
 use rustscout::{
     FileReplacementPlan, ReplacementConfig, ReplacementSet, ReplacementTask, SearchConfig,
 };
+use std::fs;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use tracing::{info, Level};
 use tracing_subscriber::{fmt, EnvFilter};
-use std::fs;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -159,7 +159,7 @@ fn init_logging(level: &str) -> Result<()> {
     Ok(())
 }
 
-fn run_list_undo(args: &Args) -> Result<()> {
+fn run_list_undo(_args: &Args) -> Result<()> {
     let config = ReplacementConfig {
         pattern: String::new(),
         replacement: String::new(),
@@ -225,8 +225,10 @@ fn main() -> Result<()> {
                         .map(|s| s.split(',').map(String::from).collect()),
                     ignore_patterns: ignore.to_vec(),
                     stats_only: *stats_only,
-                    thread_count: NonZeroUsize::new(threads.map(|t| t).unwrap_or_else(num_cpus::get))
-                        .expect("Thread count cannot be zero"),
+                    thread_count: NonZeroUsize::new(
+                        threads.map(|t| t).unwrap_or_else(num_cpus::get),
+                    )
+                    .expect("Thread count cannot be zero"),
                     log_level: log_level.to_string(),
                     context_before: context.map(|c| c).unwrap_or(*context_before),
                     context_after: context.map(|c| c).unwrap_or(*context_after),
@@ -317,7 +319,7 @@ fn main() -> Result<()> {
             }
 
             let mut config = if let Some(path) = config_file {
-                ReplacementConfig::load_from(&path)?
+                ReplacementConfig::load_from(path)?
             } else {
                 ReplacementConfig {
                     pattern: pattern.clone(),
@@ -351,7 +353,7 @@ fn main() -> Result<()> {
                 undo_dir: PathBuf::from(".rustscout/undo"),
             });
 
-            let search_pattern = regex_pattern.as_ref().unwrap_or(&pattern).clone();
+            let search_pattern = regex_pattern.as_ref().unwrap_or(pattern).clone();
 
             let search_config = SearchConfig {
                 patterns: vec![search_pattern.clone()],
@@ -454,8 +456,9 @@ fn main() -> Result<()> {
         Commands::Undo { id } => {
             println!("Undoing operation {}...", id);
             let undo_dir = PathBuf::from(".rustscout/undo");
-            fs::create_dir_all(&undo_dir).map_err(|e| anyhow!("Failed to create undo directory: {}", e))?;
-            
+            fs::create_dir_all(&undo_dir)
+                .map_err(|e| anyhow!("Failed to create undo directory: {}", e))?;
+
             let config = ReplacementConfig {
                 pattern: String::new(),
                 replacement: String::new(),

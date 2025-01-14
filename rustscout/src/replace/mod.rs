@@ -403,9 +403,11 @@ impl FileReplacementPlan {
 
         let backup_dir = config.backup_dir.clone().unwrap_or_else(|| {
             let backups = config.undo_dir.join("backups");
-            fs::create_dir_all(&backups).map_err(|e| {
-                SearchError::config_error(format!("Failed to create backup directory: {}", e))
-            }).unwrap();
+            fs::create_dir_all(&backups)
+                .map_err(|e| {
+                    SearchError::config_error(format!("Failed to create backup directory: {}", e))
+                })
+                .unwrap();
             backups
         });
 
@@ -458,7 +460,9 @@ impl ReplacementSet {
     }
 
     /// Lists available undo operations with detailed information
-    pub fn list_undo_operations(config: &ReplacementConfig) -> SearchResult<Vec<(UndoInfo, PathBuf)>> {
+    pub fn list_undo_operations(
+        config: &ReplacementConfig,
+    ) -> SearchResult<Vec<(UndoInfo, PathBuf)>> {
         let undo_dir = &config.undo_dir;
         if !undo_dir.exists() {
             return Ok(Vec::new());
@@ -490,19 +494,20 @@ impl ReplacementSet {
     /// Undoes a specific replacement operation by ID with progress reporting
     pub fn undo_by_id(id: u64, config: &ReplacementConfig) -> SearchResult<()> {
         let info_path = config.undo_dir.join(format!("{}.json", id));
-        let content = fs::read_to_string(&info_path).map_err(|e| {
-            SearchError::config_error(format!("Failed to read undo info: {}", e))
-        })?;
-        
-        let info: UndoInfo = serde_json::from_str(&content).map_err(|e| {
-            SearchError::config_error(format!("Failed to parse undo info: {}", e))
-        })?;
+        let content = fs::read_to_string(&info_path)
+            .map_err(|e| SearchError::config_error(format!("Failed to read undo info: {}", e)))?;
+
+        let info: UndoInfo = serde_json::from_str(&content)
+            .map_err(|e| SearchError::config_error(format!("Failed to parse undo info: {}", e)))?;
 
         for (original, backup) in info.backups {
             let orig_abs = original.canonicalize().map_err(|e| {
-                SearchError::config_error(format!("Failed to get absolute path for original: {}", e))
+                SearchError::config_error(format!(
+                    "Failed to get absolute path for original: {}",
+                    e
+                ))
             })?;
-            
+
             if !backup.exists() {
                 return Err(SearchError::config_error(format!(
                     "Backup file not found: {}",
@@ -683,9 +688,8 @@ impl ReplacementSet {
             SearchError::config_error(format!("Failed to serialize undo info: {}", e))
         })?;
 
-        fs::write(&info_path, content).map_err(|e| {
-            SearchError::config_error(format!("Failed to save undo info: {}", e))
-        })?;
+        fs::write(&info_path, content)
+            .map_err(|e| SearchError::config_error(format!("Failed to save undo info: {}", e)))?;
 
         Ok(())
     }
