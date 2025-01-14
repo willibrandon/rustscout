@@ -189,4 +189,46 @@ mod tests {
         assert!(!PatternMatcher::is_simple_pattern(r"\btest\w+"));
         assert!(!PatternMatcher::is_simple_pattern("test.*pattern"));
     }
+
+    #[test]
+    fn test_word_boundary_issue() {
+        let matcher = PatternMatcher::new(vec!["TODO".to_string()]);
+        
+        // Test case 1: Basic word boundaries
+        let text1 = "METHODOLOGY TODO TORNADO";
+        let matches1 = matcher.find_matches(text1);
+        println!("Test case 1 - Found {} matches:", matches1.len());
+        for (i, (start, end)) in matches1.iter().enumerate() {
+            println!("Match {}: '{}' at positions {}-{}", 
+                i + 1, 
+                &text1[*start..*end],
+                start,
+                end
+            );
+        }
+        assert_eq!(matches1.len(), 1, "Should only match standalone 'TODO'");
+        
+        // Test case 2: TODO as part of another word
+        let text2 = "TODOLIST contains TODO items and SUDOTODO";
+        let matches2 = matcher.find_matches(text2);
+        println!("\nTest case 2 - Found {} matches:", matches2.len());
+        for (i, (start, end)) in matches2.iter().enumerate() {
+            println!("Match {}: '{}' at positions {}-{}", 
+                i + 1, 
+                &text2[*start..*end],
+                start,
+                end
+            );
+        }
+        assert_eq!(matches2.len(), 1, "Should not match 'TODO' within other words");
+        if !matches2.is_empty() {
+            assert_eq!(&text2[matches2[0].0..matches2[0].1], "TODO");
+            assert!(text2.chars().nth(matches2[0].0.saturating_sub(1))
+                .map_or(true, |c| !c.is_alphanumeric()), 
+                "Character before match should not be alphanumeric");
+            assert!(text2.chars().nth(matches2[0].1)
+                .map_or(true, |c| !c.is_alphanumeric()),
+                "Character after match should not be alphanumeric");
+        }
+    }
 }

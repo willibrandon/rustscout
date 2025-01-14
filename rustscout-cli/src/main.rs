@@ -57,7 +57,7 @@ enum Commands {
         threads: Option<NonZeroUsize>,
 
         /// Enable incremental search using cache
-        #[arg(short = 'i', long)]
+        #[arg(short = 'I', long)]
         incremental: bool,
 
         /// Path to cache file (default: .rustscout-cache.json)
