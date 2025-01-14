@@ -20,6 +20,11 @@ A high-performance, concurrent code search tool written in Rust. RustScout is de
   - `--context-before N` or `-B N`: Show N lines before each match
   - `--context-after N` or `-A N`: Show N lines after each match
   - `--context N` or `-C N`: Show N lines before and after each match
+- 🔄 **Search and Replace**: Powerful find and replace functionality
+  - Memory-efficient processing for files of any size
+  - Preview changes before applying
+  - Backup and undo support
+  - Regular expressions with capture groups
 
 ## Quick Start
 
@@ -105,6 +110,37 @@ rustscout-cli --pattern "TODO" --pattern "FIXME" .
 rustscout-cli --pattern "TODO" --pattern "FIXME:.*bug.*line \d+" .
 ```
 
+### Search and Replace
+```bash
+# Simple text replacement
+rustscout replace "old_text" --replace "new_text" src/*.rs
+
+# Preview changes before applying
+rustscout replace "TODO" --replace "DONE" --preview src/
+
+# Replace with regex and capture groups
+rustscout replace --regex "fn\s+(\w+)" --capture-groups "fn new_$1" src/
+
+# Create backups and enable undo
+rustscout replace "old_api" --replace "new_api" --backup src/
+rustscout list-undo    # List available undo operations
+rustscout undo <id>    # Revert a specific change
+
+# Preserve file metadata
+rustscout replace "pattern" --replace "new" --preserve src/
+
+# Custom backup directory
+rustscout replace "pattern" --replace "new" --backup --output-dir backups/ src/
+```
+
+The replacement feature intelligently handles files of different sizes:
+- Small files (<32KB): Direct in-memory operations
+- Medium files (32KB-10MB): Buffered streaming
+- Large files (>10MB): Memory-mapped access
+- Maintains O(1) memory usage regardless of file size
+
+All replacements are performed atomically with temporary files, ensuring your codebase remains in a consistent state even if an operation is interrupted.
+
 ### File Filtering
 ```bash
 # Search only Rust files
@@ -144,19 +180,22 @@ RustScout can also be used as a library in your Rust projects:
 rustscout = "0.1.0"
 ```
 
+### Search Example
 ```rust
-use rustscout::{Config, search};
+use rustscout::{SearchConfig, search};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 fn main() -> anyhow::Result<()> {
-    let config = Config {
+    let config = SearchConfig {
         pattern: "TODO".to_string(),
         root_path: PathBuf::from("."),
         thread_count: NonZeroUsize::new(8).unwrap(),
         ignore_patterns: vec!["target/*".to_string()],
         file_extensions: Some(vec!["rs".to_string()]),
         stats_only: false,
+        context_before: 0,
+        context_after: 0,
     };
 
     let results = search(&config)?;
@@ -164,6 +203,54 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 ```
+
+### Replace Example
+```rust
+use rustscout::{FileReplacementPlan, ReplacementConfig, ReplacementSet, ReplacementTask};
+use std::path::PathBuf;
+
+fn main() -> anyhow::Result<()> {
+    // Configure the replacement operation
+    let config = ReplacementConfig {
+        pattern: "old_api".to_string(),
+        replacement: "new_api".to_string(),
+        is_regex: false,
+        backup_enabled: true,
+        dry_run: false,
+        backup_dir: Some(PathBuf::from("backups")),
+        preserve_metadata: true,
+        capture_groups: None,
+        undo_dir: PathBuf::from(".rustscout/undo"),
+    };
+
+    // Create a replacement set
+    let mut replacement_set = ReplacementSet::new(config.clone());
+
+    // Add files to process
+    let mut plan = FileReplacementPlan::new("src/lib.rs".into())?;
+    plan.add_replacement(ReplacementTask::new(
+        "src/lib.rs".into(),
+        (100, 107), // start and end positions
+        "new_api".to_string(),
+        config.clone(),
+    ));
+    replacement_set.add_plan(plan);
+
+    // Preview changes
+    for preview in replacement_set.preview()? {
+        println!("Changes in {}:", preview.file_path.display());
+        for (i, line) in preview.original_lines.iter().enumerate() {
+            println!("- {}", line);
+            println!("+ {}", preview.new_lines[i]);
+        }
+    }
+
+    // Apply changes
+    let undo_info = replacement_set.apply_with_progress()?;
+    println!("Applied {} changes", undo_info.len());
+
+    Ok(())
+}
 
 ## Configuration
 
@@ -223,13 +310,21 @@ context_after: 2
 
 ```bash
 USAGE:
-    rustscout-cli [OPTIONS] [PATTERN] [ROOT_PATH]
+    rustscout [SUBCOMMAND]
+    rustscout search [OPTIONS] [PATTERN] [ROOT_PATH]
+    rustscout replace [OPTIONS] <PATTERN> <FILES>...
+    rustscout list-undo
+    rustscout undo <ID>
 
-ARGS:
+SUBCOMMANDS:
+    search       Search for patterns in files
+    replace      Search and replace patterns in files
+    list-undo    List available undo operations
+    undo        Undo a previous replacement operation
+
+SEARCH OPTIONS:
     [PATTERN]      Pattern to search for (supports regex)
     [ROOT_PATH]    Root directory to search in [default: .]
-
-OPTIONS:
     -p, --pattern <PATTERN>         Pattern to search for (can be specified multiple times)
     -e, --extensions <EXTENSIONS>    Comma-separated list of file extensions to search (e.g. "rs,toml")
     -i, --ignore <PATTERNS>         Additional patterns to ignore (supports .gitignore syntax)
@@ -240,6 +335,22 @@ OPTIONS:
     -B, --context-before <LINES>    Number of lines to show before each match [default: 0]
     -A, --context-after <LINES>     Number of lines to show after each match [default: 0]
     -C, --context <LINES>           Number of lines to show before and after each match
+
+REPLACE OPTIONS:
+    <PATTERN>                       Pattern to search for
+    <FILES>...                      Files or directories to process
+    -r, --replace <TEXT>           The replacement text
+    -R, --regex                    Use regex pattern matching
+    -g, --capture-groups <GROUPS>  Use capture groups in the replacement (e.g. "$1, $2")
+    -n, --dry-run                  Show what would be changed without modifying files
+    -b, --backup                   Create backups of modified files
+    -o, --output-dir <DIR>         Directory for backups and temporary files
+    -p, --preview                  Show detailed preview of changes
+    --preserve                     Preserve file permissions and timestamps
+    -t, --threads <COUNT>          Number of threads to use
+    -l, --log-level <LEVEL>        Log level (trace, debug, info, warn, error) [default: warn]
+
+GLOBAL OPTIONS:
     -h, --help                      Print help information
     -V, --version                   Print version information
 ```
