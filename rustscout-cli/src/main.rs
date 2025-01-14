@@ -1,6 +1,6 @@
-use anyhow::Result;
-use clap::{Parser, Subcommand};
-use colored::*;
+use anyhow::{anyhow, Result};
+use clap::{ArgMatches, Command, CommandFactory, Parser, Subcommand};
+use colored::{Colorize, *};
 use rustscout::search::search;
 use rustscout::{
     FileReplacementPlan, ReplacementConfig, ReplacementSet, ReplacementTask, SearchConfig,
@@ -9,6 +9,7 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use tracing::{info, Level};
 use tracing_subscriber::{fmt, EnvFilter};
+use std::fs;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -129,7 +130,7 @@ enum Commands {
     /// Undo a previous replacement operation
     Undo {
         /// ID of the operation to undo (from list-undo)
-        id: usize,
+        id: u64,
     },
 }
 
@@ -158,10 +159,37 @@ fn init_logging(level: &str) -> Result<()> {
     Ok(())
 }
 
+fn run_list_undo(args: &Args) -> Result<()> {
+    let config = ReplacementConfig {
+        pattern: String::new(),
+        replacement: String::new(),
+        is_regex: false,
+        backup_enabled: false,
+        dry_run: false,
+        backup_dir: None,
+        preserve_metadata: false,
+        capture_groups: None,
+        undo_dir: PathBuf::from(".rustscout/undo"),
+    };
+
+    let operations = ReplacementSet::list_undo_operations(&config)?;
+    if operations.is_empty() {
+        println!("No undo operations available");
+        return Ok(());
+    }
+
+    println!("Available undo operations:");
+    for (i, (info, _)) in operations.iter().enumerate() {
+        println!("[{}] {}", i.to_string().yellow(), info);
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    match args.command {
+    match &args.command {
         Commands::Search {
             pattern,
             root_path,
@@ -175,12 +203,12 @@ fn main() -> Result<()> {
             context_after,
             context,
         } => {
-            init_logging(&log_level)?;
+            init_logging(log_level)?;
 
             // Set up thread pool if specified
             if let Some(threads) = threads {
                 rayon::ThreadPoolBuilder::new()
-                    .num_threads(threads)
+                    .num_threads(*threads)
                     .build_global()?;
             }
 
@@ -190,18 +218,18 @@ fn main() -> Result<()> {
             } else {
                 SearchConfig {
                     patterns: vec![pattern.clone()],
-                    pattern,
-                    root_path,
+                    pattern: pattern.to_string(),
+                    root_path: root_path.to_path_buf(),
                     file_extensions: extensions
                         .as_ref()
                         .map(|s| s.split(',').map(String::from).collect()),
-                    ignore_patterns: ignore,
-                    stats_only,
-                    thread_count: NonZeroUsize::new(threads.unwrap_or_else(num_cpus::get))
+                    ignore_patterns: ignore.to_vec(),
+                    stats_only: *stats_only,
+                    thread_count: NonZeroUsize::new(threads.map(|t| t).unwrap_or_else(num_cpus::get))
                         .expect("Thread count cannot be zero"),
-                    log_level,
-                    context_before: context.unwrap_or(context_before),
-                    context_after: context.unwrap_or(context_after),
+                    log_level: log_level.to_string(),
+                    context_before: context.map(|c| c).unwrap_or(*context_before),
+                    context_after: context.map(|c| c).unwrap_or(*context_after),
                 }
             };
 
@@ -279,12 +307,12 @@ fn main() -> Result<()> {
             threads,
             log_level,
         } => {
-            init_logging(&log_level)?;
+            init_logging(log_level)?;
 
             // Set up thread pool if specified
             if let Some(threads) = threads {
                 rayon::ThreadPoolBuilder::new()
-                    .num_threads(threads)
+                    .num_threads(*threads)
                     .build_global()?;
             }
 
@@ -298,11 +326,12 @@ fn main() -> Result<()> {
                         .map(|s| s.to_string())
                         .unwrap_or_default(),
                     is_regex: regex_pattern.is_some(),
-                    backup_enabled: backup,
-                    dry_run,
+                    backup_enabled: *backup,
+                    dry_run: *dry_run,
                     backup_dir: backup_dir.clone(),
-                    preserve_metadata: preserve,
+                    preserve_metadata: *preserve,
                     capture_groups: capture_groups.clone(),
+                    undo_dir: PathBuf::from(".rustscout/undo"),
                 }
             };
 
@@ -314,11 +343,12 @@ fn main() -> Result<()> {
                     .map(|s| s.to_string())
                     .unwrap_or_default(),
                 is_regex: regex_pattern.is_some(),
-                backup_enabled: backup,
-                dry_run,
-                backup_dir,
-                preserve_metadata: preserve,
-                capture_groups,
+                backup_enabled: *backup,
+                dry_run: *dry_run,
+                backup_dir: backup_dir.clone(),
+                preserve_metadata: *preserve,
+                capture_groups: capture_groups.clone(),
+                undo_dir: PathBuf::from(".rustscout/undo"),
             });
 
             let search_pattern = regex_pattern.as_ref().unwrap_or(&pattern).clone();
@@ -362,7 +392,7 @@ fn main() -> Result<()> {
             }
 
             // Show preview if requested
-            if preview {
+            if *preview {
                 println!("\nPreview of changes:");
                 for preview in replacement_set.preview()? {
                     println!(
@@ -386,7 +416,7 @@ fn main() -> Result<()> {
                     }
                 }
 
-                if !dry_run {
+                if !*dry_run {
                     print!("Apply these changes? [y/N] ");
                     std::io::Write::flush(&mut std::io::stdout())?;
                     let mut response = String::new();
@@ -399,7 +429,7 @@ fn main() -> Result<()> {
             }
 
             // Apply replacements with progress reporting
-            if dry_run {
+            if *dry_run {
                 println!("\nDry run - no files will be modified");
             }
             let undo_metadata = replacement_set.apply_with_progress()?;
@@ -410,7 +440,7 @@ fn main() -> Result<()> {
                 result.files_with_matches.to_string().green()
             );
 
-            if !dry_run && !undo_metadata.is_empty() {
+            if !*dry_run && !undo_metadata.is_empty() {
                 println!("\nTo undo these changes later, use:");
                 println!("  rustscout list-undo    # to see available undo operations");
                 println!("  rustscout undo <id>    # to undo this operation");
@@ -418,20 +448,26 @@ fn main() -> Result<()> {
         }
 
         Commands::ListUndo => {
-            let operations = ReplacementSet::list_undo_operations()?;
-            if operations.is_empty() {
-                println!("No undo operations available");
-            } else {
-                println!("Available undo operations:");
-                for (i, (desc, _)) in operations.iter().enumerate() {
-                    println!("[{}] {}", i.to_string().yellow(), desc);
-                }
-            }
+            run_list_undo(&args)?;
         }
 
         Commands::Undo { id } => {
             println!("Undoing operation {}...", id);
-            ReplacementSet::undo_by_id(id)?;
+            let undo_dir = PathBuf::from(".rustscout/undo");
+            fs::create_dir_all(&undo_dir).map_err(|e| anyhow!("Failed to create undo directory: {}", e))?;
+            
+            let config = ReplacementConfig {
+                pattern: String::new(),
+                replacement: String::new(),
+                is_regex: false,
+                backup_enabled: false,
+                dry_run: false,
+                backup_dir: None,
+                preserve_metadata: false,
+                capture_groups: None,
+                undo_dir,
+            };
+            ReplacementSet::undo_by_id(*id, &config)?;
             println!("Undo complete");
         }
     }

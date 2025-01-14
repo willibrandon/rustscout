@@ -1,7 +1,5 @@
 use anyhow::Result;
-use rustscout::replace::{
-    set_undo_dir, FileReplacementPlan, ReplacementConfig, ReplacementSet, ReplacementTask,
-};
+use rustscout::replace::{FileReplacementPlan, ReplacementConfig, ReplacementSet, ReplacementTask};
 use std::fs;
 use std::path::Path;
 use tempfile::tempdir;
@@ -19,6 +17,9 @@ fn test_replace_basic() -> Result<()> {
     let dir = tempdir()?;
     create_test_files(&dir, &[("test.txt", "Hello world")])?;
 
+    let undo_dir = dir.path().join(".rustscout").join("undo");
+    fs::create_dir_all(&undo_dir)?;
+
     let config = ReplacementConfig {
         pattern: "Hello".to_string(),
         replacement: "Hi".to_string(),
@@ -28,6 +29,7 @@ fn test_replace_basic() -> Result<()> {
         backup_dir: None,
         preserve_metadata: false,
         capture_groups: None,
+        undo_dir,
     };
 
     let mut plan = FileReplacementPlan::new(dir.path().join("test.txt"))?;
@@ -52,6 +54,9 @@ fn test_replace_with_backup() -> Result<()> {
     let backup_dir = dir.path().join("backups");
     fs::create_dir_all(&backup_dir)?;
 
+    let undo_dir = dir.path().join(".rustscout").join("undo");
+    fs::create_dir_all(&undo_dir)?;
+
     create_test_files(&dir, &[("test.txt", "Hello world")])?;
 
     let config = ReplacementConfig {
@@ -63,6 +68,7 @@ fn test_replace_with_backup() -> Result<()> {
         backup_dir: Some(backup_dir.clone()),
         preserve_metadata: false,
         capture_groups: None,
+        undo_dir,
     };
 
     let mut plan = FileReplacementPlan::new(dir.path().join("test.txt"))?;
@@ -78,7 +84,12 @@ fn test_replace_with_backup() -> Result<()> {
     replacement_set.apply()?;
 
     assert_eq!(fs::read_to_string(dir.path().join("test.txt"))?, "Hi world");
-    assert!(backup_dir.join("test.txt").exists());
+    assert!(fs::read_dir(&backup_dir)?
+        .filter_map(|e| e.ok())
+        .any(|e| e.path().file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.starts_with("test.txt"))
+            .unwrap_or(false)));
     Ok(())
 }
 
@@ -89,6 +100,9 @@ fn test_replace_dry_run() -> Result<()> {
     let original_content = "Hello world!";
     fs::write(&test_file, original_content)?;
 
+    let undo_dir = dir.path().join(".rustscout").join("undo");
+    fs::create_dir_all(&undo_dir)?;
+
     let config = ReplacementConfig {
         pattern: "Hello".to_string(),
         replacement: "Hi".to_string(),
@@ -98,6 +112,7 @@ fn test_replace_dry_run() -> Result<()> {
         backup_dir: None,
         preserve_metadata: false,
         capture_groups: None,
+        undo_dir,
     };
 
     let mut plan = FileReplacementPlan::new(test_file.clone())?;
@@ -123,6 +138,9 @@ fn test_replace_preview() -> Result<()> {
     let test_file = dir.path().join("test.txt");
     fs::write(&test_file, "Hello world!\nHello Rust!")?;
 
+    let undo_dir = dir.path().join(".rustscout").join("undo");
+    fs::create_dir_all(&undo_dir)?;
+
     let config = ReplacementConfig {
         pattern: "Hello".to_string(),
         replacement: "Hi".to_string(),
@@ -132,6 +150,7 @@ fn test_replace_preview() -> Result<()> {
         backup_dir: None,
         preserve_metadata: false,
         capture_groups: None,
+        undo_dir,
     };
 
     let mut plan = FileReplacementPlan::new(test_file.clone())?;
@@ -168,9 +187,8 @@ fn test_replace_undo_list() -> Result<()> {
     let test_file = dir.path().join("test.txt");
     fs::write(&test_file, "Hello world!")?;
 
-    // Set up a temporary undo directory
     let undo_dir = dir.path().join(".rustscout").join("undo");
-    set_undo_dir(undo_dir.to_str().unwrap());
+    fs::create_dir_all(&undo_dir)?;
 
     let config = ReplacementConfig {
         pattern: "Hello".to_string(),
@@ -181,6 +199,7 @@ fn test_replace_undo_list() -> Result<()> {
         backup_dir: None,
         preserve_metadata: false,
         capture_groups: None,
+        undo_dir,
     };
 
     let mut plan = FileReplacementPlan::new(test_file.clone())?;
@@ -191,12 +210,12 @@ fn test_replace_undo_list() -> Result<()> {
         config.clone(),
     ));
 
-    let mut replacement_set = ReplacementSet::new(config);
+    let mut replacement_set = ReplacementSet::new(config.clone());
     replacement_set.add_plan(plan);
     replacement_set.apply()?;
 
     // Check that undo information was saved
-    let operations = ReplacementSet::list_undo_operations()?;
+    let operations = ReplacementSet::list_undo_operations(&config)?;
     assert_eq!(operations.len(), 1);
     assert!(operations[0]
         .0
@@ -212,9 +231,8 @@ fn test_replace_undo_restore() -> Result<()> {
     let original_content = "Hello world!";
     fs::write(&test_file, original_content)?;
 
-    // Set up a temporary undo directory
     let undo_dir = dir.path().join(".rustscout").join("undo");
-    set_undo_dir(undo_dir.to_str().unwrap());
+    fs::create_dir_all(&undo_dir)?;
 
     let config = ReplacementConfig {
         pattern: "Hello".to_string(),
@@ -225,6 +243,7 @@ fn test_replace_undo_restore() -> Result<()> {
         backup_dir: None,
         preserve_metadata: false,
         capture_groups: None,
+        undo_dir: undo_dir.clone(),
     };
 
     let mut plan = FileReplacementPlan::new(test_file.clone())?;
@@ -235,15 +254,20 @@ fn test_replace_undo_restore() -> Result<()> {
         config.clone(),
     ));
 
-    let mut replacement_set = ReplacementSet::new(config);
+    let mut replacement_set = ReplacementSet::new(config.clone());
     replacement_set.add_plan(plan);
     replacement_set.apply()?;
 
     // Verify the file was modified
     assert_eq!(fs::read_to_string(&test_file)?, "Hi world!");
 
+    // Get the undo operation ID
+    let operations = ReplacementSet::list_undo_operations(&config)?;
+    assert_eq!(operations.len(), 1);
+    let undo_id = operations[0].0.timestamp;
+
     // Undo the changes
-    ReplacementSet::undo_by_id(0)?;
+    ReplacementSet::undo_by_id(undo_id, &config)?;
 
     // Verify the file was restored
     assert_eq!(fs::read_to_string(&test_file)?, original_content);

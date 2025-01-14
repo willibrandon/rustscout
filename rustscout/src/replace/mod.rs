@@ -16,41 +16,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const SMALL_FILE_THRESHOLD: u64 = 32 * 1024; // 32KB
 const LARGE_FILE_THRESHOLD: u64 = 10 * 1024 * 1024; // 10MB
 
-/// Directory for storing undo information
-static mut UNDO_DIR: &str = ".rustscout/undo";
-
-/// Sets the undo directory path (for testing)
-pub fn set_undo_dir(path: &str) {
-    unsafe {
-        UNDO_DIR = Box::leak(path.to_string().into_boxed_str());
-    }
-}
-
-/// Gets the current undo directory path
-fn get_undo_dir() -> &'static str {
-    unsafe { UNDO_DIR }
-}
-
-/// Strategy for processing files based on their size
-#[derive(Debug, Clone, Copy)]
-enum ProcessingStrategy {
-    InMemory,     // For small files
-    Streaming,    // For medium files
-    MemoryMapped, // For large files
-}
-
-impl ProcessingStrategy {
-    fn for_file_size(size: u64) -> Self {
-        if size < SMALL_FILE_THRESHOLD {
-            ProcessingStrategy::InMemory
-        } else if size < LARGE_FILE_THRESHOLD {
-            ProcessingStrategy::Streaming
-        } else {
-            ProcessingStrategy::MemoryMapped
-        }
-    }
-}
-
 /// Configuration for replacement operations
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplacementConfig {
@@ -77,6 +42,9 @@ pub struct ReplacementConfig {
 
     /// Capture groups for regex replacement
     pub capture_groups: Option<String>,
+
+    /// Directory for storing undo information
+    pub undo_dir: PathBuf,
 }
 
 impl ReplacementConfig {
@@ -172,6 +140,26 @@ pub struct UndoInfo {
 impl fmt::Display for UndoInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.description)
+    }
+}
+
+/// Strategy for processing files based on their size
+#[derive(Debug, Clone, Copy)]
+enum ProcessingStrategy {
+    InMemory,     // For small files
+    Streaming,    // For medium files
+    MemoryMapped, // For large files
+}
+
+impl ProcessingStrategy {
+    fn for_file_size(size: u64) -> Self {
+        if size < SMALL_FILE_THRESHOLD {
+            ProcessingStrategy::InMemory
+        } else if size < LARGE_FILE_THRESHOLD {
+            ProcessingStrategy::Streaming
+        } else {
+            ProcessingStrategy::MemoryMapped
+        }
     }
 }
 
@@ -409,36 +397,34 @@ impl FileReplacementPlan {
 
     /// Create a backup of the file
     fn create_backup(&self, config: &ReplacementConfig) -> SearchResult<Option<PathBuf>> {
-        let backup_dir = if let Some(dir) = &config.backup_dir {
-            dir.clone()
-        } else {
-            let undo_dir = PathBuf::from(get_undo_dir());
-            fs::create_dir_all(&undo_dir).map_err(|e| {
-                SearchError::config_error(format!("Failed to create undo directory: {}", e))
-            })?;
-            let backup_dir = undo_dir.join("backups");
-            fs::create_dir_all(&backup_dir).map_err(|e| {
-                SearchError::config_error(format!("Failed to create backup directory: {}", e))
-            })?;
-            backup_dir
-        };
-
-        let file_name = self
-            .file_path
-            .file_name()
-            .ok_or_else(|| SearchError::config_error("Invalid file path".to_string()))?;
-        let backup_path = backup_dir.join(file_name);
-
-        // Ensure parent directory exists
-        if let Some(parent) = backup_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                SearchError::config_error(format!("Failed to create backup directory: {}", e))
-            })?;
+        if !config.backup_enabled || config.dry_run {
+            return Ok(None);
         }
 
-        fs::copy(&self.file_path, &backup_path)
-            .map_err(|e| SearchError::config_error(format!("Failed to create backup: {}", e)))?;
+        let backup_dir = config.backup_dir.clone().unwrap_or_else(|| {
+            let backups = config.undo_dir.join("backups");
+            fs::create_dir_all(&backups).map_err(|e| {
+                SearchError::config_error(format!("Failed to create backup directory: {}", e))
+            }).unwrap();
+            backups
+        });
 
+        let file_path_abs = self.file_path.canonicalize().map_err(|e| {
+            SearchError::config_error(format!("Failed to get absolute path: {}", e))
+        })?;
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let backup_path = backup_dir.join(format!(
+            "{}.{}",
+            file_path_abs.file_name().unwrap().to_string_lossy(),
+            timestamp
+        ));
+
+        fs::copy(&file_path_abs, &backup_path).map_err(SearchError::IoError)?;
         Ok(Some(backup_path))
     }
 }
@@ -472,22 +458,28 @@ impl ReplacementSet {
     }
 
     /// Lists available undo operations with detailed information
-    pub fn list_undo_operations() -> SearchResult<Vec<(UndoInfo, PathBuf)>> {
-        let undo_dir = PathBuf::from(get_undo_dir());
+    pub fn list_undo_operations(config: &ReplacementConfig) -> SearchResult<Vec<(UndoInfo, PathBuf)>> {
+        let undo_dir = &config.undo_dir;
         if !undo_dir.exists() {
             return Ok(Vec::new());
         }
 
+        let entries = fs::read_dir(undo_dir).map_err(|e| {
+            SearchError::config_error(format!("Failed to read undo directory: {}", e))
+        })?;
+
         let mut operations = Vec::new();
-        for entry in fs::read_dir(&undo_dir).map_err(SearchError::IoError)? {
-            let entry = entry.map_err(SearchError::IoError)?;
-            let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "json") {
-                if let Ok(content) = fs::read_to_string(&path) {
-                    if let Ok(info) = serde_json::from_str::<UndoInfo>(&content) {
-                        operations.push((info, path));
-                    }
-                }
+        for entry in entries.filter_map(|e| e.ok()) {
+            if entry.path().extension().is_some_and(|ext| ext == "json") {
+                let content = fs::read_to_string(entry.path()).map_err(|e| {
+                    SearchError::config_error(format!("Failed to read undo info: {}", e))
+                })?;
+
+                let info: UndoInfo = serde_json::from_str(&content).map_err(|e| {
+                    SearchError::config_error(format!("Failed to parse undo info: {}", e))
+                })?;
+
+                operations.push((info, entry.path()));
             }
         }
 
@@ -496,35 +488,35 @@ impl ReplacementSet {
     }
 
     /// Undoes a specific replacement operation by ID with progress reporting
-    pub fn undo_by_id(id: usize) -> SearchResult<()> {
-        let undo_dir = PathBuf::from(get_undo_dir());
-        let entries = fs::read_dir(&undo_dir).map_err(|e| {
-            SearchError::config_error(format!("Failed to read undo directory: {}", e))
+    pub fn undo_by_id(id: u64, config: &ReplacementConfig) -> SearchResult<()> {
+        let info_path = config.undo_dir.join(format!("{}.json", id));
+        let content = fs::read_to_string(&info_path).map_err(|e| {
+            SearchError::config_error(format!("Failed to read undo info: {}", e))
         })?;
-
-        let mut undo_files: Vec<_> = entries
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
-            .collect();
-
-        undo_files.sort_by_key(|e| e.path());
-
-        let undo_file = undo_files.get(id).ok_or_else(|| {
-            SearchError::config_error(format!("No undo operation found with ID {}", id))
+        
+        let info: UndoInfo = serde_json::from_str(&content).map_err(|e| {
+            SearchError::config_error(format!("Failed to parse undo info: {}", e))
         })?;
-
-        let content = fs::read_to_string(undo_file.path())
-            .map_err(|e| SearchError::config_error(format!("Failed to read undo file: {}", e)))?;
-
-        let info: UndoInfo = serde_json::from_str(&content)
-            .map_err(|e| SearchError::config_error(format!("Failed to parse undo info: {}", e)))?;
 
         for (original, backup) in info.backups {
-            fs::copy(&backup, &original).map_err(|e| {
+            let orig_abs = original.canonicalize().map_err(|e| {
+                SearchError::config_error(format!("Failed to get absolute path for original: {}", e))
+            })?;
+            
+            if !backup.exists() {
+                return Err(SearchError::config_error(format!(
+                    "Backup file not found: {}",
+                    backup.display()
+                )));
+            }
+
+            fs::copy(&backup, &orig_abs).map_err(|e| {
                 SearchError::config_error(format!("Failed to restore backup: {}", e))
             })?;
+            fs::remove_file(&backup).ok();
         }
 
+        fs::remove_file(&info_path).ok();
         Ok(())
     }
 
@@ -661,8 +653,8 @@ impl ReplacementSet {
 
     /// Save undo information for a set of backups
     fn save_undo_info(&self, backups: &[(PathBuf, PathBuf)]) -> SearchResult<()> {
-        let undo_dir = PathBuf::from(get_undo_dir());
-        fs::create_dir_all(&undo_dir).map_err(|e| {
+        let undo_dir = &self.config.undo_dir;
+        fs::create_dir_all(undo_dir).map_err(|e| {
             SearchError::config_error(format!("Failed to create undo directory: {}", e))
         })?;
 
@@ -691,8 +683,9 @@ impl ReplacementSet {
             SearchError::config_error(format!("Failed to serialize undo info: {}", e))
         })?;
 
-        fs::write(&info_path, content)
-            .map_err(|e| SearchError::config_error(format!("Failed to save undo info: {}", e)))?;
+        fs::write(&info_path, content).map_err(|e| {
+            SearchError::config_error(format!("Failed to save undo info: {}", e))
+        })?;
 
         Ok(())
     }
