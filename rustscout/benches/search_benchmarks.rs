@@ -3,6 +3,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use rustscout::{
     cache::{ChangeDetectionStrategy, IncrementalCache},
+    config::EncodingMode,
     search, SearchConfig,
 };
 use std::{fs::File, io::Write, num::NonZeroUsize};
@@ -44,6 +45,8 @@ fn create_base_config(dir: &tempfile::TempDir) -> SearchConfig {
         cache_strategy: ChangeDetectionStrategy::Auto,
         max_cache_size: None,
         use_compression: false,
+        encoding_mode: EncodingMode::FailFast,
+        pattern_definitions: vec![],
     }
 }
 
@@ -51,7 +54,7 @@ fn bench_repeated_pattern(c: &mut Criterion) -> std::io::Result<()> {
     let dir = tempdir().unwrap();
     create_test_files(&dir, 1, 10)?;
 
-    let patterns = vec![
+    let patterns = [
         "TODO",
         r"TODO:.*\d+",
         r"FIXME:.*bug.*line \d+",
@@ -189,17 +192,17 @@ fn bench_change_detection(c: &mut Criterion) -> std::io::Result<()> {
 
     // Initialize git repo for git strategy testing
     std::process::Command::new("git")
-        .args(&["init"])
+        .args(["init"])
         .current_dir(dir.path())
         .output()
         .unwrap();
     std::process::Command::new("git")
-        .args(&["add", "."])
+        .args(["add", "."])
         .current_dir(dir.path())
         .output()
         .unwrap();
     std::process::Command::new("git")
-        .args(&["commit", "-m", "Initial commit"])
+        .args(["commit", "-m", "Initial commit"])
         .current_dir(dir.path())
         .output()
         .unwrap();

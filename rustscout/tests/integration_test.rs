@@ -717,7 +717,7 @@ fn test_incremental_search_git_strategy() -> Result<()> {
 
     // Initialize git repo
     std::process::Command::new("git")
-        .args(&["init"])
+        .args(["init"])
         .current_dir(dir.path())
         .output()?;
 
@@ -726,12 +726,12 @@ fn test_incremental_search_git_strategy() -> Result<()> {
     std::fs::write(&file_path, "pattern_1\npattern_2\n")?;
 
     std::process::Command::new("git")
-        .args(&["add", "test.txt"])
+        .args(["add", "test.txt"])
         .current_dir(dir.path())
         .output()?;
 
     std::process::Command::new("git")
-        .args(&["commit", "-m", "Initial commit"])
+        .args(["commit", "-m", "Initial commit"])
         .current_dir(dir.path())
         .env("GIT_AUTHOR_NAME", "test")
         .env("GIT_AUTHOR_EMAIL", "test@example.com")
@@ -784,12 +784,12 @@ fn test_incremental_search_git_strategy() -> Result<()> {
 
     // Add and commit the change
     std::process::Command::new("git")
-        .args(&["add", "test.txt"])
+        .args(["add", "test.txt"])
         .current_dir(dir.path())
         .output()?;
 
     std::process::Command::new("git")
-        .args(&["commit", "-m", "Update file"])
+        .args(["commit", "-m", "Update file"])
         .current_dir(dir.path())
         .env("GIT_AUTHOR_NAME", "test")
         .env("GIT_AUTHOR_EMAIL", "test@example.com")
