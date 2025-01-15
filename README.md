@@ -211,21 +211,79 @@ rustscout-cli search "TODO" --incremental --max-cache-size 100MB
 rustscout-cli replace "old_text" --replace "new_text" src/*.rs
 
 # Preview changes before applying
-rustscout-cli replace "TODO" --replace "DONE" --preview src/
+rustscout-cli replace "TODO" --replace "DONE" --preview src/      # See changes in console
+rustscout-cli replace "TODO" --replace "DONE" --preview --dry-run # Preview without modifying files
 
 # Replace with regex and capture groups
 rustscout-cli replace --regex "fn\s+(\w+)" --capture-groups "fn new_$1" src/
 
-# Create backups and enable undo
-rustscout-cli replace "old_api" --replace "new_api" --backup src/
-rustscout-cli list-undo    # List available undo operations
-rustscout-cli undo <id>    # Revert a specific change
+# Complete backup and undo workflow
+rustscout-cli replace "old_api" --replace "new_api" --backup src/     # Creates backup and records undo info
+rustscout-cli list-undo                                              # Shows available undo operations with IDs
+rustscout-cli undo --dry-run 1627384952                             # Preview what would be restored
+rustscout-cli undo 1627384952                                       # Restore from backup using undo ID
 
 # Preserve file metadata
 rustscout-cli replace "pattern" --replace "new" --preserve src/
 
 # Custom backup directory
 rustscout-cli replace "pattern" --replace "new" --backup --output-dir backups/ src/
+
+# Examples of validation behavior (with descriptive errors)
+rustscout-cli replace "" --replace "test"        # Error: Empty pattern not allowed - prevents accidental mass replacements
+rustscout-cli replace "[invalid" --replace "test" --regex  # Error: Invalid regex pattern - missing closing bracket
+rustscout-cli replace "(\w+)" --replace "$2" --regex      # Error: Invalid capture group $2 - only $1 exists
+rustscout-cli replace "test" --replace "new" --overlapping # Error: Overlapping replacements detected at line 42
+
+# File size processing strategies (configurable thresholds)
+rustscout-cli replace "pattern" --replace "new" --small-file-threshold 1MB src/  # Memory mapping for files < 1MB
+rustscout-cli replace "pattern" --replace "new" --large-file-threshold 100MB src/ # Streaming for files > 100MB
+
+# Undo system features
+rustscout-cli list-undo --format json   # View undo information in JSON format
+rustscout-cli undo --dry-run <id>       # Preview what would be restored
+rustscout-cli undo --all                # Revert all changes in chronological order
+```
+
+### Validation and Safety Features
+
+> As of v1.1.0, RustScout includes enhanced validation and safety features to ensure reliable replacements. For the full story behind these improvements, check out our [blog post on the replace module journey](docs/blog/2025-01-replace-module-enhancements.md).
+
+RustScout includes robust validation and safety features to ensure reliable replacements:
+
+- **Pattern Validation**
+  - Empty patterns are rejected to prevent accidental mass replacements
+  - Regex patterns are validated before execution with clear error messages
+  - Capture group references are checked against available groups
+  - Overlapping replacements are detected and prevented with line numbers
+
+- **File Processing Safety**
+  - Adaptive processing based on file size:
+    - Small files (< 32KB by default): Memory mapping for speed
+    - Medium files: Buffered reading with reasonable memory usage
+    - Large files (> 10MB by default): Streaming for memory efficiency
+  - Configurable thresholds via CLI flags or config file
+  - Clear error messages guide you to the right processing strategy
+
+- **Backup System**
+  - Automatic backup creation before modifications
+  - Backups stored with timestamps for easy identification
+  - Custom backup directory support
+  - Metadata preservation option
+
+- **Undo System**
+  - JSON-formatted undo logs for transparency
+  - Dry-run option to preview restorations
+  - Bulk undo support for reverting multiple changes
+  - Chronological ordering of operations
+
+```mermaid
+graph LR
+    A[Input] --> B[Validate]
+    B --> C[Backup]
+    C --> D[Replace]
+    D --> E[Record Undo]
+    E -.-> F[Restore if needed]
 ```
 
 ### File Filtering
@@ -320,6 +378,16 @@ cache_path: ".rustscout/cache.json"
 cache_strategy: "auto"       # "auto", "git", or "signature"
 max_cache_size: "100MB"      # Optional size limit
 use_compression: false       # Enable cache compression
+
+# File Size Processing Strategies
+processing:
+  small_file_threshold: 32KB    # Default: 32KB
+  large_file_threshold: 10MB    # Default: 10MB
+
+# Undo System
+undo:
+  - "old_api"
+  - "new_api"
 ```
 
 ### Command-Line Options

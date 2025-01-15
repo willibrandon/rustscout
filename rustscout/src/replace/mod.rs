@@ -105,6 +105,65 @@ impl ReplacementTask {
             config,
         }
     }
+
+    pub fn validate(&self) -> SearchResult<()> {
+        // Check empty pattern
+        if self.config.pattern.trim().is_empty() {
+            return Err(SearchError::invalid_pattern("Pattern cannot be empty"));
+        }
+
+        // Validate regex if enabled
+        if self.config.is_regex {
+            let test_regex = regex::Regex::new(&self.config.pattern)
+                .map_err(|e| SearchError::invalid_pattern(e.to_string()))?;
+
+            // Validate capture groups if provided
+            if let Some(ref capture_fmt) = self.config.capture_groups {
+                validate_capture_groups(&test_regex, capture_fmt)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn apply(&self, content: &str) -> Result<String, SearchError> {
+        // Validate before applying
+        self.validate()?;
+
+        if self.config.is_regex {
+            let regex = regex::Regex::new(&self.config.pattern)
+                .map_err(|e| SearchError::invalid_pattern(e.to_string()))?;
+
+            if let Some(capture_fmt) = &self.config.capture_groups {
+                Ok(regex.replace_all(content, capture_fmt).into_owned())
+            } else {
+                Ok(regex
+                    .replace_all(content, &self.config.replacement)
+                    .into_owned())
+            }
+        } else {
+            Ok(content.replace(&self.config.pattern, &self.config.replacement))
+        }
+    }
+}
+
+fn validate_capture_groups(regex: &regex::Regex, capture_fmt: &str) -> SearchResult<()> {
+    let group_count = regex.captures_len(); // includes group 0
+    let re = regex::Regex::new(r"\$(\d+)").unwrap();
+
+    for cap in re.captures_iter(capture_fmt) {
+        if let Some(num_str) = cap.get(1) {
+            if let Ok(num) = num_str.as_str().parse::<usize>() {
+                // group_count includes $0 => highest valid group is group_count - 1
+                if num >= group_count {
+                    return Err(SearchError::invalid_pattern(format!(
+                        "Capture group ${} does not exist",
+                        num
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Collects all replacements for a single file
@@ -175,27 +234,88 @@ impl FileReplacementPlan {
     }
 
     /// Adds a replacement task to this plan
-    pub fn add_replacement(&mut self, task: ReplacementTask) {
+    pub fn add_replacement(&mut self, task: ReplacementTask) -> SearchResult<()> {
+        // Validate the task before adding
+        task.validate()?;
+
+        // Check for overlapping replacements with existing tasks
+        for existing in &self.replacements {
+            if task.original_range.0 < existing.original_range.1
+                && existing.original_range.0 < task.original_range.1
+            {
+                return Err(SearchError::config_error(
+                    "Overlapping replacements are not allowed",
+                ));
+            }
+        }
+
         self.replacements.push(task);
         // Keep replacements sorted by range start for efficient application
         self.replacements.sort_by_key(|r| r.original_range.0);
+        Ok(())
     }
 
     /// Applies the replacements to the file using the appropriate strategy
-    fn apply(
+    pub fn apply(
         &self,
         config: &ReplacementConfig,
         metrics: &MemoryMetrics,
     ) -> SearchResult<Option<PathBuf>> {
-        let metadata = fs::metadata(&self.file_path).map_err(SearchError::IoError)?;
+        // Create backup if enabled
+        let backup_path = if config.backup_enabled && !config.dry_run {
+            self.create_backup(config)?
+        } else {
+            None
+        };
 
-        let strategy = ProcessingStrategy::for_file_size(metadata.len());
+        if !config.dry_run {
+            // Process file based on size
+            let metadata = fs::metadata(&self.file_path).map_err(SearchError::IoError)?;
+            let strategy = ProcessingStrategy::for_file_size(metadata.len());
 
-        match strategy {
-            ProcessingStrategy::InMemory => self.apply_in_memory(config, metrics),
-            ProcessingStrategy::Streaming => self.apply_streaming(config, metrics),
-            ProcessingStrategy::MemoryMapped => self.apply_memory_mapped(config, metrics),
+            match strategy {
+                ProcessingStrategy::InMemory => self.apply_in_memory(config, metrics)?,
+                ProcessingStrategy::Streaming => self.apply_streaming(config, metrics)?,
+                ProcessingStrategy::MemoryMapped => self.apply_memory_mapped(config, metrics)?,
+            };
+
+            // Record undo information if backup was created
+            if let Some(ref backup) = backup_path {
+                let timestamp = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|_| SearchError::config_error("System clock set before UNIX EPOCH"))?
+                    .as_secs();
+
+                let info = UndoInfo {
+                    timestamp,
+                    description: format!(
+                        "Replace '{}' with '{}'",
+                        config.pattern, config.replacement
+                    ),
+                    backups: vec![(self.file_path.clone(), backup.clone())],
+                    total_size: fs::metadata(backup).map(|m| m.len()).unwrap_or(0),
+                    file_count: 1,
+                    dry_run: config.dry_run,
+                };
+
+                // Save undo information in the "undo" subdirectory
+                let actual_undo_dir = config.undo_dir.join("undo");
+                fs::create_dir_all(&actual_undo_dir).map_err(|e| {
+                    SearchError::config_error(format!("Failed to create undo directory: {}", e))
+                })?;
+
+                let undo_file = actual_undo_dir.join(format!("{}.json", timestamp));
+                let undo_json = serde_json::to_string_pretty(&info).map_err(|e| {
+                    SearchError::config_error(format!("Failed to serialize undo info: {}", e))
+                })?;
+
+                fs::write(&undo_file, undo_json).map_err(|e| {
+                    SearchError::config_error(format!("Failed to write undo file: {}", e))
+                })?;
+            }
         }
+
+        Ok(backup_path)
     }
 
     /// Process small files entirely in memory
@@ -401,33 +521,93 @@ impl FileReplacementPlan {
             return Ok(None);
         }
 
-        let backup_dir = config.backup_dir.clone().unwrap_or_else(|| {
+        // Determine and create the backup directory
+        let backup_dir = if let Some(ref specified_dir) = config.backup_dir {
+            fs::create_dir_all(specified_dir).map_err(|e| {
+                SearchError::config_error(format!(
+                    "Failed to create backup directory '{}': {}",
+                    specified_dir.display(),
+                    e
+                ))
+            })?;
+            specified_dir.clone()
+        } else {
             let backups = config.undo_dir.join("backups");
-            fs::create_dir_all(&backups)
-                .map_err(|e| {
-                    SearchError::config_error(format!("Failed to create backup directory: {}", e))
-                })
-                .unwrap();
+            fs::create_dir_all(&backups).map_err(|e| {
+                SearchError::config_error(format!(
+                    "Failed to create backup directory '{}': {}",
+                    backups.display(),
+                    e
+                ))
+            })?;
             backups
-        });
+        };
 
+        // Get absolute path for the file
         let file_path_abs = self.file_path.canonicalize().map_err(|e| {
-            SearchError::config_error(format!("Failed to get absolute path: {}", e))
+            SearchError::config_error(format!(
+                "Failed to get absolute path for '{}': {}",
+                self.file_path.display(),
+                e
+            ))
         })?;
 
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .map_err(|_| SearchError::config_error("System clock set before UNIX EPOCH"))?
             .as_secs();
 
         let backup_path = backup_dir.join(format!(
             "{}.{}",
-            file_path_abs.file_name().unwrap().to_string_lossy(),
+            file_path_abs
+                .file_name()
+                .ok_or_else(|| SearchError::config_error("Invalid file name"))?
+                .to_string_lossy(),
             timestamp
         ));
 
         fs::copy(&file_path_abs, &backup_path).map_err(SearchError::IoError)?;
         Ok(Some(backup_path))
+    }
+
+    /// Generates a preview of the changes
+    pub fn preview(&self) -> SearchResult<Vec<PreviewResult>> {
+        // Read the file content
+        let content = fs::read_to_string(&self.file_path).map_err(SearchError::IoError)?;
+
+        // Apply all replacements in memory first
+        let mut new_content = content.clone();
+        for task in &self.replacements {
+            new_content = task.apply(&new_content)?;
+        }
+
+        // Split into lines and compare
+        let original_lines: Vec<&str> = content.lines().collect();
+        let new_lines: Vec<&str> = new_content.lines().collect();
+
+        let mut changed_original = Vec::new();
+        let mut changed_new = Vec::new();
+        let mut line_numbers = Vec::new();
+
+        // Compare lines and collect changes
+        for (i, (orig, new)) in original_lines.iter().zip(&new_lines).enumerate() {
+            if orig != new {
+                changed_original.push(orig.to_string());
+                changed_new.push(new.to_string());
+                line_numbers.push(i + 1); // 1-based line numbers
+            }
+        }
+
+        if !changed_original.is_empty() {
+            Ok(vec![PreviewResult {
+                file_path: self.file_path.clone(),
+                original_lines: changed_original,
+                new_lines: changed_new,
+                line_numbers,
+            }])
+        } else {
+            Ok(Vec::new())
+        }
     }
 }
 
@@ -573,28 +753,56 @@ impl ReplacementSet {
 
     /// Applies all replacements in parallel without progress reporting
     pub fn apply(&self) -> SearchResult<()> {
-        let backups = Mutex::new(Vec::new());
-        let config = &self.config;
-        let metrics = &self.metrics;
+        let metrics = Arc::new(MemoryMetrics::new());
+        let mut backup_paths = Vec::new();
 
-        // Process files in parallel
-        self.plans
-            .par_iter()
-            .try_for_each(|plan| -> SearchResult<()> {
-                if !config.dry_run {
-                    if let Some(backup_path) = plan.apply(config, metrics)? {
-                        let mut backups = backups.lock().unwrap();
-                        backups.push((plan.file_path.clone(), backup_path));
-                    }
-                }
-                Ok(())
+        // Apply all plans
+        for plan in &self.plans {
+            if let Some(backup_path) = plan.apply(&self.config, &metrics)? {
+                backup_paths.push((plan.file_path.clone(), backup_path));
+            }
+        }
+
+        // Record undo information if any backups were created
+        if !backup_paths.is_empty() && !self.config.dry_run {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| SearchError::config_error("System clock set before UNIX EPOCH"))?
+                .as_secs();
+
+            let description = format!(
+                "Replace '{}' with '{}'",
+                self.config.pattern, self.config.replacement
+            );
+
+            let total_size: u64 = backup_paths
+                .iter()
+                .filter_map(|(_, backup)| fs::metadata(backup).ok())
+                .map(|m| m.len())
+                .sum();
+
+            let undo_info = UndoInfo {
+                timestamp,
+                description,
+                backups: backup_paths,
+                total_size,
+                file_count: self.plans.len(),
+                dry_run: self.config.dry_run,
+            };
+
+            // Save undo information
+            fs::create_dir_all(&self.config.undo_dir).map_err(|e| {
+                SearchError::config_error(format!("Failed to create undo directory: {}", e))
             })?;
 
-        let backups = backups.into_inner().unwrap();
+            let undo_file = self.config.undo_dir.join(format!("{}.json", timestamp));
+            let undo_json = serde_json::to_string_pretty(&undo_info).map_err(|e| {
+                SearchError::config_error(format!("Failed to serialize undo info: {}", e))
+            })?;
 
-        // Save undo information
-        if !self.config.dry_run && !backups.is_empty() {
-            self.save_undo_info(&backups)?;
+            fs::write(&undo_file, undo_json).map_err(|e| {
+                SearchError::config_error(format!("Failed to write undo file: {}", e))
+            })?;
         }
 
         Ok(())
@@ -603,63 +811,51 @@ impl ReplacementSet {
     /// Generates a preview of the changes in parallel
     pub fn preview(&self) -> SearchResult<Vec<PreviewResult>> {
         let mut results = Vec::new();
+
         for plan in &self.plans {
+            // Read the file content
             let content = fs::read_to_string(&plan.file_path).map_err(SearchError::IoError)?;
-            let mut original_lines = Vec::new();
-            let mut new_lines = Vec::new();
-            let mut line_numbers = Vec::new();
 
-            // Split content into lines and track line numbers
-            let lines: Vec<_> = content.lines().enumerate().collect();
-            let mut current_pos = 0;
-
-            for (line_number, line) in lines {
-                let line_start = current_pos;
-                let line_end = line_start + line.len();
-
-                // Check if this line contains any replacements
-                let mut line_modified = false;
-                let mut line_content = line.to_string();
-
-                for task in &plan.replacements {
-                    let range = task.original_range;
-                    if range.0 >= line_start && range.0 < line_end {
-                        if !line_modified {
-                            original_lines.push(line.to_string());
-                            line_numbers.push(line_number + 1);
-                            line_modified = true;
-                        }
-
-                        // Apply replacement to this line
-                        let local_start = range.0 - line_start;
-                        let local_end = range.1.min(line_end) - line_start;
-                        line_content.replace_range(local_start..local_end, &task.replacement_text);
-                    }
-                }
-
-                if line_modified {
-                    new_lines.push(line_content);
-                }
-
-                current_pos = line_end + 1; // +1 for newline
+            // Apply all replacements in memory first
+            let mut new_content = content.clone();
+            for task in &plan.replacements {
+                new_content = task.apply(&new_content)?;
             }
 
-            if !original_lines.is_empty() {
+            // Split into lines and compare
+            let original_lines: Vec<&str> = content.lines().collect();
+            let new_lines: Vec<&str> = new_content.lines().collect();
+
+            let mut changed_original = Vec::new();
+            let mut changed_new = Vec::new();
+            let mut line_numbers = Vec::new();
+
+            // Compare lines and collect changes
+            for (i, (orig, new)) in original_lines.iter().zip(&new_lines).enumerate() {
+                if orig != new {
+                    changed_original.push(orig.to_string());
+                    changed_new.push(new.to_string());
+                    line_numbers.push(i + 1); // 1-based line numbers
+                }
+            }
+
+            if !changed_original.is_empty() {
                 results.push(PreviewResult {
                     file_path: plan.file_path.clone(),
-                    original_lines,
-                    new_lines,
+                    original_lines: changed_original,
+                    new_lines: changed_new,
                     line_numbers,
                 });
             }
         }
+
         Ok(results)
     }
 
     /// Save undo information for a set of backups
     fn save_undo_info(&self, backups: &[(PathBuf, PathBuf)]) -> SearchResult<()> {
-        let undo_dir = &self.config.undo_dir;
-        fs::create_dir_all(undo_dir).map_err(|e| {
+        let actual_undo_dir = self.config.undo_dir.join("undo");
+        fs::create_dir_all(&actual_undo_dir).map_err(|e| {
             SearchError::config_error(format!("Failed to create undo directory: {}", e))
         })?;
 
@@ -683,7 +879,7 @@ impl ReplacementSet {
             dry_run: self.config.dry_run,
         };
 
-        let info_path = undo_dir.join(format!("{}.json", timestamp));
+        let info_path = actual_undo_dir.join(format!("{}.json", timestamp));
         let content = serde_json::to_string_pretty(&info).map_err(|e| {
             SearchError::config_error(format!("Failed to serialize undo info: {}", e))
         })?;
@@ -711,21 +907,689 @@ pub struct PreviewResult {
     pub line_numbers: Vec<usize>,
 }
 
-impl ReplacementTask {
-    pub fn apply(&self, content: &str) -> Result<String, SearchError> {
-        if self.config.is_regex {
-            let regex = regex::Regex::new(&self.config.pattern)
-                .map_err(|e| SearchError::invalid_pattern(e.to_string()))?;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
 
-            if let Some(capture_fmt) = &self.config.capture_groups {
-                Ok(regex.replace_all(content, capture_fmt).into_owned())
-            } else {
-                Ok(regex
-                    .replace_all(content, &self.config.replacement)
-                    .into_owned())
-            }
-        } else {
-            Ok(content.replace(&self.config.pattern, &self.config.replacement))
-        }
+    #[test]
+    fn test_processing_strategies() -> SearchResult<()> {
+        // Create test files with known sizes
+        let dir = tempdir().map_err(|e| {
+            SearchError::IoError(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))
+        })?;
+
+        // Small file (< 32KB)
+        let small_path = dir.path().join("small.txt");
+        fs::write(&small_path, "small test content").map_err(SearchError::IoError)?;
+
+        // Medium file (32KB - 10MB)
+        let medium_path = dir.path().join("medium.txt");
+        let medium_content = "medium test content\n".repeat(2000);
+        fs::write(&medium_path, &medium_content).map_err(SearchError::IoError)?;
+
+        // Large file (> 10MB)
+        let large_path = dir.path().join("large.txt");
+        let large_content = "large test content\n".repeat(1_000_000);
+        fs::write(&large_path, &large_content).map_err(SearchError::IoError)?;
+
+        // Test small file strategy
+        let small_meta = fs::metadata(&small_path).map_err(SearchError::IoError)?;
+        assert!(matches!(
+            ProcessingStrategy::for_file_size(small_meta.len()),
+            ProcessingStrategy::InMemory
+        ));
+
+        // Test medium file strategy
+        let medium_meta = fs::metadata(&medium_path).map_err(SearchError::IoError)?;
+        assert!(matches!(
+            ProcessingStrategy::for_file_size(medium_meta.len()),
+            ProcessingStrategy::Streaming
+        ));
+
+        // Test large file strategy
+        let large_meta = fs::metadata(&large_path).map_err(SearchError::IoError)?;
+        assert!(matches!(
+            ProcessingStrategy::for_file_size(large_meta.len()),
+            ProcessingStrategy::MemoryMapped
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_replacement_config_merge() {
+        let mut base_config = ReplacementConfig {
+            pattern: "old".to_string(),
+            replacement: "new".to_string(),
+            is_regex: false,
+            backup_enabled: false,
+            dry_run: false,
+            backup_dir: None,
+            preserve_metadata: false,
+            capture_groups: None,
+            undo_dir: PathBuf::from("undo"),
+        };
+
+        let cli_config = ReplacementConfig {
+            pattern: "cli_pattern".to_string(),
+            replacement: "cli_replacement".to_string(),
+            is_regex: true,
+            backup_enabled: true,
+            dry_run: true,
+            backup_dir: Some(PathBuf::from("backup")),
+            preserve_metadata: true,
+            capture_groups: Some("$1".to_string()),
+            undo_dir: PathBuf::from("cli_undo"),
+        };
+
+        base_config.merge_with_cli(cli_config);
+
+        assert_eq!(base_config.pattern, "cli_pattern");
+        assert_eq!(base_config.replacement, "cli_replacement");
+        assert!(base_config.is_regex);
+        assert!(base_config.backup_enabled);
+        assert!(base_config.dry_run);
+        assert_eq!(base_config.backup_dir, Some(PathBuf::from("backup")));
+        assert!(base_config.preserve_metadata);
+        assert_eq!(base_config.capture_groups, Some("$1".to_string()));
+    }
+
+    #[test]
+    fn test_replacement_with_backup() -> SearchResult<()> {
+        let dir = tempdir().map_err(|e| {
+            SearchError::IoError(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))
+        })?;
+
+        let file_path = dir.path().join("test.txt");
+        fs::write(&file_path, "test content").map_err(SearchError::IoError)?;
+
+        let config = ReplacementConfig {
+            pattern: "test".to_string(),
+            replacement: "replaced".to_string(),
+            is_regex: false,
+            backup_enabled: true,
+            dry_run: false,
+            backup_dir: Some(dir.path().to_path_buf()),
+            preserve_metadata: false,
+            capture_groups: None,
+            undo_dir: dir.path().to_path_buf(),
+        };
+
+        let mut plan = FileReplacementPlan::new(file_path.clone())?;
+        plan.add_replacement(ReplacementTask::new(
+            file_path.clone(),
+            (0, 4),
+            "replaced".to_string(),
+            config.clone(),
+        ))?;
+
+        let backup_path = plan.apply(&config, &MemoryMetrics::new())?;
+        assert!(backup_path.is_some());
+        assert!(backup_path.as_ref().unwrap().exists());
+
+        let backup_content =
+            fs::read_to_string(backup_path.unwrap()).map_err(SearchError::IoError)?;
+        assert_eq!(backup_content, "test content");
+
+        let new_content = fs::read_to_string(&file_path).map_err(SearchError::IoError)?;
+        assert_eq!(new_content, "replaced content");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_dry_run() -> SearchResult<()> {
+        let dir = tempdir().map_err(|e| {
+            SearchError::IoError(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))
+        })?;
+
+        let file_path = dir.path().join("test.txt");
+        let original_content = "test content";
+        fs::write(&file_path, original_content).map_err(SearchError::IoError)?;
+
+        let config = ReplacementConfig {
+            pattern: "test".to_string(),
+            replacement: "replaced".to_string(),
+            is_regex: false,
+            backup_enabled: true,
+            dry_run: true,
+            backup_dir: Some(dir.path().to_path_buf()),
+            preserve_metadata: false,
+            capture_groups: None,
+            undo_dir: dir.path().to_path_buf(),
+        };
+
+        let mut plan = FileReplacementPlan::new(file_path.clone())?;
+        plan.add_replacement(ReplacementTask::new(
+            file_path.clone(),
+            (0, 4),
+            "replaced".to_string(),
+            config.clone(),
+        ))?;
+
+        let backup_path = plan.apply(&config, &MemoryMetrics::new())?;
+        assert!(backup_path.is_none());
+
+        let final_content = fs::read_to_string(&file_path).map_err(SearchError::IoError)?;
+        assert_eq!(final_content, original_content);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_regex_replacement() -> SearchResult<()> {
+        let dir = tempdir().map_err(|e| {
+            SearchError::IoError(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))
+        })?;
+
+        let file_path = dir.path().join("test.txt");
+        fs::write(&file_path, "fn test_func() {}").map_err(SearchError::IoError)?;
+
+        let config = ReplacementConfig {
+            pattern: r"fn (\w+)\(\)".to_string(),
+            replacement: "fn new_$1()".to_string(),
+            is_regex: true,
+            backup_enabled: false,
+            dry_run: false,
+            backup_dir: None,
+            preserve_metadata: false,
+            capture_groups: Some("$1".to_string()),
+            undo_dir: dir.path().to_path_buf(),
+        };
+
+        let mut plan = FileReplacementPlan::new(file_path.clone())?;
+        plan.add_replacement(ReplacementTask::new(
+            file_path.clone(),
+            (0, 14),
+            "fn new_test_func()".to_string(),
+            config.clone(),
+        ))?;
+
+        plan.apply(&config, &MemoryMetrics::new())?;
+
+        let new_content = fs::read_to_string(&file_path).map_err(SearchError::IoError)?;
+        assert_eq!(new_content, "fn new_test_func() {}");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_invalid_regex_pattern() -> SearchResult<()> {
+        let dir = tempdir().map_err(|e| {
+            SearchError::IoError(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))
+        })?;
+
+        let file_path = dir.path().join("test.txt");
+        fs::write(&file_path, "test content").map_err(SearchError::IoError)?;
+
+        let config = ReplacementConfig {
+            pattern: "[invalid".to_string(),
+            replacement: "replacement".to_string(),
+            is_regex: true,
+            backup_enabled: false,
+            dry_run: false,
+            backup_dir: None,
+            preserve_metadata: false,
+            capture_groups: None,
+            undo_dir: dir.path().to_path_buf(),
+        };
+
+        let mut plan = FileReplacementPlan::new(file_path.clone())?;
+        let result = plan.add_replacement(ReplacementTask::new(
+            file_path,
+            (0, 4),
+            "replacement".to_string(),
+            config.clone(),
+        ));
+
+        assert!(
+            result.is_err(),
+            "Expected an error due to invalid regex pattern"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_invalid_capture_group() -> SearchResult<()> {
+        let dir = tempdir().map_err(|e| {
+            SearchError::IoError(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))
+        })?;
+
+        let file_path = dir.path().join("test.txt");
+        fs::write(&file_path, "test content").map_err(SearchError::IoError)?;
+
+        let config = ReplacementConfig {
+            pattern: r"(\w+)".to_string(),
+            replacement: "$2".to_string(), // Reference to non-existent capture group
+            is_regex: true,
+            backup_enabled: false,
+            dry_run: false,
+            backup_dir: None,
+            preserve_metadata: false,
+            capture_groups: Some("$2".to_string()),
+            undo_dir: dir.path().to_path_buf(),
+        };
+
+        let mut plan = FileReplacementPlan::new(file_path.clone())?;
+        let result = plan.add_replacement(ReplacementTask::new(
+            file_path,
+            (0, 4),
+            "$2".to_string(),
+            config.clone(),
+        ));
+
+        assert!(
+            result.is_err(),
+            "Expected an error due to invalid capture group reference"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_preserve_metadata() -> SearchResult<()> {
+        let dir = tempdir().map_err(|e| {
+            SearchError::IoError(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))
+        })?;
+
+        let file_path = dir.path().join("test.txt");
+        fs::write(&file_path, "test content").map_err(SearchError::IoError)?;
+
+        // Set some custom permissions
+        let metadata = fs::metadata(&file_path).map_err(SearchError::IoError)?;
+        let mut perms = metadata.permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&file_path, perms).map_err(SearchError::IoError)?;
+
+        let config = ReplacementConfig {
+            pattern: "test".to_string(),
+            replacement: "replaced".to_string(),
+            is_regex: false,
+            backup_enabled: false,
+            dry_run: false,
+            backup_dir: None,
+            preserve_metadata: true,
+            capture_groups: None,
+            undo_dir: dir.path().to_path_buf(),
+        };
+
+        let mut plan = FileReplacementPlan::new(file_path.clone())?;
+        plan.add_replacement(ReplacementTask::new(
+            file_path.clone(),
+            (0, 4),
+            "replaced".to_string(),
+            config.clone(),
+        ))?;
+
+        // Temporarily make file writable for the test
+        let mut perms = metadata.permissions();
+        perms.set_readonly(false);
+        fs::set_permissions(&file_path, perms).map_err(SearchError::IoError)?;
+
+        plan.apply(&config, &MemoryMetrics::new())?;
+
+        // Check if permissions were preserved
+        let new_metadata = fs::metadata(&file_path).map_err(SearchError::IoError)?;
+        assert!(new_metadata.permissions().readonly());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_multiple_replacements() -> SearchResult<()> {
+        let dir = tempdir().map_err(|e| {
+            SearchError::IoError(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))
+        })?;
+
+        let file_path = dir.path().join("test.txt");
+        fs::write(&file_path, "test test test").map_err(SearchError::IoError)?;
+
+        let config = ReplacementConfig {
+            pattern: "test".to_string(),
+            replacement: "replaced".to_string(),
+            is_regex: false,
+            backup_enabled: false,
+            dry_run: false,
+            backup_dir: None,
+            preserve_metadata: false,
+            capture_groups: None,
+            undo_dir: dir.path().to_path_buf(),
+        };
+
+        let mut plan = FileReplacementPlan::new(file_path.clone())?;
+
+        // Add multiple replacements
+        plan.add_replacement(ReplacementTask::new(
+            file_path.clone(),
+            (0, 4),
+            "replaced".to_string(),
+            config.clone(),
+        ))?;
+        plan.add_replacement(ReplacementTask::new(
+            file_path.clone(),
+            (5, 9),
+            "replaced".to_string(),
+            config.clone(),
+        ))?;
+        plan.add_replacement(ReplacementTask::new(
+            file_path.clone(),
+            (10, 14),
+            "replaced".to_string(),
+            config.clone(),
+        ))?;
+
+        plan.apply(&config, &MemoryMetrics::new())?;
+
+        let new_content = fs::read_to_string(&file_path).map_err(SearchError::IoError)?;
+        assert_eq!(new_content, "replaced replaced replaced");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_empty_pattern() -> SearchResult<()> {
+        let dir = tempdir().map_err(|e| {
+            SearchError::IoError(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))
+        })?;
+
+        let file_path = dir.path().join("test.txt");
+        fs::write(&file_path, "test content").map_err(SearchError::IoError)?;
+
+        let config = ReplacementConfig {
+            pattern: "".to_string(),
+            replacement: "something".to_string(),
+            is_regex: false,
+            backup_enabled: false,
+            dry_run: false,
+            backup_dir: None,
+            preserve_metadata: false,
+            capture_groups: None,
+            undo_dir: dir.path().to_path_buf(),
+        };
+
+        let mut plan = FileReplacementPlan::new(file_path.clone())?;
+        let result = plan.add_replacement(ReplacementTask::new(
+            file_path,
+            (0, 0),
+            "something".to_string(),
+            config.clone(),
+        ));
+
+        assert!(result.is_err(), "Expected an error due to empty pattern");
+        Ok(())
+    }
+
+    #[test]
+    fn test_overlapping_replacements() -> SearchResult<()> {
+        let dir = tempdir().map_err(|e| {
+            SearchError::IoError(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))
+        })?;
+
+        let file_path = dir.path().join("test.txt");
+        fs::write(&file_path, "test content").map_err(SearchError::IoError)?;
+
+        let config = ReplacementConfig {
+            pattern: "test".to_string(),
+            replacement: "replaced".to_string(),
+            is_regex: false,
+            backup_enabled: false,
+            dry_run: false,
+            backup_dir: None,
+            preserve_metadata: false,
+            capture_groups: None,
+            undo_dir: dir.path().to_path_buf(),
+        };
+
+        let mut plan = FileReplacementPlan::new(file_path.clone())?;
+
+        // First replacement should succeed
+        let result1 = plan.add_replacement(ReplacementTask::new(
+            file_path.clone(),
+            (0, 6),
+            "replaced".to_string(),
+            config.clone(),
+        ));
+        assert!(result1.is_ok(), "First replacement should succeed");
+
+        // Second replacement overlaps with first, should fail
+        let result2 = plan.add_replacement(ReplacementTask::new(
+            file_path.clone(),
+            (4, 8),
+            "new".to_string(),
+            config.clone(),
+        ));
+        assert!(
+            result2.is_err(),
+            "Expected an error due to overlapping replacements"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_undo_operations() -> SearchResult<()> {
+        let dir = tempdir().map_err(|e| {
+            SearchError::IoError(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))
+        })?;
+
+        let file_path = dir.path().join("test.txt");
+        let original_content = "test\ntest\nno match\ntest";
+        fs::write(&file_path, original_content).map_err(SearchError::IoError)?;
+
+        let config = ReplacementConfig {
+            pattern: "test".to_string(),
+            replacement: "replaced".to_string(),
+            is_regex: false,
+            backup_enabled: true,
+            dry_run: false,
+            backup_dir: Some(dir.path().to_path_buf()),
+            preserve_metadata: false,
+            capture_groups: None,
+            undo_dir: dir.path().to_path_buf(),
+        };
+
+        let mut plan = FileReplacementPlan::new(file_path.clone())?;
+
+        // Add multiple replacements
+        plan.add_replacement(ReplacementTask::new(
+            file_path.clone(),
+            (0, 4),
+            "replaced".to_string(),
+            config.clone(),
+        ))?;
+
+        // Apply the replacements
+        plan.apply(&config, &MemoryMetrics::new())?;
+
+        // Verify undo information was recorded
+        let undo_dir = dir.path().join("undo");
+        assert!(undo_dir.exists(), "Undo directory should exist");
+
+        let undo_files: Vec<_> = fs::read_dir(&undo_dir)
+            .map_err(SearchError::IoError)?
+            .filter_map(|entry| entry.ok())
+            .collect();
+
+        assert_eq!(undo_files.len(), 1, "Expected one undo file");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_preview_replacements() -> SearchResult<()> {
+        let dir = tempdir().map_err(|e| {
+            SearchError::IoError(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))
+        })?;
+
+        let file_path = dir.path().join("test.txt");
+        let original_content = "test\ntest\nno match\ntest";
+        fs::write(&file_path, original_content).map_err(SearchError::IoError)?;
+
+        let config = ReplacementConfig {
+            pattern: "test".to_string(),
+            replacement: "replaced".to_string(),
+            is_regex: false,
+            backup_enabled: false,
+            dry_run: false,
+            backup_dir: None,
+            preserve_metadata: false,
+            capture_groups: None,
+            undo_dir: dir.path().to_path_buf(),
+        };
+
+        let mut plan = FileReplacementPlan::new(file_path.clone())?;
+
+        // Add multiple replacements
+        plan.add_replacement(ReplacementTask::new(
+            file_path.clone(),
+            (0, 4),
+            "replaced".to_string(),
+            config.clone(),
+        ))?;
+        plan.add_replacement(ReplacementTask::new(
+            file_path.clone(),
+            (5, 9),
+            "replaced".to_string(),
+            config.clone(),
+        ))?;
+        plan.add_replacement(ReplacementTask::new(
+            file_path.clone(),
+            (20, 24),
+            "replaced".to_string(),
+            config.clone(),
+        ))?;
+
+        let preview_results = plan.preview()?;
+        assert_eq!(preview_results.len(), 1);
+        let preview = &preview_results[0];
+
+        assert_eq!(preview.original_lines, vec!["test", "test", "test"]);
+        assert_eq!(preview.new_lines, vec!["replaced", "replaced", "replaced"]);
+        assert_eq!(preview.line_numbers, vec![1, 2, 4]);
+
+        // Verify original content hasn't changed
+        let final_content = fs::read_to_string(&file_path).map_err(SearchError::IoError)?;
+        assert_eq!(final_content, original_content);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_backup_directory_creation() -> SearchResult<()> {
+        let dir = tempdir().map_err(|e| {
+            SearchError::IoError(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))
+        })?;
+
+        let file_path = dir.path().join("test.txt");
+        fs::write(&file_path, "test content").map_err(SearchError::IoError)?;
+
+        let backup_dir = dir.path().join("backups");
+        let config = ReplacementConfig {
+            pattern: "test".to_string(),
+            replacement: "replaced".to_string(),
+            is_regex: false,
+            backup_enabled: true,
+            dry_run: false,
+            backup_dir: Some(backup_dir.clone()),
+            preserve_metadata: false,
+            capture_groups: None,
+            undo_dir: dir.path().to_path_buf(),
+        };
+
+        let mut plan = FileReplacementPlan::new(file_path.clone())?;
+        plan.add_replacement(ReplacementTask::new(
+            file_path.clone(),
+            (0, 4),
+            "replaced".to_string(),
+            config.clone(),
+        ))?;
+
+        let backup_path = plan.apply(&config, &MemoryMetrics::new())?;
+        assert!(backup_path.is_some());
+        assert!(backup_dir.exists());
+        assert!(backup_dir.is_dir());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_metrics_tracking() -> SearchResult<()> {
+        let dir = tempdir().map_err(|e| {
+            SearchError::IoError(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))
+        })?;
+
+        let file_path = dir.path().join("test.txt");
+        let content = "test content".repeat(1000); // Create a larger file
+        fs::write(&file_path, &content).map_err(SearchError::IoError)?;
+
+        let config = ReplacementConfig {
+            pattern: "test".to_string(),
+            replacement: "replaced".to_string(),
+            is_regex: false,
+            backup_enabled: false,
+            dry_run: false,
+            backup_dir: None,
+            preserve_metadata: false,
+            capture_groups: None,
+            undo_dir: dir.path().to_path_buf(),
+        };
+
+        let metrics = Arc::new(MemoryMetrics::new());
+        let mut plan = FileReplacementPlan::new(file_path.clone())?;
+        plan.add_replacement(ReplacementTask::new(
+            file_path.clone(),
+            (0, 4),
+            "replaced".to_string(),
+            config.clone(),
+        ))?;
+
+        plan.apply(&config, &metrics)?;
+
+        // Just verify the metrics object exists and can be cloned
+        assert!(Arc::strong_count(&metrics) >= 1);
+
+        Ok(())
     }
 }

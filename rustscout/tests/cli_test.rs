@@ -38,7 +38,7 @@ fn test_replace_basic() -> Result<()> {
         (0, 5),
         "Hi".to_string(),
         config.clone(),
-    ));
+    ))?;
 
     let mut replacement_set = ReplacementSet::new(config);
     replacement_set.add_plan(plan);
@@ -77,7 +77,7 @@ fn test_replace_with_backup() -> Result<()> {
         (0, 5),
         "Hi".to_string(),
         config.clone(),
-    ));
+    ))?;
 
     let mut replacement_set = ReplacementSet::new(config);
     replacement_set.add_plan(plan);
@@ -121,7 +121,7 @@ fn test_replace_dry_run() -> Result<()> {
         (0, 5),
         "Hi".to_string(),
         config.clone(),
-    ));
+    ))?;
 
     let mut replacement_set = ReplacementSet::new(config);
     replacement_set.add_plan(plan);
@@ -159,13 +159,13 @@ fn test_replace_preview() -> Result<()> {
         (0, 5),
         "Hi".to_string(),
         config.clone(),
-    ));
+    ))?;
     plan.add_replacement(ReplacementTask::new(
         test_file.clone(),
         (13, 18),
         "Hi".to_string(),
         config.clone(),
-    ));
+    ))?;
 
     let mut replacement_set = ReplacementSet::new(config);
     replacement_set.add_plan(plan);
@@ -208,7 +208,7 @@ fn test_replace_undo_list() -> Result<()> {
         (0, 5),
         "Hi".to_string(),
         config.clone(),
-    ));
+    ))?;
 
     let mut replacement_set = ReplacementSet::new(config.clone());
     replacement_set.add_plan(plan);
@@ -252,7 +252,7 @@ fn test_replace_undo_restore() -> Result<()> {
         (0, 5),
         "Hi".to_string(),
         config.clone(),
-    ));
+    ))?;
 
     let mut replacement_set = ReplacementSet::new(config.clone());
     replacement_set.add_plan(plan);
