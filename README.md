@@ -277,13 +277,12 @@ RustScout includes robust validation and safety features to ensure reliable repl
   - Bulk undo support for reverting multiple changes
   - Chronological ordering of operations
 
-```mermaid
-graph LR
-    A[Input] --> B[Validate]
-    B --> C[Backup]
-    C --> D[Replace]
-    D --> E[Record Undo]
-    E -.-> F[Restore if needed]
+```
+Replace Pipeline:
+Input -> Validate -> Backup -> Replace -> Record Undo
+                                             |
+                                             v
+                                      [Restore if needed]
 ```
 
 ### File Filtering
