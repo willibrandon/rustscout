@@ -1060,7 +1060,7 @@ Ready to contribute to RustScout? Here's how to get started:
 
 1. **Find an Issue**
    - Look for [`good-first-issue`](https://github.com/willibrandon/rustscout/labels/good-first-issue) labels
-   - Check our [project roadmap](../ROADMAP.md)
+   - Check our [project roadmap](ROADMAP.md)
    - Review open issues for interesting challenges
 
 2. **Development Setup**
