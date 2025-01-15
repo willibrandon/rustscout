@@ -54,7 +54,7 @@ fn bench_repeated_pattern(c: &mut Criterion) -> std::io::Result<()> {
     let dir = tempdir().unwrap();
     create_test_files(&dir, 1, 10)?;
 
-    let patterns = [
+    let patterns = vec![
         "TODO",
         r"TODO:.*\d+",
         r"FIXME:.*bug.*line \d+",

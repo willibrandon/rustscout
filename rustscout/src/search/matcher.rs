@@ -455,7 +455,7 @@ mod tests {
         let metrics = Arc::new(MemoryMetrics::new());
 
         // Define all possible mode combinations
-        let modes = [
+        let modes = vec![
             (WordBoundaryMode::WholeWords, HyphenHandling::Boundary),
             (WordBoundaryMode::WholeWords, HyphenHandling::Joining),
             (WordBoundaryMode::None, HyphenHandling::Boundary),
