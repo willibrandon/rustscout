@@ -189,43 +189,43 @@ rustscout-cli --pattern "my_∑_total" --word-boundary .    # Math symbols in id
 
 ```bash
 # Enable incremental search with default settings
-rustscout search "TODO" --incremental
+rustscout-cli search "TODO" --incremental
 
 # Specify cache location
-rustscout search "TODO" --incremental --cache-path .rustscout/cache.json
+rustscout-cli search "TODO" --incremental --cache-path .rustscout/cache.json
 
 # Choose change detection strategy
-rustscout search "TODO" --incremental --cache-strategy git
+rustscout-cli search "TODO" --incremental --cache-strategy git
 
 # Enable cache compression
-rustscout search "TODO" --incremental --use-compression
+rustscout-cli search "TODO" --incremental --use-compression
 
 # Set cache size limit
-rustscout search "TODO" --incremental --max-cache-size 100MB
+rustscout-cli search "TODO" --incremental --max-cache-size 100MB
 ```
 
 ### Search and Replace
 
 ```bash
 # Simple text replacement
-rustscout replace "old_text" --replace "new_text" src/*.rs
+rustscout-cli replace "old_text" --replace "new_text" src/*.rs
 
 # Preview changes before applying
-rustscout replace "TODO" --replace "DONE" --preview src/
+rustscout-cli replace "TODO" --replace "DONE" --preview src/
 
 # Replace with regex and capture groups
-rustscout replace --regex "fn\s+(\w+)" --capture-groups "fn new_$1" src/
+rustscout-cli replace --regex "fn\s+(\w+)" --capture-groups "fn new_$1" src/
 
 # Create backups and enable undo
-rustscout replace "old_api" --replace "new_api" --backup src/
-rustscout list-undo    # List available undo operations
-rustscout undo <id>    # Revert a specific change
+rustscout-cli replace "old_api" --replace "new_api" --backup src/
+rustscout-cli list-undo    # List available undo operations
+rustscout-cli undo <id>    # Revert a specific change
 
 # Preserve file metadata
-rustscout replace "pattern" --replace "new" --preserve src/
+rustscout-cli replace "pattern" --replace "new" --preserve src/
 
 # Custom backup directory
-rustscout replace "pattern" --replace "new" --backup --output-dir backups/ src/
+rustscout-cli replace "pattern" --replace "new" --backup --output-dir backups/ src/
 ```
 
 ### File Filtering
@@ -326,11 +326,11 @@ use_compression: false       # Enable cache compression
 
 ```bash
 USAGE:
-    rustscout [SUBCOMMAND]
-    rustscout search [OPTIONS] [PATTERN] [ROOT_PATH]
-    rustscout replace [OPTIONS] <PATTERN> <FILES>...
-    rustscout list-undo
-    rustscout undo <ID>
+    rustscout-cli [SUBCOMMAND]
+    rustscout-cli search [OPTIONS] [PATTERN] [ROOT_PATH]
+    rustscout-cli replace [OPTIONS] <PATTERN> <FILES>...
+    rustscout-cli list-undo
+    rustscout-cli undo <ID>
 
 SUBCOMMANDS:
     search       Search for patterns in files
