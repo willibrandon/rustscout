@@ -25,8 +25,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - None
 
-## [0.1.0] - 2024-01-13
+## [0.1.0] - 2025-01-13
 - Initial release to crates.io
 
-[Unreleased]: https://github.com/willibrandon/rustscout/compare/v0.1.0...HEAD
+## [1.0.0] - 2025-02-14
+
+### Added
+- Word boundary search with Unicode support and smart hyphen handling
+- Incremental search with smart caching
+- Context lines feature with optimized implementation
+- Search and replace functionality with backup and undo operations
+- Support for multiple patterns in search
+- Memory mapping support for large files
+- Pattern caching for improved performance
+- Memory usage tracking and metrics
+- Repeated pattern search benchmarks
+- Comprehensive Developer Guide with .NET comparisons
+- Blog post for v1.0.0 release
+
+### Changed
+- Split search module into smaller components
+- Update README with performance enhancements and new features
+- Improve file handling and path operations
+- Optimize pattern matching for large files
+- Update CLI examples to consistently use rustscout-cli
+
+### Fixed
+- Resolve -i flag conflict
+- Fix pattern caching test race conditions
+- Fix formatting and clippy warnings
+- Fix Windows-specific code in CI
+- Fix backup and undo operations to use absolute paths
+- Increase performance test timeout for CI compatibility
+
+## [0.3.0] - 2025-01-20
+
+### Added
+- Configuration file support with YAML
+- Logging support using tracing crate
+- Performance benchmarks and troubleshooting guide
+- Coverage reporting
+- Automated changelog generation
+- Library documentation
+
+### Changed
+- Update CLI to use rustscout crate
+- Improve error handling
+- Update dependencies
+
+### Fixed
+- Fix rustscout-cli to use local path for rustscout dependency
+- Fix ignore patterns
+- Fix code formatting
+
+## [0.2.0] - 2025-01-15
+
+### Added
+- Changelog generation script
+- Release workflow improvements
+- Performance benchmarks
+- Troubleshooting guide
+- Coverage reporting
+
+### Changed
+- Update release workflow paths
+- Improve asset upload process
+
+### Fixed
+- Fix code formatting
+- Fix release workflow to build correct binary
+
+[Unreleased]: https://github.com/willibrandon/rustscout/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/willibrandon/rustscout/compare/v0.3.0...v1.0.0
+[0.3.0]: https://github.com/willibrandon/rustscout/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/willibrandon/rustscout/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/willibrandon/rustscout/releases/tag/v0.1.0 
