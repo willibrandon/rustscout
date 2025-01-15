@@ -1060,13 +1060,13 @@ Ready to contribute to RustScout? Here's how to get started:
 
 1. **Find an Issue**
    - Look for [`good-first-issue`](https://github.com/willibrandon/rustscout/labels/good-first-issue) labels
-   - Check our [project roadmap](https://github.com/willibrandon/rustscout/projects/1)
+   - Check our [project roadmap](../ROADMAP.md)
    - Review open issues for interesting challenges
 
 2. **Development Setup**
    - Follow our [CONTRIBUTING.md](../CONTRIBUTING.md) guidelines
    - Set up pre-commit hooks (see FAQ section)
-   - Join our [Discord](https://discord.gg/rustscout) for questions
+   - Join our [Discord](https://discord.gg/rustscout) (coming soon) for questions
 
 3. **Making Changes**
    - Create a feature branch
