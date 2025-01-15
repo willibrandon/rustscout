@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use colored::Colorize;
 use rustscout::{
     cache::ChangeDetectionStrategy,
-    config::SearchConfig,
+    config::{EncodingMode, SearchConfig},
     replace::{ReplacementConfig, ReplacementSet, UndoInfo},
     results::SearchResult,
     search,
@@ -85,6 +85,10 @@ struct CliSearchConfig {
     /// Enable cache compression
     #[arg(long)]
     compress_cache: bool,
+
+    /// How to handle invalid UTF-8 sequences (failfast|lossy)
+    #[arg(long, default_value = "failfast")]
+    encoding: String,
 }
 
 #[derive(Subcommand)]
@@ -166,6 +170,11 @@ fn run() -> Result<()> {
                 _ => ChangeDetectionStrategy::Auto,
             };
 
+            let encoding_mode = match config.encoding.to_lowercase().as_str() {
+                "lossy" => EncodingMode::Lossy,
+                _ => EncodingMode::FailFast,
+            };
+
             let search_config = SearchConfig {
                 pattern_definitions: pattern_defs,
                 patterns: Vec::new(),   // Legacy field, not used
@@ -185,6 +194,7 @@ fn run() -> Result<()> {
                 cache_strategy,
                 max_cache_size: config.max_cache_size.map(|size| size * 1024 * 1024),
                 use_compression: config.compress_cache,
+                encoding_mode,
             };
 
             let result = search(&search_config)?;

@@ -2,12 +2,16 @@ use anyhow::Result;
 use rustscout::search::search;
 use rustscout::{
     cache::ChangeDetectionStrategy,
+    config::{EncodingMode, SearchConfig},
+    errors::unify_path,
     search::matcher::{HyphenHandling, PatternDefinition, WordBoundaryMode},
-    SearchConfig,
+    SearchError,
 };
 use std::fs::File;
 use std::io::Write;
 use std::num::NonZeroUsize;
+use std::os::windows::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 
 fn create_test_files(
@@ -25,6 +29,18 @@ fn create_test_files(
         }
     }
     Ok(())
+}
+
+/// Helper function to create a file with specific content and encoding
+fn create_test_file(dir: &tempfile::TempDir, name: &str, content: &[u8]) -> Result<PathBuf> {
+    let path = dir.path().join(name);
+    std::fs::write(&path, content)?;
+    Ok(path)
+}
+
+// Convert a `Path` into a vector of wide characters (u16).
+fn path_wide_chars(p: &Path) -> Vec<u16> {
+    p.as_os_str().encode_wide().collect()
 }
 
 #[test]
@@ -54,6 +70,7 @@ fn test_simple_pattern() -> Result<()> {
         cache_strategy: ChangeDetectionStrategy::Auto,
         max_cache_size: None,
         use_compression: false,
+        encoding_mode: EncodingMode::FailFast,
     };
 
     let result = search(&config)?;
@@ -89,6 +106,7 @@ fn test_regex_pattern() -> Result<()> {
         cache_strategy: ChangeDetectionStrategy::Auto,
         max_cache_size: None,
         use_compression: false,
+        encoding_mode: EncodingMode::FailFast,
     };
 
     let result = search(&config)?;
@@ -129,6 +147,7 @@ fn test_file_extensions() -> Result<()> {
         cache_strategy: ChangeDetectionStrategy::Auto,
         max_cache_size: None,
         use_compression: false,
+        encoding_mode: EncodingMode::FailFast,
     };
 
     let result = search(&config)?;
@@ -164,6 +183,7 @@ fn test_ignore_patterns() -> Result<()> {
         cache_strategy: ChangeDetectionStrategy::Auto,
         max_cache_size: None,
         use_compression: false,
+        encoding_mode: EncodingMode::FailFast,
     };
 
     let result = search(&config)?;
@@ -202,6 +222,7 @@ fn test_empty_pattern() -> Result<()> {
         cache_strategy: ChangeDetectionStrategy::Auto,
         max_cache_size: None,
         use_compression: false,
+        encoding_mode: EncodingMode::FailFast,
     };
 
     let result = search(&config)?;
@@ -237,6 +258,7 @@ fn test_stats_only() -> Result<()> {
         cache_strategy: ChangeDetectionStrategy::Auto,
         max_cache_size: None,
         use_compression: false,
+        encoding_mode: EncodingMode::FailFast,
     };
 
     let result = search(&config)?;
@@ -280,6 +302,7 @@ fn test_multiple_patterns() -> Result<()> {
         cache_strategy: ChangeDetectionStrategy::Auto,
         max_cache_size: None,
         use_compression: false,
+        encoding_mode: EncodingMode::FailFast,
     };
 
     let result = search(&config)?;
@@ -333,6 +356,7 @@ fn test_empty_patterns() -> Result<()> {
         cache_strategy: ChangeDetectionStrategy::Auto,
         max_cache_size: None,
         use_compression: false,
+        encoding_mode: EncodingMode::FailFast,
     };
 
     let result = search(&config)?;
@@ -377,6 +401,7 @@ fn test_context_lines() -> Result<()> {
         cache_strategy: ChangeDetectionStrategy::Auto,
         max_cache_size: None,
         use_compression: false,
+        encoding_mode: EncodingMode::FailFast,
     };
 
     let result = search(&config)?;
@@ -454,6 +479,7 @@ fn test_context_lines_at_file_boundaries() -> Result<()> {
         cache_strategy: ChangeDetectionStrategy::Auto,
         max_cache_size: None,
         use_compression: false,
+        encoding_mode: EncodingMode::FailFast,
     };
 
     let result = search(&config)?;
@@ -507,6 +533,7 @@ fn test_overlapping_context() -> Result<()> {
         cache_strategy: ChangeDetectionStrategy::Auto,
         max_cache_size: None,
         use_compression: false,
+        encoding_mode: EncodingMode::FailFast,
     };
 
     let result = search(&config)?;
@@ -542,7 +569,11 @@ fn test_incremental_search_with_compression() -> Result<()> {
         pattern: String::new(),
         patterns: vec![],
         root_path: dir.path().to_path_buf(),
-        ignore_patterns: vec![],
+        ignore_patterns: vec![
+            ".git".to_string(),
+            ".git/*".to_string(),
+            "**/.git/**".to_string(),
+        ],
         file_extensions: None,
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
@@ -554,6 +585,7 @@ fn test_incremental_search_with_compression() -> Result<()> {
         cache_strategy: ChangeDetectionStrategy::FileSignature,
         max_cache_size: Some(1024 * 1024), // 1MB
         use_compression: true,
+        encoding_mode: EncodingMode::FailFast,
     };
 
     // First search should create compressed cache
@@ -585,7 +617,11 @@ fn test_incremental_search_with_renames() -> Result<()> {
         pattern: String::new(),
         patterns: vec![],
         root_path: dir.path().to_path_buf(),
-        ignore_patterns: vec![],
+        ignore_patterns: vec![
+            ".git".to_string(),
+            ".git/*".to_string(),
+            "**/.git/**".to_string(),
+        ],
         file_extensions: None,
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
@@ -597,6 +633,7 @@ fn test_incremental_search_with_renames() -> Result<()> {
         cache_strategy: ChangeDetectionStrategy::FileSignature,
         max_cache_size: None,
         use_compression: false,
+        encoding_mode: EncodingMode::FailFast,
     };
 
     // First search should create cache
@@ -631,7 +668,11 @@ fn test_incremental_search_cache_invalidation() -> Result<()> {
         pattern: String::new(),
         patterns: vec![],
         root_path: dir.path().to_path_buf(),
-        ignore_patterns: vec![],
+        ignore_patterns: vec![
+            ".git".to_string(),
+            ".git/*".to_string(),
+            "**/.git/**".to_string(),
+        ],
         file_extensions: None,
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
@@ -643,6 +684,7 @@ fn test_incremental_search_cache_invalidation() -> Result<()> {
         cache_strategy: ChangeDetectionStrategy::FileSignature,
         max_cache_size: Some(1024), // Very small cache
         use_compression: false,
+        encoding_mode: EncodingMode::FailFast,
     };
 
     // First search should create cache
@@ -701,7 +743,12 @@ fn test_incremental_search_git_strategy() -> Result<()> {
         pattern: String::new(),
         patterns: vec![],
         root_path: dir.path().to_path_buf(),
-        ignore_patterns: vec![],
+        // Add comprehensive .git ignore patterns
+        ignore_patterns: vec![
+            ".git".to_string(),
+            ".git/*".to_string(),
+            "**/.git/**".to_string(),
+        ],
         file_extensions: None,
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
@@ -713,6 +760,7 @@ fn test_incremental_search_git_strategy() -> Result<()> {
         cache_strategy: ChangeDetectionStrategy::GitStatus,
         max_cache_size: None,
         use_compression: false,
+        encoding_mode: EncodingMode::FailFast,
     };
 
     // First search should create cache
@@ -766,7 +814,11 @@ fn test_incremental_search_corrupt_cache() -> Result<()> {
         pattern: String::new(),
         patterns: vec![],
         root_path: dir.path().to_path_buf(),
-        ignore_patterns: vec![],
+        ignore_patterns: vec![
+            ".git".to_string(),
+            ".git/*".to_string(),
+            "**/.git/**".to_string(),
+        ],
         file_extensions: None,
         stats_only: false,
         thread_count: NonZeroUsize::new(4).unwrap(),
@@ -778,6 +830,7 @@ fn test_incremental_search_corrupt_cache() -> Result<()> {
         cache_strategy: ChangeDetectionStrategy::FileSignature,
         max_cache_size: None,
         use_compression: false,
+        encoding_mode: EncodingMode::FailFast,
     };
 
     // First search should create cache
@@ -820,7 +873,11 @@ fn test_incremental_search_concurrent_mods() -> Result<()> {
         pattern: String::new(),
         patterns: vec![],
         root_path: dir.path().to_path_buf(),
-        ignore_patterns: vec![],
+        ignore_patterns: vec![
+            ".git".to_string(),
+            ".git/*".to_string(),
+            "**/.git/**".to_string(),
+        ],
         file_extensions: None,
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
@@ -832,6 +889,7 @@ fn test_incremental_search_concurrent_mods() -> Result<()> {
         cache_strategy: ChangeDetectionStrategy::FileSignature,
         max_cache_size: None,
         use_compression: false,
+        encoding_mode: EncodingMode::FailFast,
     };
 
     // Start search in a separate thread
@@ -861,6 +919,216 @@ fn test_incremental_search_concurrent_mods() -> Result<()> {
     // Second search should see the new content
     let result = search(&config)?;
     assert_eq!(result.total_matches, 3);
+
+    Ok(())
+}
+
+#[test]
+fn test_utf8_handling_fail_fast() -> Result<()> {
+    let dir = tempfile::TempDir::new()?;
+
+    // Valid ASCII file
+    let _ascii_path = create_test_file(&dir, "hello.rs", b"Hello, world!\nTODO: test this")?;
+
+    // Valid UTF-8 with accents
+    let _accented_path = create_test_file(
+        &dir,
+        "spanish.rs",
+        "// función de prueba\nfn test_función() {\n    // TODO: implementar\n}".as_bytes(),
+    )?;
+
+    // Invalid UTF-8 file
+    let invalid_path = create_test_file(
+        &dir,
+        "invalid.rs",
+        &[
+            b"fn test() {\n    println!(\"Hello\");"[..].to_vec(),
+            vec![0xFF, 0xFF], // Invalid UTF-8 bytes
+            b"\n}".to_vec(),
+        ]
+        .concat(),
+    )?;
+
+    // Create config with fail-fast mode
+    let mut config =
+        SearchConfig::new_with_pattern("TODO".to_string(), false, WordBoundaryMode::None);
+    config.root_path = dir.path().to_path_buf();
+    config.encoding_mode = EncodingMode::FailFast;
+
+    // Search and verify results
+    let result = search(&config);
+    assert!(result.is_err(), "Expected error for invalid UTF-8 file");
+
+    if let Err(e) = result {
+        match e {
+            SearchError::EncodingError { path, .. } => {
+                // Apply unify_path to both sides for consistent comparison
+                let expected = unify_path(&invalid_path);
+
+                eprintln!("=== TEST DEBUG ===");
+                eprintln!("Got error path: {:?}", path);
+                eprintln!("Expected path:  {:?}", expected);
+
+                let got_wide = path_wide_chars(&path);
+                let exp_wide = path_wide_chars(&expected);
+                eprintln!("Got wide chars: {:?}", got_wide);
+                eprintln!("Exp wide chars: {:?}", exp_wide);
+
+                // Compare path components
+                let got_components: Vec<_> = path.components().collect();
+                let exp_components: Vec<_> = expected.components().collect();
+                eprintln!("Got components: {:?}", got_components);
+                eprintln!("Exp components: {:?}", exp_components);
+
+                // Also compare to_string_lossy
+                let got_lossy = path.to_string_lossy();
+                let exp_lossy = expected.to_string_lossy();
+                eprintln!("Got lossy: {:?}", got_lossy);
+                eprintln!("Exp lossy: {:?}", exp_lossy);
+
+                eprintln!("String eq check: {}", got_lossy == exp_lossy);
+                eprintln!("===============\n");
+
+                assert_eq!(
+                    path, expected,
+                    "Error should reference invalid file. Got: {:?}, Expected: {:?}",
+                    path, expected
+                );
+            }
+            _ => panic!("Expected EncodingError, got: {:?}", e),
+        }
+    }
+
+    // Now search only valid files
+    config.ignore_patterns = vec!["invalid.rs".to_string()];
+    let result = search(&config)?;
+
+    eprintln!("\n=== SEARCH RESULTS DEBUG ===");
+    eprintln!("Total matches found: {}", result.total_matches);
+    eprintln!("Files with matches: {}", result.files_with_matches);
+    eprintln!("Expected: 2 matches in 2 files");
+    eprintln!("=========================\n");
+
+    assert_eq!(
+        result.total_matches, 2,
+        "Expected matches in both valid files"
+    );
+    assert_eq!(
+        result.files_with_matches, 2,
+        "Expected matches in both valid files"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_utf8_handling_lossy() -> Result<()> {
+    let dir = tempdir()?;
+
+    let _mixed_path = create_test_file(
+        &dir,
+        "mixed.rs",
+        &[
+            b"// TODO: first task\n"[..].to_vec(),
+            vec![0xFF, 0xFF], // Invalid UTF-8
+            b"\n// TODO: second task".to_vec(),
+        ]
+        .concat(),
+    )?;
+
+    // Create config with lossy mode
+    let mut config =
+        SearchConfig::new_with_pattern("TODO".to_string(), false, WordBoundaryMode::None);
+    config.root_path = dir.path().to_path_buf();
+    config.encoding_mode = EncodingMode::Lossy;
+
+    // Search and verify results
+    let result = search(&config)?;
+
+    assert_eq!(result.total_matches, 2, "Expected both TODOs to be found");
+    assert_eq!(
+        result.files_with_matches, 1,
+        "Expected matches in the mixed file"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_utf8_large_file_performance() -> Result<()> {
+    let dir = tempfile::TempDir::new()?;
+
+    // Create a large file (>10MB) with valid UTF-8
+    let mut large_content = String::with_capacity(11 * 1024 * 1024);
+    for i in 0..100_000 {
+        if i % 1000 == 0 {
+            large_content.push_str("// TODO: test this\n");
+        }
+        large_content.push_str("// Some normal comment with unicode: función μ π\n");
+    }
+
+    let _large_path = create_test_file(&dir, "large.rs", large_content.as_bytes())?;
+
+    // Test both modes for performance
+    for mode in [EncodingMode::FailFast, EncodingMode::Lossy] {
+        let mut config =
+            SearchConfig::new_with_pattern("TODO".to_string(), false, WordBoundaryMode::None);
+        config.root_path = dir.path().to_path_buf();
+        config.encoding_mode = mode;
+
+        let start = std::time::Instant::now();
+        let result = search(&config)?;
+        let duration = start.elapsed();
+
+        assert_eq!(result.total_matches, 100, "Expected 100 TODOs");
+        assert!(
+            duration.as_secs_f64() < 3.0,
+            "Search took too long: {:?}",
+            duration
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_utf8_mixed_files() -> Result<()> {
+    let dir = tempfile::TempDir::new()?;
+
+    // Create multiple files with different encodings
+    let _valid1_path = create_test_file(&dir, "valid1.rs", b"// TODO: test this")?;
+    let _valid2_path = create_test_file(&dir, "valid2.rs", "// TODO: test función".as_bytes())?;
+    let _invalid_path = create_test_file(
+        &dir,
+        "invalid.rs",
+        &[b"// TODO: "[..].to_vec(), vec![0xFF], b" test".to_vec()].concat(),
+    )?;
+
+    // Test fail-fast mode
+    {
+        let mut config =
+            SearchConfig::new_with_pattern("TODO".to_string(), false, WordBoundaryMode::None);
+        config.root_path = dir.path().to_path_buf();
+        config.encoding_mode = EncodingMode::FailFast;
+
+        let result = search(&config);
+        assert!(result.is_err(), "Expected error in fail-fast mode");
+    }
+
+    // Test lossy mode
+    {
+        let mut config =
+            SearchConfig::new_with_pattern("TODO".to_string(), false, WordBoundaryMode::None);
+        config.root_path = dir.path().to_path_buf();
+        config.encoding_mode = EncodingMode::Lossy;
+
+        let result = search(&config)?;
+        assert_eq!(result.total_matches, 3, "Expected matches in all files");
+        assert_eq!(
+            result.files_with_matches, 3,
+            "Expected all files to have matches"
+        );
+    }
 
     Ok(())
 }

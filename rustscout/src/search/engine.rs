@@ -5,8 +5,8 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use crate::cache::{create_detector, ChangeStatus, FileSignatureDetector, IncrementalCache};
-use crate::config::SearchConfig;
-use crate::errors::SearchResult;
+use crate::config::{EncodingMode, SearchConfig};
+use crate::errors::{SearchError, SearchResult};
 use crate::filters::{should_ignore, should_include_file};
 use crate::metrics::MemoryMetrics;
 use crate::results::{FileResult, SearchResult as SearchOutput};
@@ -29,7 +29,12 @@ pub fn search(config: &SearchConfig) -> SearchResult<SearchOutput> {
 
     let metrics = Arc::new(MemoryMetrics::new());
     let matcher = PatternMatcher::with_metrics(pattern_defs, metrics.clone());
-    let processor = FileProcessor::new(matcher, config.context_before, config.context_after);
+    let processor = FileProcessor::new(
+        matcher,
+        config.context_before,
+        config.context_after,
+        config.encoding_mode,
+    );
 
     // Collect all files to search
     let mut files: Vec<PathBuf> = WalkBuilder::new(&config.root_path)
@@ -41,8 +46,13 @@ pub fn search(config: &SearchConfig) -> SearchResult<SearchOutput> {
         .filter(|entry| entry.file_type().is_some_and(|ft| ft.is_file()))
         .filter(|entry| {
             let path = entry.path();
-            !should_ignore(path, &config.ignore_patterns)
-                && should_include_file(path, &config.file_extensions, &config.ignore_patterns)
+            !should_ignore(path, &config.root_path, &config.ignore_patterns)
+                && should_include_file(
+                    path,
+                    &config.root_path,
+                    &config.file_extensions,
+                    &config.ignore_patterns,
+                )
         })
         .map(|entry| entry.into_path())
         .collect();
@@ -131,16 +141,34 @@ pub fn search(config: &SearchConfig) -> SearchResult<SearchOutput> {
         // Process changed files in parallel
         if !files_to_search.is_empty() {
             let chunk_size = (files_to_search.len() / rayon::current_num_threads()).max(1);
-            let new_results: Vec<FileResult> = files_to_search
+            let new_results: Result<Vec<FileResult>, _> = files_to_search
                 .par_chunks(chunk_size)
-                .flat_map(|chunk| {
-                    chunk
-                        .iter()
-                        .filter_map(|path| processor.process_file(path).ok())
-                        .filter(|result| !result.matches.is_empty())
-                        .collect::<Vec<_>>()
+                .try_fold(Vec::new, |mut acc, chunk| {
+                    for path in chunk {
+                        // In FailFast mode, propagate any error
+                        if config.encoding_mode == EncodingMode::FailFast {
+                            let result = processor.process_file(path)?;
+                            if !result.matches.is_empty() {
+                                acc.push(result);
+                            }
+                        } else {
+                            // In Lossy mode, skip errors
+                            if let Ok(result) = processor.process_file(path) {
+                                if !result.matches.is_empty() {
+                                    acc.push(result);
+                                }
+                            }
+                        }
+                    }
+                    Ok::<_, SearchError>(acc)
                 })
-                .collect();
+                .try_reduce(Vec::new, |mut a, mut b| {
+                    a.append(&mut b);
+                    Ok::<_, SearchError>(a)
+                });
+
+            // Handle results based on mode
+            let new_results = new_results?;
 
             // Update cache with new results
             for file_result in &new_results {
@@ -164,16 +192,34 @@ pub fn search(config: &SearchConfig) -> SearchResult<SearchOutput> {
     } else {
         // Non-incremental search: process all files in parallel
         let chunk_size = (files.len() / rayon::current_num_threads()).max(1);
-        let file_results: Vec<FileResult> = files
+        let file_results: Result<Vec<FileResult>, _> = files
             .par_chunks(chunk_size)
-            .flat_map(|chunk| {
-                chunk
-                    .iter()
-                    .filter_map(|path| processor.process_file(path).ok())
-                    .filter(|result| !result.matches.is_empty())
-                    .collect::<Vec<_>>()
+            .try_fold(Vec::new, |mut acc, chunk| {
+                for path in chunk {
+                    // In FailFast mode, propagate any error
+                    if config.encoding_mode == EncodingMode::FailFast {
+                        let result = processor.process_file(path)?;
+                        if !result.matches.is_empty() {
+                            acc.push(result);
+                        }
+                    } else {
+                        // In Lossy mode, skip errors
+                        if let Ok(result) = processor.process_file(path) {
+                            if !result.matches.is_empty() {
+                                acc.push(result);
+                            }
+                        }
+                    }
+                }
+                Ok::<_, SearchError>(acc)
             })
-            .collect();
+            .try_reduce(Vec::new, |mut a, mut b| {
+                a.append(&mut b);
+                Ok::<_, SearchError>(a)
+            });
+
+        // Handle results based on mode
+        let file_results = file_results?;
 
         // Add results
         for file_result in file_results {

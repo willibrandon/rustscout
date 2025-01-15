@@ -72,7 +72,7 @@
 ///
 /// This module uses free functions instead of traits for simplicity, but the concepts
 /// could be refactored into a trait-based design for more complex filtering requirements.
-use glob::Pattern;
+use glob::{MatchOptions, Pattern};
 use std::path::Path;
 
 /// Checks if a file should be included in the search based on its extension
@@ -90,25 +90,55 @@ pub fn has_valid_extension(path: &Path, extensions: &Option<Vec<String>>) -> boo
     }
 }
 
-/// Checks if a file should be ignored based on ignore patterns
-pub fn should_ignore(path: &Path, ignore_patterns: &[String]) -> bool {
-    let path_str = path.to_string_lossy();
+/// Convert `path` into a relative path (with forward slashes)
+/// relative to `root_path`.
+/// If `strip_prefix` fails (e.g. path isn't under root), fallback to the full path.
+fn to_relative_slash_path(path: &Path, root_path: &Path) -> String {
+    let rel = path.strip_prefix(root_path).unwrap_or(path);
+    rel.to_string_lossy().replace('\\', "/")
+}
 
-    // Always ignore target/ and .git/ directories
-    if path_str.contains("/target/") || path_str.contains("/.git/") {
+/// Checks if a file should be ignored based on ignore patterns
+///
+/// Uses a simplified `.gitignore`-like syntax:
+/// - If the pattern does not contain a slash, it matches only the final file name.
+///   Example: `invalid.rs` matches any file named `invalid.rs` in any directory.
+/// - If the pattern contains a slash, it is interpreted as a glob pattern on the entire path.
+///   Example: `tests/*.rs` matches `.rs` files in the `tests/` folder only.
+///   Example: `**/invalid.rs` matches `invalid.rs` anywhere in the directory tree.
+pub fn should_ignore(path: &Path, root_path: &Path, ignore_patterns: &[String]) -> bool {
+    let file_name = path.file_name().and_then(|os| os.to_str()).unwrap_or("");
+    let rel_slash = to_relative_slash_path(path, root_path);
+
+    // Configure glob matching options
+    let match_opts = MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: true,
+        ..Default::default()
+    };
+
+    // Always ignore .git directories and files
+    if rel_slash.contains("/.git/") || rel_slash.contains("\\.git\\") || file_name == ".git" {
         return true;
     }
 
     // Check custom ignore patterns
-    ignore_patterns.iter().any(|pattern| {
-        if let Ok(p) = Pattern::new(pattern) {
-            // Convert path to a format that matches the pattern style
-            let normalized_path = path_str.replace('\\', "/");
-            p.matches(&normalized_path)
+    for pattern in ignore_patterns {
+        if !pattern.contains('/') {
+            // If the pattern has no slash, treat it as matching just the file name
+            if file_name == pattern {
+                return true;
+            }
         } else {
-            false
+            // If the pattern has a slash, treat it as a glob for the entire path
+            if let Ok(gpat) = Pattern::new(pattern) {
+                if gpat.matches_with(&rel_slash, match_opts) {
+                    return true;
+                }
+            }
         }
-    })
+    }
+    false
 }
 
 /// Checks if a file is likely to be binary
@@ -133,12 +163,13 @@ pub fn is_likely_binary(path: &Path) -> bool {
 /// Determines if a file should be included in the search
 pub fn should_include_file(
     path: &Path,
+    root_path: &Path,
     extensions: &Option<Vec<String>>,
     ignore_patterns: &[String],
 ) -> bool {
     !is_likely_binary(path)
         && has_valid_extension(path, extensions)
-        && !should_ignore(path, ignore_patterns)
+        && !should_ignore(path, root_path, ignore_patterns)
 }
 
 #[cfg(test)]
@@ -175,22 +206,63 @@ mod tests {
         ];
 
         // Should ignore
-        assert!(should_ignore(Path::new("test_0.txt"), &ignore_patterns));
-        assert!(should_ignore(Path::new("test_4.txt"), &ignore_patterns));
-        assert!(should_ignore(Path::new("dir/test_2.txt"), &ignore_patterns));
         assert!(should_ignore(
-            Path::new("target/debug/main.rs"),
+            Path::new("test_0.txt"),
+            Path::new(""),
             &ignore_patterns
         ));
-        assert!(should_ignore(Path::new(".git/config"), &ignore_patterns));
-        assert!(should_ignore(Path::new("src/temp.tmp"), &ignore_patterns));
+        assert!(should_ignore(
+            Path::new("test_4.txt"),
+            Path::new(""),
+            &ignore_patterns
+        ));
+        assert!(should_ignore(
+            Path::new("dir/test_2.txt"),
+            Path::new(""),
+            &ignore_patterns
+        ));
+        assert!(should_ignore(
+            Path::new("target/debug/main.rs"),
+            Path::new(""),
+            &ignore_patterns
+        ));
+        assert!(should_ignore(
+            Path::new(".git/config"),
+            Path::new(""),
+            &ignore_patterns
+        ));
+        assert!(should_ignore(
+            Path::new("src/temp.tmp"),
+            Path::new(""),
+            &ignore_patterns
+        ));
 
         // Should not ignore
-        assert!(!should_ignore(Path::new("test_5.txt"), &ignore_patterns));
-        assert!(!should_ignore(Path::new("test_9.txt"), &ignore_patterns));
-        assert!(!should_ignore(Path::new("src/main.rs"), &ignore_patterns));
-        assert!(!should_ignore(Path::new(".git2/config"), &ignore_patterns));
-        assert!(!should_ignore(Path::new(".gitignore"), &ignore_patterns));
+        assert!(!should_ignore(
+            Path::new("test_5.txt"),
+            Path::new(""),
+            &ignore_patterns
+        ));
+        assert!(!should_ignore(
+            Path::new("test_9.txt"),
+            Path::new(""),
+            &ignore_patterns
+        ));
+        assert!(!should_ignore(
+            Path::new("src/main.rs"),
+            Path::new(""),
+            &ignore_patterns
+        ));
+        assert!(!should_ignore(
+            Path::new(".git2/config"),
+            Path::new(""),
+            &ignore_patterns
+        ));
+        assert!(!should_ignore(
+            Path::new(".gitignore"),
+            Path::new(""),
+            &ignore_patterns
+        ));
     }
 
     #[test]
@@ -212,6 +284,7 @@ mod tests {
         // Should include: .rs file, not in target, not binary
         assert!(should_include_file(
             Path::new("src/main.rs"),
+            Path::new(""),
             &extensions,
             &ignore_patterns
         ));
@@ -219,6 +292,7 @@ mod tests {
         // Should not include: wrong extension
         assert!(!should_include_file(
             Path::new("src/main.py"),
+            Path::new(""),
             &extensions,
             &ignore_patterns
         ));
@@ -226,6 +300,7 @@ mod tests {
         // Should not include: matches ignore pattern
         assert!(!should_include_file(
             Path::new("target/debug/main.rs"),
+            Path::new(""),
             &extensions,
             &ignore_patterns
         ));
@@ -233,6 +308,7 @@ mod tests {
         // Should not include: binary file
         assert!(!should_include_file(
             Path::new("src/test.exe"),
+            Path::new(""),
             &extensions,
             &ignore_patterns
         ));
@@ -240,8 +316,85 @@ mod tests {
         // Should include: .rs file in target but not matching pattern
         assert!(should_include_file(
             Path::new("target.rs"),
+            Path::new(""),
             &extensions,
             &ignore_patterns
         ));
+    }
+
+    #[test]
+    fn test_ignore_no_slash_pattern() {
+        let p1 = Path::new("C:/Users/foo/bar/invalid.rs");
+        let p2 = Path::new("C:/Users/foo/bar/other.rs");
+
+        let patterns = vec!["invalid.rs".to_string()];
+        // p1 should be ignored because its file name is "invalid.rs"
+        assert!(should_ignore(p1, Path::new(""), &patterns));
+        // p2 should not be ignored
+        assert!(!should_ignore(p2, Path::new(""), &patterns));
+    }
+
+    #[test]
+    fn test_ignore_slash_pattern() {
+        let p1 = Path::new("C:/Users/foo/bar/invalid.rs");
+        let patterns = vec!["**/invalid.rs".to_string()];
+        // p1 matches the glob, so we ignore it
+        assert!(should_ignore(p1, Path::new(""), &patterns));
+    }
+
+    #[test]
+    fn test_ignore_filename_no_slash() {
+        let file_1 = Path::new("C:/Users/foo/bar/invalid.rs");
+        let file_2 = Path::new("C:/Users/foo/bar/other.rs");
+        let file_3 = Path::new("C:/Users/foo/bar/baz/invalid.rs");
+
+        // Pattern with no slash
+        let patterns = vec!["invalid.rs".to_string()];
+        // Both files named "invalid.rs" should be ignored
+        assert!(should_ignore(file_1, Path::new(""), &patterns));
+        assert!(should_ignore(file_3, Path::new(""), &patterns));
+        // "other.rs" is not ignored
+        assert!(!should_ignore(file_2, Path::new(""), &patterns));
+    }
+
+    #[test]
+    fn test_ignore_with_slash_glob() {
+        let root = Path::new("C:/repo");
+        let file_1 = Path::new("C:/repo/tests/invalid.rs");
+        let file_2 = Path::new("C:/repo/src/invalid.rs");
+        let file_3 = Path::new("C:/repo/docs/README.md");
+
+        // Pattern with slash => use full path glob
+        let patterns = vec!["tests/*.rs".to_string()];
+        // "tests/*.rs" should match only "tests/invalid.rs"
+        assert!(should_ignore(file_1, root, &patterns));
+        assert!(!should_ignore(file_2, root, &patterns));
+        assert!(!should_ignore(file_3, root, &patterns));
+    }
+
+    #[test]
+    fn test_ignore_star_glob_no_subdirs() {
+        let root = Path::new("C:/repo");
+        let file_1 = Path::new("C:/repo/src/foo.rs");
+        let file_2 = Path::new("C:/repo/src/bar.rs");
+        let file_3 = Path::new("C:/repo/src/nested/baz.rs");
+
+        // Pattern "src/*.rs" matches only files directly under "src/"
+        let patterns = vec!["src/*.rs".to_string()];
+        assert!(should_ignore(file_1, root, &patterns));
+        assert!(should_ignore(file_2, root, &patterns));
+        assert!(!should_ignore(file_3, root, &patterns));
+    }
+
+    #[test]
+    fn test_ignore_double_star_glob() {
+        let root = Path::new("C:/repo");
+        let file_1 = Path::new("C:/repo/src/foo.rs");
+        let file_2 = Path::new("C:/repo/src/nested/bar.rs");
+
+        // Pattern "src/**/*.rs" matches .rs files at ANY depth under src/
+        let patterns = vec!["src/**/*.rs".to_string()];
+        assert!(should_ignore(file_1, root, &patterns));
+        assert!(should_ignore(file_2, root, &patterns));
     }
 }

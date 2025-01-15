@@ -40,7 +40,7 @@
 /// 3. **Type Safety**
 ///    - .NET exceptions are discovered at runtime
 ///    - Rust errors are checked at compile time
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 /// Result type for search operations
@@ -66,6 +66,30 @@ pub enum SearchError {
     ConfigError(String),
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
+    #[error("Invalid UTF-8 in file {path}: {source}")]
+    EncodingError {
+        path: PathBuf,
+        source: std::string::FromUtf8Error,
+    },
+}
+
+/// Canonicalize the path and strip UNC prefixes so that
+/// comparisons on Windows are consistent.
+pub fn unify_path(original: &Path) -> PathBuf {
+    let canonical = original
+        .canonicalize()
+        .unwrap_or_else(|_| original.to_path_buf());
+    strip_unc_prefix(&canonical)
+}
+
+/// Strips the Windows UNC prefix (\\?\) from a path if present
+fn strip_unc_prefix(p: &Path) -> PathBuf {
+    let s = p.display().to_string();
+    if let Some(stripped) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(stripped)
+    } else {
+        p.to_path_buf()
+    }
 }
 
 impl SearchError {
@@ -97,6 +121,15 @@ impl SearchError {
 
     pub fn config_error(msg: impl Into<String>) -> Self {
         Self::ConfigError(msg.into())
+    }
+
+    pub fn encoding_error(path: impl Into<PathBuf>, source: std::string::FromUtf8Error) -> Self {
+        let path = path.into();
+        let unified = unify_path(&path);
+        Self::EncodingError {
+            path: unified,
+            source,
+        }
     }
 }
 

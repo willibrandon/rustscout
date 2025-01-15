@@ -288,6 +288,20 @@ ignore_patterns:
   - "target/**"              # Ignore target directory
   - ".git/**"                # Ignore git directory
   - "**/*.min.js"            # Ignore minified JS
+  - "invalid.rs"             # Ignore any file named invalid.rs
+
+# Ignore Pattern Syntax
+RustScout uses a simplified `.gitignore`-like syntax:
+- If the pattern **does not contain a slash**, it matches **only** the final file name.
+  - Example: `invalid.rs` will match **any** file named `invalid.rs` in any directory.
+- If the pattern **contains a slash**, it is interpreted as a glob pattern applied to the **entire path**.
+  - Example: `tests/*.rs` matches `.rs` files in the `tests/` folder only.
+  - Example: `**/invalid.rs` matches `invalid.rs` anywhere in the directory tree.
+
+### Examples
+- `invalid.rs` => Ignores any file with the exact name `invalid.rs`.
+- `**/test_*.rs` => Ignores `test_foo.rs`, `test_bar.rs` in **any** subdirectory.
+- `docs/*.md` => Ignores `.md` files in `docs/`, but not deeper subdirs like `docs/nested/`.
 
 # Performance Settings
 stats_only: false            # Show only statistics

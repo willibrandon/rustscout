@@ -6,6 +6,21 @@ use crate::cache::ChangeDetectionStrategy;
 use crate::errors::{SearchError, SearchResult};
 use crate::search::matcher::{HyphenHandling, PatternDefinition, WordBoundaryMode};
 
+/// Controls how invalid UTF-8 sequences are handled
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum EncodingMode {
+    /// Fail immediately on invalid UTF-8 (default for code search)
+    FailFast,
+    /// Replace invalid UTF-8 sequences with the replacement character ()
+    Lossy,
+}
+
+impl Default for EncodingMode {
+    fn default() -> Self {
+        Self::FailFast // Default to strict UTF-8 for code search
+    }
+}
+
 /// Configuration for search operations
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SearchConfig {
@@ -44,6 +59,9 @@ pub struct SearchConfig {
     pub max_cache_size: Option<u64>,
     /// Whether to use compression for cache
     pub use_compression: bool,
+    /// How to handle invalid UTF-8 sequences
+    #[serde(default)]
+    pub encoding_mode: EncodingMode,
 }
 
 impl Default for SearchConfig {
@@ -65,6 +83,7 @@ impl Default for SearchConfig {
             cache_strategy: ChangeDetectionStrategy::Auto,
             max_cache_size: None,
             use_compression: false,
+            encoding_mode: EncodingMode::default(),
         }
     }
 }
