@@ -1,6 +1,6 @@
 [package]
 name = "rustscout"
-version = "1.1.0"
+version = "1.1.1"
 edition = "2021"
 description = "High-performance, concurrent code search tool written in Rust"
 license = "MIT"
