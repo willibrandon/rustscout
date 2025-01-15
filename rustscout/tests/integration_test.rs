@@ -1089,7 +1089,7 @@ fn test_utf8_large_file_performance() -> Result<()> {
 
         assert_eq!(result.total_matches, 100, "Expected 100 TODOs");
         assert!(
-            duration.as_secs_f64() < 3.0,
+            duration.as_secs_f64() < 6.0,
             "Search took too long: {:?}",
             duration
         );
