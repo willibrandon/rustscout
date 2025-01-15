@@ -1,6 +1,10 @@
 use anyhow::Result;
 use rustscout::search::search;
-use rustscout::{cache::ChangeDetectionStrategy, SearchConfig};
+use rustscout::{
+    cache::ChangeDetectionStrategy,
+    search::matcher::{HyphenHandling, PatternDefinition, WordBoundaryMode},
+    SearchConfig,
+};
 use std::fs::File;
 use std::io::Write;
 use std::num::NonZeroUsize;
@@ -29,16 +33,22 @@ fn test_simple_pattern() -> Result<()> {
     create_test_files(&dir, 10, 100)?;
 
     let config = SearchConfig {
-        pattern: "TODO".to_string(),
-        patterns: vec!["TODO".to_string()],
+        pattern_definitions: vec![PatternDefinition {
+            text: "TODO".to_string(),
+            is_regex: false,
+            boundary_mode: WordBoundaryMode::None,
+            hyphen_handling: HyphenHandling::default(),
+        }],
+        pattern: String::new(),
+        patterns: vec![],
         root_path: dir.path().to_path_buf(),
         file_extensions: None,
         ignore_patterns: vec![],
         stats_only: false,
         thread_count: NonZeroUsize::new(4).unwrap(),
         log_level: "info".to_string(),
-        context_before: 0,
-        context_after: 0,
+        context_before: 1,
+        context_after: 1,
         incremental: false,
         cache_path: None,
         cache_strategy: ChangeDetectionStrategy::Auto,
@@ -58,8 +68,14 @@ fn test_regex_pattern() -> Result<()> {
     create_test_files(&dir, 10, 100)?;
 
     let config = SearchConfig {
-        pattern: r"FIXME:.*bug.*line \d+".to_string(),
-        patterns: vec![r"FIXME:.*bug.*line \d+".to_string()],
+        pattern_definitions: vec![PatternDefinition {
+            text: r"FIXME:.*bug.*line \d+".to_string(),
+            is_regex: true,
+            boundary_mode: WordBoundaryMode::None,
+            hyphen_handling: HyphenHandling::default(),
+        }],
+        pattern: String::new(),
+        patterns: vec![],
         root_path: dir.path().to_path_buf(),
         file_extensions: None,
         ignore_patterns: vec![],
@@ -92,8 +108,14 @@ fn test_file_extensions() -> Result<()> {
     writeln!(file, "// TODO: Implement this function")?;
 
     let config = SearchConfig {
-        pattern: "TODO".to_string(),
-        patterns: vec!["TODO".to_string()],
+        pattern_definitions: vec![PatternDefinition {
+            text: "TODO".to_string(),
+            is_regex: false,
+            boundary_mode: WordBoundaryMode::None,
+            hyphen_handling: HyphenHandling::default(),
+        }],
+        pattern: String::new(),
+        patterns: vec![],
         root_path: dir.path().to_path_buf(),
         file_extensions: Some(vec!["rs".to_string()]),
         ignore_patterns: vec![],
@@ -121,8 +143,14 @@ fn test_ignore_patterns() -> Result<()> {
     create_test_files(&dir, 10, 100)?;
 
     let config = SearchConfig {
-        pattern: "TODO".to_string(),
-        patterns: vec!["TODO".to_string()],
+        pattern_definitions: vec![PatternDefinition {
+            text: "TODO".to_string(),
+            is_regex: false,
+            boundary_mode: WordBoundaryMode::None,
+            hyphen_handling: HyphenHandling::default(),
+        }],
+        pattern: String::new(),
+        patterns: vec![],
         root_path: dir.path().to_path_buf(),
         file_extensions: None,
         ignore_patterns: vec!["**/test_[0-4].txt".to_string()],
@@ -153,8 +181,14 @@ fn test_empty_pattern() -> Result<()> {
     create_test_files(&dir, 1, 10)?;
 
     let config = SearchConfig {
+        pattern_definitions: vec![PatternDefinition {
+            text: String::new(),
+            is_regex: false,
+            boundary_mode: WordBoundaryMode::None,
+            hyphen_handling: HyphenHandling::default(),
+        }],
         pattern: String::new(),
-        patterns: vec![String::new()],
+        patterns: vec![],
         root_path: dir.path().to_path_buf(),
         file_extensions: None,
         ignore_patterns: vec![],
@@ -182,8 +216,14 @@ fn test_stats_only() -> Result<()> {
     create_test_files(&dir, 10, 100)?;
 
     let config = SearchConfig {
-        pattern: "TODO".to_string(),
-        patterns: vec!["TODO".to_string()],
+        pattern_definitions: vec![PatternDefinition {
+            text: "TODO".to_string(),
+            is_regex: false,
+            boundary_mode: WordBoundaryMode::None,
+            hyphen_handling: HyphenHandling::default(),
+        }],
+        pattern: String::new(),
+        patterns: vec![],
         root_path: dir.path().to_path_buf(),
         file_extensions: None,
         ignore_patterns: vec![],
@@ -211,8 +251,22 @@ fn test_multiple_patterns() -> Result<()> {
     create_test_files(&dir, 10, 100)?;
 
     let config = SearchConfig {
+        pattern_definitions: vec![
+            PatternDefinition {
+                text: "TODO".to_string(),
+                is_regex: false,
+                boundary_mode: WordBoundaryMode::None,
+                hyphen_handling: HyphenHandling::default(),
+            },
+            PatternDefinition {
+                text: "FIXME.*bug".to_string(),
+                is_regex: true,
+                boundary_mode: WordBoundaryMode::None,
+                hyphen_handling: HyphenHandling::default(),
+            },
+        ],
         pattern: String::new(),
-        patterns: vec!["TODO".to_string(), "FIXME.*bug".to_string()],
+        patterns: vec![],
         root_path: dir.path().to_path_buf(),
         file_extensions: None,
         ignore_patterns: vec![],
@@ -249,7 +303,6 @@ fn test_multiple_patterns() -> Result<()> {
 
     assert!(found_todo, "Should find TODO patterns");
     assert!(found_fixme, "Should find FIXME patterns");
-
     Ok(())
 }
 
@@ -259,8 +312,14 @@ fn test_empty_patterns() -> Result<()> {
     create_test_files(&dir, 1, 10)?;
 
     let config = SearchConfig {
+        pattern_definitions: vec![PatternDefinition {
+            text: String::new(),
+            is_regex: false,
+            boundary_mode: WordBoundaryMode::None,
+            hyphen_handling: HyphenHandling::default(),
+        }],
         pattern: String::new(),
-        patterns: vec![String::new()],
+        patterns: vec![],
         root_path: dir.path().to_path_buf(),
         file_extensions: None,
         ignore_patterns: vec![],
@@ -297,8 +356,14 @@ fn test_context_lines() -> Result<()> {
 
     // Test context before
     let config = SearchConfig {
-        pattern: "TODO".to_string(),
-        patterns: vec!["TODO".to_string()],
+        pattern_definitions: vec![PatternDefinition {
+            text: "TODO".to_string(),
+            is_regex: false,
+            boundary_mode: WordBoundaryMode::None,
+            hyphen_handling: HyphenHandling::default(),
+        }],
+        pattern: String::new(),
+        patterns: vec![],
         root_path: dir.path().to_path_buf(),
         file_extensions: None,
         ignore_patterns: vec![],
@@ -368,8 +433,14 @@ fn test_context_lines_at_file_boundaries() -> Result<()> {
     writeln!(file, "TODO: Last line")?;
 
     let config = SearchConfig {
-        pattern: "TODO".to_string(),
-        patterns: vec!["TODO".to_string()],
+        pattern_definitions: vec![PatternDefinition {
+            text: "TODO".to_string(),
+            is_regex: false,
+            boundary_mode: WordBoundaryMode::None,
+            hyphen_handling: HyphenHandling::default(),
+        }],
+        pattern: String::new(),
+        patterns: vec![],
         root_path: dir.path().to_path_buf(),
         file_extensions: None,
         ignore_patterns: vec![],
@@ -415,8 +486,14 @@ fn test_overlapping_context() -> Result<()> {
     writeln!(file, "Line 5")?;
 
     let config = SearchConfig {
-        pattern: "TODO".to_string(),
-        patterns: vec!["TODO".to_string()],
+        pattern_definitions: vec![PatternDefinition {
+            text: "TODO".to_string(),
+            is_regex: false,
+            boundary_mode: WordBoundaryMode::None,
+            hyphen_handling: HyphenHandling::default(),
+        }],
+        pattern: String::new(),
+        patterns: vec![],
         root_path: dir.path().to_path_buf(),
         file_extensions: None,
         ignore_patterns: vec![],
@@ -456,8 +533,14 @@ fn test_incremental_search_with_compression() -> Result<()> {
 
     let cache_path = dir.path().join("cache.json");
     let config = SearchConfig {
-        patterns: vec!["pattern_\\d+".to_string()],
+        pattern_definitions: vec![PatternDefinition {
+            text: "pattern_\\d+".to_string(),
+            is_regex: true,
+            boundary_mode: WordBoundaryMode::None,
+            hyphen_handling: HyphenHandling::default(),
+        }],
         pattern: String::new(),
+        patterns: vec![],
         root_path: dir.path().to_path_buf(),
         ignore_patterns: vec![],
         file_extensions: None,
@@ -493,8 +576,14 @@ fn test_incremental_search_with_renames() -> Result<()> {
 
     let cache_path = dir.path().join("cache.json");
     let config = SearchConfig {
-        patterns: vec!["pattern_\\d+".to_string()],
+        pattern_definitions: vec![PatternDefinition {
+            text: "pattern_\\d+".to_string(),
+            is_regex: true,
+            boundary_mode: WordBoundaryMode::None,
+            hyphen_handling: HyphenHandling::default(),
+        }],
         pattern: String::new(),
+        patterns: vec![],
         root_path: dir.path().to_path_buf(),
         ignore_patterns: vec![],
         file_extensions: None,
@@ -533,8 +622,14 @@ fn test_incremental_search_cache_invalidation() -> Result<()> {
 
     let cache_path = dir.path().join("cache.json");
     let config = SearchConfig {
-        patterns: vec!["pattern_\\d+".to_string()],
+        pattern_definitions: vec![PatternDefinition {
+            text: "pattern_\\d+".to_string(),
+            is_regex: true,
+            boundary_mode: WordBoundaryMode::None,
+            hyphen_handling: HyphenHandling::default(),
+        }],
         pattern: String::new(),
+        patterns: vec![],
         root_path: dir.path().to_path_buf(),
         ignore_patterns: vec![],
         file_extensions: None,
@@ -597,8 +692,14 @@ fn test_incremental_search_git_strategy() -> Result<()> {
 
     let cache_path = dir.path().join("cache.json");
     let config = SearchConfig {
-        patterns: vec!["pattern_\\d+".to_string()],
+        pattern_definitions: vec![PatternDefinition {
+            text: "pattern_\\d+".to_string(),
+            is_regex: true,
+            boundary_mode: WordBoundaryMode::None,
+            hyphen_handling: HyphenHandling::default(),
+        }],
         pattern: String::new(),
+        patterns: vec![],
         root_path: dir.path().to_path_buf(),
         ignore_patterns: vec![],
         file_extensions: None,
@@ -656,8 +757,14 @@ fn test_incremental_search_corrupt_cache() -> Result<()> {
 
     let cache_path = dir.path().join("cache.json");
     let config = SearchConfig {
-        pattern: "pattern_\\d+".to_string(),
-        patterns: vec!["pattern_\\d+".to_string()],
+        pattern_definitions: vec![PatternDefinition {
+            text: "pattern_\\d+".to_string(),
+            is_regex: true,
+            boundary_mode: WordBoundaryMode::None,
+            hyphen_handling: HyphenHandling::default(),
+        }],
+        pattern: String::new(),
+        patterns: vec![],
         root_path: dir.path().to_path_buf(),
         ignore_patterns: vec![],
         file_extensions: None,
@@ -704,8 +811,14 @@ fn test_incremental_search_concurrent_mods() -> Result<()> {
 
     let cache_path = dir.path().join("cache.json");
     let config = SearchConfig {
-        patterns: vec!["pattern_\\d+".to_string()],
+        pattern_definitions: vec![PatternDefinition {
+            text: "pattern_\\d+".to_string(),
+            is_regex: true,
+            boundary_mode: WordBoundaryMode::None,
+            hyphen_handling: HyphenHandling::default(),
+        }],
         pattern: String::new(),
+        patterns: vec![],
         root_path: dir.path().to_path_buf(),
         ignore_patterns: vec![],
         file_extensions: None,

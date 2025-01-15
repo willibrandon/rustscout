@@ -31,6 +31,7 @@ memmap2 = "0.9.0"
 indicatif = "0.17.8"
 humantime = "2.1.0"
 tempfile = "3.9"
+unicode_categories = "0.1.1"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

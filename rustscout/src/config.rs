@@ -4,13 +4,19 @@ use std::path::{Path, PathBuf};
 
 use crate::cache::ChangeDetectionStrategy;
 use crate::errors::{SearchError, SearchResult};
+use crate::search::matcher::{HyphenHandling, PatternDefinition, WordBoundaryMode};
 
 /// Configuration for search operations
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SearchConfig {
-    /// Search patterns (supports multiple patterns)
+    /// Pattern definitions with boundary settings (new field)
+    #[serde(default)]
+    pub pattern_definitions: Vec<PatternDefinition>,
+    /// Legacy search patterns (deprecated)
+    #[serde(default)]
     pub patterns: Vec<String>,
-    /// Legacy single pattern field (for backward compatibility)
+    /// Legacy single pattern field (deprecated)
+    #[serde(default)]
     pub pattern: String,
     /// Root directory to search in
     pub root_path: PathBuf,
@@ -43,6 +49,7 @@ pub struct SearchConfig {
 impl Default for SearchConfig {
     fn default() -> Self {
         Self {
+            pattern_definitions: Vec::new(),
             patterns: Vec::new(),
             pattern: String::new(),
             root_path: PathBuf::from("."),
@@ -63,6 +70,45 @@ impl Default for SearchConfig {
 }
 
 impl SearchConfig {
+    /// Creates a new SearchConfig with a single pattern
+    pub fn new_with_pattern(text: String, is_regex: bool, boundary_mode: WordBoundaryMode) -> Self {
+        let mut config = Self::default();
+        config.pattern_definitions.push(PatternDefinition {
+            text,
+            is_regex,
+            boundary_mode,
+            hyphen_handling: HyphenHandling::default(),
+        });
+        config
+    }
+
+    /// Gets all pattern definitions, including those from legacy fields
+    pub fn get_pattern_definitions(&self) -> Vec<PatternDefinition> {
+        let mut defs = self.pattern_definitions.clone();
+
+        // Convert legacy patterns to definitions
+        if !self.patterns.is_empty() {
+            defs.extend(self.patterns.iter().map(|p| PatternDefinition {
+                text: p.clone(),
+                is_regex: false,
+                boundary_mode: WordBoundaryMode::None,
+                hyphen_handling: HyphenHandling::default(),
+            }));
+        }
+
+        // Convert legacy single pattern
+        if !self.pattern.is_empty() {
+            defs.push(PatternDefinition {
+                text: self.pattern.clone(),
+                is_regex: false,
+                boundary_mode: WordBoundaryMode::None,
+                hyphen_handling: HyphenHandling::default(),
+            });
+        }
+
+        defs
+    }
+
     /// Loads configuration from a file
     pub fn load_from(path: impl AsRef<Path>) -> SearchResult<Self> {
         let content = std::fs::read_to_string(path)
@@ -85,6 +131,11 @@ impl SearchConfig {
     }
 
     pub fn merge_with_cli(&mut self, cli: &SearchConfig) {
+        // Merge pattern definitions first
+        if !cli.pattern_definitions.is_empty() {
+            self.pattern_definitions = cli.pattern_definitions.clone();
+        }
+        // Legacy pattern support
         if !cli.patterns.is_empty() {
             self.patterns = cli.patterns.clone();
         }
@@ -144,6 +195,7 @@ mod tests {
     #[test]
     fn test_default_values() {
         let config = SearchConfig::default();
+        assert!(config.pattern_definitions.is_empty());
         assert!(config.patterns.is_empty());
         assert!(config.pattern.is_empty());
         assert_eq!(config.root_path, PathBuf::from("."));
@@ -159,6 +211,80 @@ mod tests {
         assert_eq!(config.cache_strategy, ChangeDetectionStrategy::Auto);
         assert!(config.max_cache_size.is_none());
         assert!(!config.use_compression);
+    }
+
+    #[test]
+    fn test_new_with_pattern() {
+        let config =
+            SearchConfig::new_with_pattern("test".to_string(), false, WordBoundaryMode::WholeWords);
+        assert_eq!(config.pattern_definitions.len(), 1);
+        assert_eq!(config.pattern_definitions[0].text, "test");
+        assert!(!config.pattern_definitions[0].is_regex);
+        assert_eq!(
+            config.pattern_definitions[0].boundary_mode,
+            WordBoundaryMode::WholeWords
+        );
+    }
+
+    #[test]
+    fn test_get_pattern_definitions() {
+        let mut config = SearchConfig::default();
+
+        // Add a pattern definition
+        config.pattern_definitions.push(PatternDefinition {
+            text: "test1".to_string(),
+            is_regex: false,
+            boundary_mode: WordBoundaryMode::WholeWords,
+            hyphen_handling: HyphenHandling::default(),
+        });
+
+        // Add legacy patterns
+        config.patterns = vec!["test2".to_string(), "test3".to_string()];
+        config.pattern = "test4".to_string();
+
+        let defs = config.get_pattern_definitions();
+        assert_eq!(defs.len(), 4);
+
+        // Check pattern definition
+        assert_eq!(defs[0].text, "test1");
+        assert_eq!(defs[0].boundary_mode, WordBoundaryMode::WholeWords);
+
+        // Check converted legacy patterns
+        assert_eq!(defs[1].text, "test2");
+        assert_eq!(defs[1].boundary_mode, WordBoundaryMode::None);
+        assert_eq!(defs[2].text, "test3");
+        assert_eq!(defs[2].boundary_mode, WordBoundaryMode::None);
+        assert_eq!(defs[3].text, "test4");
+        assert_eq!(defs[3].boundary_mode, WordBoundaryMode::None);
+    }
+
+    #[test]
+    fn test_merge_with_cli() {
+        let mut config = SearchConfig::default();
+        let mut cli = SearchConfig::default();
+
+        // Add pattern definitions to CLI config
+        cli.pattern_definitions.push(PatternDefinition {
+            text: "test1".to_string(),
+            is_regex: false,
+            boundary_mode: WordBoundaryMode::WholeWords,
+            hyphen_handling: HyphenHandling::default(),
+        });
+
+        // Add other CLI settings
+        cli.root_path = PathBuf::from("/search");
+        cli.stats_only = true;
+
+        config.merge_with_cli(&cli);
+
+        assert_eq!(config.pattern_definitions.len(), 1);
+        assert_eq!(config.pattern_definitions[0].text, "test1");
+        assert_eq!(
+            config.pattern_definitions[0].boundary_mode,
+            WordBoundaryMode::WholeWords
+        );
+        assert_eq!(config.root_path, PathBuf::from("/search"));
+        assert!(config.stats_only);
     }
 
     #[test]
@@ -226,46 +352,5 @@ use_compression: false
         writeln!(file, "invalid: yaml: content").unwrap();
 
         assert!(SearchConfig::load_from(config_path).is_err());
-    }
-
-    #[test]
-    fn test_merge_with_cli() {
-        let mut config = SearchConfig::default();
-        let cli = SearchConfig {
-            patterns: vec!["TODO".to_string()],
-            pattern: "FIXME".to_string(),
-            root_path: PathBuf::from("/search"),
-            file_extensions: Some(vec!["rs".to_string()]),
-            ignore_patterns: vec!["target".to_string()],
-            stats_only: true,
-            thread_count: NonZeroUsize::new(4).unwrap(),
-            log_level: "debug".to_string(),
-            context_before: 2,
-            context_after: 2,
-            incremental: true,
-            cache_path: Some(PathBuf::from("/cache")),
-            cache_strategy: ChangeDetectionStrategy::GitStatus,
-            max_cache_size: Some(104857600),
-            use_compression: true,
-            ..SearchConfig::default()
-        };
-
-        config.merge_with_cli(&cli);
-
-        assert_eq!(config.patterns, vec!["TODO"]);
-        assert_eq!(config.pattern, "FIXME");
-        assert_eq!(config.root_path, PathBuf::from("/search"));
-        assert_eq!(config.file_extensions, Some(vec!["rs".to_string()]));
-        assert_eq!(config.ignore_patterns, vec!["target"]);
-        assert!(config.stats_only);
-        assert_eq!(config.thread_count.get(), 4);
-        assert_eq!(config.log_level, "debug");
-        assert_eq!(config.context_before, 2);
-        assert_eq!(config.context_after, 2);
-        assert!(config.incremental);
-        assert_eq!(config.cache_path, Some(PathBuf::from("/cache")));
-        assert_eq!(config.cache_strategy, ChangeDetectionStrategy::GitStatus);
-        assert_eq!(config.max_cache_size, Some(104857600));
-        assert!(config.use_compression);
     }
 }

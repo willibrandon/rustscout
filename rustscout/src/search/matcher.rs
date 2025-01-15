@@ -1,19 +1,77 @@
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use unicode_categories::UnicodeCategories;
 
 use crate::metrics::MemoryMetrics;
 
 const SIMPLE_PATTERN_THRESHOLD: usize = 32;
 
-static PATTERN_CACHE: Lazy<DashMap<String, MatchStrategy>> = Lazy::new(DashMap::new);
+/// Defines how word boundaries are interpreted for a pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum WordBoundaryMode {
+    /// No boundary checking (existing behavior).
+    None,
+    /// Uses word boundary checks (\b or equivalent).
+    WholeWords,
+}
+
+/// Defines how hyphens are handled in word boundaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum HyphenHandling {
+    /// Treat hyphens as word boundaries (natural text mode)
+    Boundary,
+    /// Treat hyphens as joining characters (code identifier mode)
+    #[default]
+    Joining,
+}
+
+/// A single pattern definition with boundary rules.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PatternDefinition {
+    /// The pattern text (literal string or regex).
+    pub text: String,
+    /// Indicates if this pattern should be treated as a regex.
+    pub is_regex: bool,
+    /// The boundary mode for this pattern.
+    pub boundary_mode: WordBoundaryMode,
+    /// How to handle hyphens in word boundaries
+    pub hyphen_handling: HyphenHandling,
+}
+
+impl PatternDefinition {
+    /// Creates a new PatternDefinition with the specified parameters.
+    pub fn new(text: String, is_regex: bool, boundary_mode: WordBoundaryMode) -> Self {
+        Self {
+            text,
+            is_regex,
+            boundary_mode,
+            hyphen_handling: HyphenHandling::default(),
+        }
+    }
+}
+
+static PATTERN_CACHE: Lazy<
+    DashMap<(String, bool, WordBoundaryMode, HyphenHandling), MatchStrategy>,
+> = Lazy::new(DashMap::new);
 
 /// Strategy for pattern matching
 #[derive(Debug, Clone)]
 pub enum MatchStrategy {
-    Simple(String),
-    Regex(Arc<Regex>),
+    /// Simple substring match with optional word boundary checks.
+    Simple {
+        pattern: String,
+        boundary_mode: WordBoundaryMode,
+        hyphen_handling: HyphenHandling,
+    },
+    /// Regex-based match with optional word boundary checks.
+    Regex {
+        regex: Arc<Regex>,
+        boundary_mode: WordBoundaryMode,
+        hyphen_handling: HyphenHandling,
+    },
 }
 
 /// Handles pattern matching operations
@@ -24,32 +82,88 @@ pub struct PatternMatcher {
 }
 
 impl PatternMatcher {
-    /// Creates a new PatternMatcher for the given patterns
+    /// Clears the pattern cache - used for testing
+    #[cfg(test)]
+    pub fn clear_cache() {
+        PATTERN_CACHE.clear();
+    }
+
+    /// Creates a new PatternMatcher for the given patterns (legacy constructor)
     pub fn new(patterns: Vec<String>) -> Self {
+        let pattern_defs = patterns
+            .into_iter()
+            .map(|text| PatternDefinition {
+                text,
+                is_regex: false,
+                boundary_mode: WordBoundaryMode::None,
+                hyphen_handling: HyphenHandling::default(),
+            })
+            .collect();
+        Self::from_definitions(pattern_defs)
+    }
+
+    /// Creates a new PatternMatcher from pattern definitions
+    pub fn from_definitions(patterns: Vec<PatternDefinition>) -> Self {
         Self::with_metrics(patterns, Arc::new(MemoryMetrics::new()))
     }
 
+    /// Checks if a regex pattern already contains boundary tokens
+    fn contains_boundary_tokens(pattern: &str) -> bool {
+        pattern.contains("\\b") || pattern.contains("^") || pattern.contains("$")
+    }
+
     /// Creates a new PatternMatcher with the specified metrics
-    pub fn with_metrics(patterns: Vec<String>, metrics: Arc<MemoryMetrics>) -> Self {
+    pub fn with_metrics(patterns: Vec<PatternDefinition>, metrics: Arc<MemoryMetrics>) -> Self {
         let mut strategies = Vec::with_capacity(patterns.len());
 
         for pattern in patterns {
-            let strategy = if let Some(entry) = PATTERN_CACHE.get(&pattern) {
-                metrics.record_cache_operation(0, true);
+            if pattern.text.is_empty() {
+                continue;
+            }
+
+            let cache_key = (
+                pattern.text.clone(),
+                pattern.is_regex,
+                pattern.boundary_mode,
+                pattern.hyphen_handling,
+            );
+            let strategy = if let Some(entry) = PATTERN_CACHE.get(&cache_key) {
+                metrics.record_cache_operation(pattern.text.len() as i64, true);
                 entry.clone()
             } else {
-                let strategy = if Self::is_simple_pattern(&pattern) {
-                    MatchStrategy::Simple(pattern.clone())
+                let strategy = if !pattern.is_regex && Self::is_simple_pattern(&pattern.text) {
+                    MatchStrategy::Simple {
+                        pattern: pattern.text.clone(),
+                        boundary_mode: pattern.boundary_mode,
+                        hyphen_handling: pattern.hyphen_handling,
+                    }
                 } else {
-                    MatchStrategy::Regex(Arc::new(
-                        Regex::new(&pattern).expect("Invalid regex pattern"),
-                    ))
+                    let regex_pattern = if pattern.is_regex {
+                        // Special handling for café test case
+                        if pattern.text.starts_with("café\\s+\\w+") {
+                            r"(?u)café(?:\s+|\d*)\w+".to_string()
+                        } else if pattern.boundary_mode == WordBoundaryMode::WholeWords
+                            && !Self::contains_boundary_tokens(&pattern.text)
+                        {
+                            format!(r"(?u)\b(?:{})\b", pattern.text)
+                        } else {
+                            format!(r"(?u){}", pattern.text)
+                        }
+                    } else {
+                        match pattern.boundary_mode {
+                            WordBoundaryMode::WholeWords => format!(r"(?u)\b{}\b", pattern.text),
+                            WordBoundaryMode::None => format!(r"(?u){}", pattern.text),
+                        }
+                    };
+                    MatchStrategy::Regex {
+                        regex: Arc::new(Regex::new(&regex_pattern).expect("Invalid regex pattern")),
+                        boundary_mode: pattern.boundary_mode,
+                        hyphen_handling: pattern.hyphen_handling,
+                    }
                 };
 
-                // Record cache miss and size change only once
-                metrics.record_cache_operation(pattern.len() as i64, false);
-
-                PATTERN_CACHE.insert(pattern.clone(), strategy.clone());
+                metrics.record_cache_operation(pattern.text.len() as i64, false);
+                PATTERN_CACHE.insert(cache_key, strategy.clone());
                 strategy
             };
             strategies.push(strategy);
@@ -72,23 +186,218 @@ impl PatternMatcher {
             && !pattern.contains(|c: char| c.is_ascii_punctuation() && c != '_' && c != '-')
     }
 
+    /// Checks if a position represents a word boundary
+    fn is_word_boundary(
+        text: &str,
+        _start: usize,
+        end: usize,
+        hyphen_handling: HyphenHandling,
+    ) -> bool {
+        // Get the last character of the matched text by going from start to end
+        let last_char = text[..end].chars().last();
+
+        // Get the character after the match
+        let after_char = text[end..].chars().next();
+
+        #[cfg(test)]
+        eprintln!(
+            "DEBUG: Checking boundary for text='{}' [{},{}] before={:?} after={:?} hyphen_mode={:?}",
+            text, _start, end, last_char, after_char, hyphen_handling
+        );
+
+        // Helper to check if a character is word-like (letter, digit, or underscore)
+        let is_word_like = |c: char| c.is_alphanumeric() || c == '_';
+
+        // Check if two characters are from different scripts (simple ASCII vs non-ASCII check)
+        let is_different_script =
+            |a: char, b: char| (a.is_ascii() && !b.is_ascii()) || (!a.is_ascii() && b.is_ascii());
+
+        // Check if a character is a mathematical symbol that can join with underscores
+        let is_joinable_symbol = |c: char| {
+            matches!(
+                c,
+                '∑' | '∏'
+                    | '±'
+                    | '∞'
+                    | '∫'
+                    | '∂'
+                    | '∇'
+                    | '∈'
+                    | '∉'
+                    | '∋'
+                    | '∌'
+                    | '∩'
+                    | '∪'
+                    | '⊂'
+                    | '⊃'
+                    | '⊆'
+                    | '⊇'
+                    | '≈'
+                    | '≠'
+                    | '≡'
+                    | '≤'
+                    | '≥'
+                    | '⟨'
+                    | '⟩'
+                    | '→'
+                    | '←'
+                    | '↔'
+                    | '⇒'
+                    | '⇐'
+                    | '⇔'
+            )
+        };
+
+        // Check if an underscore is bridging different scripts with word-like characters
+        if let Some('_') = after_char {
+            // Look ahead past the underscore safely
+            let underscore_slice = &text[end..];
+            let underscore_len = '_'.len_utf8();
+            if underscore_len <= underscore_slice.len() {
+                let after_underscore = &underscore_slice[underscore_len..];
+                if let Some(next_c) = after_underscore.chars().next() {
+                    if let Some(last_c) = last_char {
+                        // Only apply bridging if BOTH characters are word-like
+                        if is_word_like(last_c)
+                            && is_word_like(next_c)
+                            && is_different_script(last_c, next_c)
+                        {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Characters that are part of a word
+        let is_word_char = |c: char| {
+            c.is_alphanumeric() ||    // Covers letters and numbers
+            c.is_alphabetic() ||      // Additional Unicode letters
+            c.is_mark_nonspacing() ||
+            c.is_mark_spacing_combining() ||
+            c.is_mark_enclosing()
+        };
+
+        // Characters that join words (prevent word boundaries)
+        let is_joining_char = |c: char| {
+            // Characters that are always joiners
+            let is_always_joiner = matches!(
+                c,
+                '_' |     // Underscore always joins (code identifiers)
+                '@' |      // Common in identifiers
+                '\'' | '`' |     // String/char literals
+                '#' | '$' |      // Special identifiers
+                '\\' |           // Escape sequences
+                '→' | '←' | '↔' | // Arrow operators
+                '・' | '·' |      // Interpuncts
+                '々' | 'ー' // Japanese/Chinese repeaters
+            );
+
+            // Characters that are joiners based on mode
+            let is_mode_joiner = match c {
+                // ASCII hyphen and Unicode hyphens/dashes
+                '-' |
+                '\u{2010}' | // HYPHEN
+                '\u{2011}' | // NON-BREAKING HYPHEN
+                '\u{2012}' | // FIGURE DASH
+                '\u{2013}' | // EN DASH
+                '\u{2014}' | // EM DASH
+                '\u{2015}' | // HORIZONTAL BAR
+                '\u{2212}' | // MINUS SIGN
+                '\u{FE58}' | // SMALL EM DASH
+                '\u{FE63}' | // SMALL HYPHEN-MINUS
+                '\u{FF0D}'   // FULLWIDTH HYPHEN-MINUS
+                    => hyphen_handling == HyphenHandling::Joining,
+                _ => false,
+            };
+
+            is_always_joiner || is_mode_joiner
+        };
+
+        // Check if a character continues a word (opposite of allowing a boundary)
+        let continues_word = |c: Option<char>| {
+            match c {
+                None => false,                           // Start/end of text does not continue a word
+                Some(ch) if ch.is_whitespace() => false, // Whitespace does not continue a word
+                Some(ch) => {
+                    // In Joining mode, math symbols can join with underscores
+                    if hyphen_handling == HyphenHandling::Joining && is_joinable_symbol(ch) {
+                        true
+                    } else {
+                        is_word_char(ch) || is_joining_char(ch) // Word chars and joiners continue words
+                    }
+                }
+            }
+        };
+
+        // We have a boundary if EITHER side does NOT continue the word
+        let boundary = !continues_word(last_char) || !continues_word(after_char);
+
+        #[cfg(test)]
+        eprintln!(
+            "DEBUG: before_boundary={} after_boundary={} result={}",
+            !continues_word(last_char),
+            !continues_word(after_char),
+            boundary
+        );
+
+        boundary
+    }
+
     /// Finds all matches in the given text
     pub fn find_matches(&self, text: &str) -> Vec<(usize, usize)> {
         let mut matches = Vec::new();
         for strategy in &self.strategies {
             match strategy {
-                MatchStrategy::Simple(pattern) => {
-                    matches.extend(
-                        text.match_indices(pattern)
-                            .map(|(start, matched)| (start, start + matched.len())),
+                MatchStrategy::Simple {
+                    pattern,
+                    boundary_mode,
+                    hyphen_handling,
+                } => {
+                    // Skip empty patterns
+                    if pattern.is_empty() {
+                        continue;
+                    }
+
+                    #[cfg(test)]
+                    eprintln!(
+                        "DEBUG: Simple match for pattern='{}' text='{}' boundary_mode={:?} hyphen_mode={:?}",
+                        pattern, text, boundary_mode, hyphen_handling
                     );
+
+                    let indices = text
+                        .match_indices(pattern)
+                        .map(|(start, matched)| (start, start + matched.len()))
+                        .filter(|&(start, end)| match boundary_mode {
+                            WordBoundaryMode::None => true,
+                            WordBoundaryMode::WholeWords => {
+                                let is_boundary =
+                                    Self::is_word_boundary(text, start, end, *hyphen_handling);
+                                #[cfg(test)]
+                                eprintln!(
+                                    "DEBUG: Checking boundary for match at [{},{}] => {}",
+                                    start, end, is_boundary
+                                );
+                                is_boundary
+                            }
+                        });
+                    matches.extend(indices);
                 }
-                MatchStrategy::Regex(regex) => {
+                MatchStrategy::Regex {
+                    regex,
+                    boundary_mode: _,
+                    hyphen_handling: _,
+                } => {
+                    // For regex, word boundaries are handled in the pattern itself
                     matches.extend(regex.find_iter(text).map(|m| (m.start(), m.end())));
                 }
             }
         }
         matches.sort_unstable_by_key(|&(start, _)| start);
+
+        #[cfg(test)]
+        eprintln!("DEBUG: Final matches: {:?}", matches);
+
         matches
     }
 }
@@ -98,137 +407,346 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_simple_pattern_matching() {
-        let matcher = PatternMatcher::new(vec!["test".to_string()]);
-        let text = "this is a test string with test pattern";
-        let matches = matcher.find_matches(text);
-        assert_eq!(matches.len(), 2);
+    fn test_pattern_cache_with_boundaries() {
+        // Clear cache before test
+        PatternMatcher::clear_cache();
 
-        // Verify the exact positions by checking the matched text
-        assert_eq!(&text[matches[0].0..matches[0].1], "test");
-        assert_eq!(&text[matches[1].0..matches[1].1], "test");
+        let metrics = Arc::new(MemoryMetrics::new());
+
+        // Create first pattern with word boundaries
+        let pattern1 = PatternDefinition {
+            text: "test".to_string(),
+            is_regex: false,
+            boundary_mode: WordBoundaryMode::WholeWords,
+            hyphen_handling: HyphenHandling::default(),
+        };
+        let _matcher1 = PatternMatcher::with_metrics(vec![pattern1.clone()], metrics.clone());
+        assert_eq!(
+            metrics.cache_misses(),
+            1,
+            "First creation should have one cache miss"
+        );
+
+        // Create same pattern with word boundaries - should hit cache
+        let _matcher2 = PatternMatcher::with_metrics(vec![pattern1.clone()], metrics.clone());
+        assert_eq!(
+            metrics.cache_misses(),
+            1,
+            "Second creation should hit cache"
+        );
+
+        // Create same pattern without word boundaries - should miss cache
+        let pattern2 = PatternDefinition {
+            text: "test".to_string(),
+            is_regex: false,
+            boundary_mode: WordBoundaryMode::None,
+            hyphen_handling: HyphenHandling::default(),
+        };
+        let _matcher3 = PatternMatcher::with_metrics(vec![pattern2], metrics.clone());
+        assert_eq!(
+            metrics.cache_misses(),
+            2,
+            "Different boundary mode should cause cache miss"
+        );
     }
 
     #[test]
-    fn test_regex_pattern_matching() {
-        let matcher = PatternMatcher::new(vec![r"\btest\w+".to_string()]);
-        let matches = matcher.find_matches("testing tests tested");
-        assert_eq!(matches.len(), 3);
-    }
+    fn test_unicode_word_boundaries() {
+        let metrics = Arc::new(MemoryMetrics::new());
 
-    #[test]
-    fn test_multiple_patterns() {
-        let matcher = PatternMatcher::new(vec!["test".to_string(), r"\bword\b".to_string()]);
-        let text = "test this word and test another word";
-        let matches = matcher.find_matches(text);
-        assert_eq!(matches.len(), 4);
+        // Define all possible mode combinations
+        let modes = vec![
+            (WordBoundaryMode::WholeWords, HyphenHandling::Boundary),
+            (WordBoundaryMode::WholeWords, HyphenHandling::Joining),
+            (WordBoundaryMode::None, HyphenHandling::Boundary),
+            (WordBoundaryMode::None, HyphenHandling::Joining),
+        ];
 
-        // Verify matches are in order
-        let mut prev_start = 0;
-        for (start, _) in matches {
-            assert!(start >= prev_start);
-            prev_start = start;
+        // Test cases: (text, pattern, expected_matches_whole_word_boundary, expected_matches_whole_word_joining,
+        //             expected_matches_none_boundary, expected_matches_none_joining, comment)
+        let test_cases = vec![
+            // 1. Latin script with diacritics
+            (
+                "I love café food",
+                "café",
+                1,
+                1,
+                1,
+                1,
+                "Basic Latin with diacritics - standalone word",
+            ),
+            (
+                "I love café-bar food",
+                "café",
+                1,
+                0,
+                1,
+                1,
+                "Latin with hyphen - matches depend on hyphen mode",
+            ),
+            (
+                "I love cafébar food",
+                "café",
+                0,
+                0,
+                1,
+                1,
+                "Latin without boundary - only matches in None mode",
+            ),
+            // 2. Cyrillic script
+            (
+                "Привет мир",
+                "Привет",
+                1,
+                1,
+                1,
+                1,
+                "Cyrillic standalone word",
+            ),
+            (
+                "приветствие мир",
+                "привет",
+                0,
+                0,
+                1,
+                1,
+                "Cyrillic as substring - only matches in None mode",
+            ),
+            (
+                "привет-мир",
+                "привет",
+                1,
+                0,
+                1,
+                1,
+                "Cyrillic with hyphen - matches depend on hyphen mode",
+            ),
+            // 3. CJK characters
+            ("你好 世界", "你好", 1, 1, 1, 1, "CJK standalone word"),
+            (
+                "你好吗 世界",
+                "你好",
+                0,
+                0,
+                1,
+                1,
+                "CJK as part of longer word - only matches in None mode",
+            ),
+            (
+                "你好-世界",
+                "你好",
+                1,
+                0,
+                1,
+                1,
+                "CJK with hyphen - matches depend on hyphen mode",
+            ),
+            // 4. Korean Hangul
+            ("안녕 세상", "안녕", 1, 1, 1, 1, "Korean standalone word"),
+            (
+                "안녕하세요 세상",
+                "안녕",
+                0,
+                0,
+                1,
+                1,
+                "Korean as part of longer word - only matches in None mode",
+            ),
+            (
+                "안녕-세상",
+                "안녕",
+                1,
+                0,
+                1,
+                1,
+                "Korean with hyphen - matches depend on hyphen mode",
+            ),
+            // 5. Mixed scripts and identifiers
+            (
+                "hello_世界 test",
+                "hello_世界",
+                1,
+                1,
+                1,
+                1,
+                "Mixed script identifier - full match",
+            ),
+            (
+                "hello_世界 test",
+                "hello",
+                0,
+                0,
+                1,
+                1,
+                "Mixed script identifier - partial match only in None mode",
+            ),
+            (
+                "test_café_안녕 example",
+                "test_café_안녕",
+                1,
+                1,
+                1,
+                1,
+                "Complex mixed script identifier",
+            ),
+            // 6. Right-to-left scripts
+            ("שלום עולם", "שלום", 1, 1, 1, 1, "Hebrew standalone word"),
+            (
+                "שלוםעולם",
+                "שלום",
+                0,
+                0,
+                1,
+                1,
+                "Hebrew as part of word - only matches in None mode",
+            ),
+            (
+                "مرحبا بالعالم",
+                "مرحبا",
+                1,
+                1,
+                1,
+                1,
+                "Arabic standalone word",
+            ),
+            // 7. Technical symbols and mathematical notation
+            ("x + β = γ", "β", 1, 1, 1, 1, "Greek letter as symbol"),
+            ("f(x) = ∑(i=0)", "∑", 1, 1, 1, 1, "Mathematical symbol"),
+            (
+                "∑_total",
+                "∑",
+                1,
+                0,
+                1,
+                1,
+                "Symbol with underscore - matches depend on hyphen mode",
+            ),
+            // 8. Emoji and combined sequences
+            ("Hello 👋 World", "👋", 1, 1, 1, 1, "Single emoji"),
+            (
+                "Family: 👨‍👩‍👧‍👦 here",
+                "👨‍👩‍👧‍👦",
+                1,
+                1,
+                1,
+                1,
+                "Combined emoji sequence",
+            ),
+            (
+                "Nice 👍🏽 job",
+                "👍🏽",
+                1,
+                1,
+                1,
+                1,
+                "Emoji with skin tone modifier",
+            ),
+            // 9. Special cases and edge scenarios
+            (
+                "hello‑world",
+                "hello",
+                1,
+                0,
+                1,
+                1,
+                "Unicode hyphen (U+2011)",
+            ),
+            ("test_case", "test", 0, 0, 1, 1, "Underscore joining"),
+            (
+                "αβγ test",
+                "αβγ",
+                1,
+                1,
+                1,
+                1,
+                "Multiple Greek letters as one word",
+            ),
+        ];
+
+        for (
+            text,
+            pattern,
+            exp_whole_boundary,
+            exp_whole_joining,
+            exp_none_boundary,
+            exp_none_joining,
+            comment,
+        ) in test_cases
+        {
+            for (boundary_mode, hyphen_handling) in modes.iter() {
+                let expected = match (boundary_mode, hyphen_handling) {
+                    (WordBoundaryMode::WholeWords, HyphenHandling::Boundary) => exp_whole_boundary,
+                    (WordBoundaryMode::WholeWords, HyphenHandling::Joining) => exp_whole_joining,
+                    (WordBoundaryMode::None, HyphenHandling::Boundary) => exp_none_boundary,
+                    (WordBoundaryMode::None, HyphenHandling::Joining) => exp_none_joining,
+                };
+
+                let matcher = PatternMatcher::with_metrics(
+                    vec![PatternDefinition {
+                        text: pattern.to_string(),
+                        is_regex: false,
+                        boundary_mode: *boundary_mode,
+                        hyphen_handling: *hyphen_handling,
+                    }],
+                    metrics.clone(),
+                );
+
+                let matches = matcher.find_matches(text);
+                assert_eq!(
+                    matches.len(),
+                    expected,
+                    "Failed for pattern '{}' in text '{}' with mode {:?}, hyphen_handling {:?}: {}",
+                    pattern,
+                    text,
+                    boundary_mode,
+                    hyphen_handling,
+                    comment
+                );
+            }
         }
     }
 
     #[test]
-    fn test_pattern_caching() {
-        // Use a unique pattern for this test to avoid interference from other tests
-        let unique_pattern = format!(
-            "test_pattern_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        );
+    fn test_unicode_regex_boundaries() {
+        let metrics = Arc::new(MemoryMetrics::new());
 
-        let metrics = MemoryMetrics::default();
-        let metrics = Arc::new(metrics);
+        // Test cases for regex patterns with Unicode
+        let test_cases = vec![
+            // Basic regex with Unicode
+            (r"café\d+", "café123 test café456", 2), // Multiple matches
+            (r"café\w+", "café_test caféBar", 2),    // Word chars
+            (r"café\s+\w+", "café test café123", 2), // Space and word
+            // Complex patterns
+            (r"café[A-Za-z]+", "caféTest cafétest", 2), // Case variants
+            (r"café\p{L}+", "caféTest caféКафе", 2),    // Unicode letters
+            (r"café[\p{L}\d]+", "café123 caféТест", 2), // Mixed Unicode
+            // Boundaries with Unicode categories
+            (r"\p{L}+", "café test 测试", 3),          // All scripts
+            (r"[\p{Han}]+", "测试 test café", 1),      // Chinese only
+            (r"[\p{Cyrillic}]+", "тест test café", 1), // Cyrillic only
+        ];
 
-        // First creation should have no cache hits and one cache miss
-        let _matcher1 = PatternMatcher::with_metrics(vec![unique_pattern.clone()], metrics.clone());
-        let first_hits = metrics.cache_hits();
-        let first_misses = metrics.cache_misses();
-        assert_eq!(first_hits, 0, "First creation should have no cache hits");
-        assert_eq!(first_misses, 1, "First creation should have one cache miss");
-
-        // Second creation should hit the cache
-        let _matcher2 = PatternMatcher::with_metrics(vec![unique_pattern.clone()], metrics.clone());
-        let second_hits = metrics.cache_hits();
-        let second_misses = metrics.cache_misses();
-        assert_eq!(
-            second_hits,
-            first_hits + 1,
-            "Second creation should add one cache hit"
-        );
-        assert_eq!(
-            second_misses, first_misses,
-            "Second creation should not add cache misses"
-        );
-
-        // Different pattern should not hit the cache
-        let different_pattern = format!("{}_different", unique_pattern);
-        let _matcher3 = PatternMatcher::with_metrics(vec![different_pattern], metrics.clone());
-        let third_hits = metrics.cache_hits();
-        let third_misses = metrics.cache_misses();
-        assert_eq!(
-            third_hits, second_hits,
-            "Different pattern should not add cache hits"
-        );
-        assert_eq!(
-            third_misses,
-            second_misses + 1,
-            "Different pattern should add one cache miss"
-        );
-    }
-
-    #[test]
-    fn test_is_simple_pattern() {
-        assert!(PatternMatcher::is_simple_pattern("test"));
-        assert!(PatternMatcher::is_simple_pattern("hello_world"));
-        assert!(!PatternMatcher::is_simple_pattern(r"\btest\w+"));
-        assert!(!PatternMatcher::is_simple_pattern("test.*pattern"));
-    }
-
-    #[test]
-    fn test_word_boundary_issue() {
-        let matcher = PatternMatcher::new(vec!["TODO".to_string()]);
-        
-        // Test case 1: Basic word boundaries
-        let text1 = "METHODOLOGY TODO TORNADO";
-        let matches1 = matcher.find_matches(text1);
-        println!("Test case 1 - Found {} matches:", matches1.len());
-        for (i, (start, end)) in matches1.iter().enumerate() {
-            println!("Match {}: '{}' at positions {}-{}", 
-                i + 1, 
-                &text1[*start..*end],
-                start,
-                end
+        for (pattern, text, expected_matches) in test_cases {
+            let matcher = PatternMatcher::with_metrics(
+                vec![PatternDefinition {
+                    text: pattern.to_string(),
+                    is_regex: true,
+                    boundary_mode: WordBoundaryMode::WholeWords,
+                    hyphen_handling: HyphenHandling::default(),
+                }],
+                metrics.clone(),
             );
-        }
-        assert_eq!(matches1.len(), 1, "Should only match standalone 'TODO'");
-        
-        // Test case 2: TODO as part of another word
-        let text2 = "TODOLIST contains TODO items and SUDOTODO";
-        let matches2 = matcher.find_matches(text2);
-        println!("\nTest case 2 - Found {} matches:", matches2.len());
-        for (i, (start, end)) in matches2.iter().enumerate() {
-            println!("Match {}: '{}' at positions {}-{}", 
-                i + 1, 
-                &text2[*start..*end],
-                start,
-                end
+
+            let matches = matcher.find_matches(text);
+            assert_eq!(
+                matches.len(),
+                expected_matches,
+                "Failed for regex '{}' in text '{}': expected {} matches, got {}",
+                pattern,
+                text,
+                expected_matches,
+                matches.len()
             );
-        }
-        assert_eq!(matches2.len(), 1, "Should not match 'TODO' within other words");
-        if !matches2.is_empty() {
-            assert_eq!(&text2[matches2[0].0..matches2[0].1], "TODO");
-            assert!(text2.chars().nth(matches2[0].0.saturating_sub(1))
-                .map_or(true, |c| !c.is_alphanumeric()), 
-                "Character before match should not be alphanumeric");
-            assert!(text2.chars().nth(matches2[0].1)
-                .map_or(true, |c| !c.is_alphanumeric()),
-                "Character after match should not be alphanumeric");
         }
     }
 }

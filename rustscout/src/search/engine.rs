@@ -1,39 +1,35 @@
 use ignore::WalkBuilder;
 use rayon::prelude::*;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use crate::cache::{create_detector, ChangeStatus, FileSignatureDetector, IncrementalCache};
 use crate::config::SearchConfig;
 use crate::errors::SearchResult;
 use crate::filters::{should_ignore, should_include_file};
+use crate::metrics::MemoryMetrics;
 use crate::results::{FileResult, SearchResult as SearchOutput};
 use crate::search::matcher::PatternMatcher;
 use crate::search::processor::FileProcessor;
 
 /// Performs a concurrent search across files in a directory
 pub fn search(config: &SearchConfig) -> SearchResult<SearchOutput> {
-    info!("Starting search with patterns: {:?}", config.patterns);
+    let pattern_defs = config.get_pattern_definitions();
+    info!(
+        "Starting search with {} pattern definitions",
+        pattern_defs.len()
+    );
 
-    // Return early if all patterns are empty
-    if (config.patterns.is_empty() || config.patterns.iter().all(|p| p.is_empty()))
-        && config.pattern.is_empty()
-    {
+    // Return early if no patterns
+    if pattern_defs.is_empty() {
         debug!("No search patterns provided, returning empty result");
         return Ok(SearchOutput::new());
     }
 
-    // Get patterns from either new or legacy field
-    let patterns = if !config.patterns.is_empty() {
-        config.patterns.clone()
-    } else {
-        vec![config.pattern.clone()]
-    };
-
-    // Create pattern matcher and file processor
-    let matcher = PatternMatcher::new(patterns);
+    let metrics = Arc::new(MemoryMetrics::new());
+    let matcher = PatternMatcher::with_metrics(pattern_defs, metrics.clone());
     let processor = FileProcessor::new(matcher, config.context_before, config.context_after);
-    let metrics = processor.metrics().clone();
 
     // Collect all files to search
     let mut files: Vec<PathBuf> = WalkBuilder::new(&config.root_path)
@@ -199,8 +195,8 @@ pub fn search(config: &SearchConfig) -> SearchResult<SearchOutput> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::matcher::WordBoundaryMode;
     use crate::ChangeDetectionStrategy;
-    use std::num::NonZeroUsize;
     use tempfile::tempdir;
 
     #[test]
@@ -209,23 +205,12 @@ mod tests {
         let file_path = dir.path().join("test.txt");
         std::fs::write(&file_path, "pattern_1\npattern_2\n")?;
 
-        let config = SearchConfig {
-            patterns: vec!["pattern_\\d+".to_string()],
-            pattern: "pattern_\\d+".to_string(),
-            root_path: file_path.parent().unwrap().to_path_buf(),
-            ignore_patterns: vec![],
-            file_extensions: None,
-            stats_only: false,
-            thread_count: NonZeroUsize::new(1).unwrap(),
-            log_level: "warn".to_string(),
-            context_before: 0,
-            context_after: 0,
-            incremental: false,
-            cache_path: None,
-            cache_strategy: ChangeDetectionStrategy::Auto,
-            max_cache_size: None,
-            use_compression: false,
-        };
+        let mut config = SearchConfig::new_with_pattern(
+            "pattern_\\d+".to_string(),
+            true,
+            WordBoundaryMode::None,
+        );
+        config.root_path = dir.path().to_path_buf();
 
         let result = search(&config)?;
         assert_eq!(result.files_with_matches, 1);
@@ -241,23 +226,15 @@ mod tests {
         std::fs::write(&file_path, "pattern_1\npattern_2\n")?;
 
         let cache_path = dir.path().join("cache.json");
-        let config = SearchConfig {
-            patterns: vec!["pattern_\\d+".to_string()],
-            pattern: "pattern_\\d+".to_string(),
-            root_path: file_path.parent().unwrap().to_path_buf(),
-            ignore_patterns: vec![],
-            file_extensions: None,
-            stats_only: false,
-            thread_count: NonZeroUsize::new(1).unwrap(),
-            log_level: "warn".to_string(),
-            context_before: 0,
-            context_after: 0,
-            incremental: true,
-            cache_path: Some(cache_path.clone()),
-            cache_strategy: ChangeDetectionStrategy::FileSignature,
-            max_cache_size: None,
-            use_compression: false,
-        };
+        let mut config = SearchConfig::new_with_pattern(
+            "pattern_\\d+".to_string(),
+            true,
+            WordBoundaryMode::None,
+        );
+        config.root_path = file_path.parent().unwrap().to_path_buf();
+        config.incremental = true;
+        config.cache_path = Some(cache_path.clone());
+        config.cache_strategy = ChangeDetectionStrategy::FileSignature;
 
         // First search should create cache
         let result = search(&config)?;
@@ -275,6 +252,37 @@ mod tests {
         let result = search(&config)?;
         assert_eq!(result.files_with_matches, 1);
         assert_eq!(result.total_matches, 3);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_word_boundary_search() -> SearchResult<()> {
+        let dir = tempdir()?;
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "test testing tested test-case\n")?;
+
+        // Search with word boundaries
+        let mut config =
+            SearchConfig::new_with_pattern("test".to_string(), false, WordBoundaryMode::WholeWords);
+        config.root_path = file_path.parent().unwrap().to_path_buf();
+
+        let result = search(&config)?;
+        assert_eq!(
+            result.total_matches, 1,
+            "Should only match standalone 'test'"
+        );
+
+        // Search without word boundaries
+        let mut config =
+            SearchConfig::new_with_pattern("test".to_string(), false, WordBoundaryMode::None);
+        config.root_path = file_path.parent().unwrap().to_path_buf();
+
+        let result = search(&config)?;
+        assert_eq!(
+            result.total_matches, 4,
+            "Should match all occurrences of 'test'"
+        );
 
         Ok(())
     }

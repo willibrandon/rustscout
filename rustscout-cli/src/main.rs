@@ -3,15 +3,15 @@ use colored::Colorize;
 use rustscout::{
     cache::ChangeDetectionStrategy,
     config::SearchConfig,
-    errors::SearchError,
     replace::{ReplacementConfig, ReplacementSet, UndoInfo},
     results::SearchResult,
     search,
+    search::matcher::{PatternDefinition, WordBoundaryMode},
+    SearchError,
 };
-use std::{
-    num::NonZeroUsize,
-    path::{Path, PathBuf},
-};
+use std::{num::NonZeroUsize, path::PathBuf};
+
+type Result<T> = std::result::Result<T, SearchError>;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -20,62 +20,77 @@ struct Cli {
     command: Commands,
 }
 
+#[derive(Parser)]
+struct CliSearchConfig {
+    /// Pattern to search for (can be specified multiple times)
+    #[arg(short = 'p', long = "pattern")]
+    patterns: Vec<String>,
+
+    /// Legacy positional patterns (deprecated)
+    #[arg(hide = true)]
+    legacy_patterns: Vec<String>,
+
+    /// Treat the most recently specified pattern as a regular expression
+    #[arg(short = 'r', long = "regex", action = clap::ArgAction::Append)]
+    is_regex: Vec<bool>,
+
+    /// Match whole words only for the most recently specified pattern
+    #[arg(short = 'w', long = "word-boundary", action = clap::ArgAction::Append)]
+    word_boundary: Vec<bool>,
+
+    /// Root directory to search in
+    #[arg(short = 'd', long, default_value = ".")]
+    root: PathBuf,
+
+    /// File extensions to include (e.g. rs,go,js)
+    #[arg(short = 'e', long)]
+    extensions: Option<String>,
+
+    /// Patterns to ignore (glob format)
+    #[arg(short, long)]
+    ignore: Vec<String>,
+
+    /// Number of context lines before match
+    #[arg(short = 'B', long, default_value = "0")]
+    context_before: usize,
+
+    /// Number of context lines after match
+    #[arg(short = 'A', long, default_value = "0")]
+    context_after: usize,
+
+    /// Show only statistics, not matches
+    #[arg(short, long)]
+    stats: bool,
+
+    /// Number of threads to use
+    #[arg(short = 'j', long)]
+    threads: Option<NonZeroUsize>,
+
+    /// Enable incremental search using cache
+    #[arg(short = 'I', long)]
+    incremental: bool,
+
+    /// Path to cache file (default: .rustscout-cache.json)
+    #[arg(long)]
+    cache_path: Option<PathBuf>,
+
+    /// Strategy for detecting file changes (auto|git|signature)
+    #[arg(long, default_value = "auto")]
+    cache_strategy: String,
+
+    /// Maximum cache size in MB (0 for unlimited)
+    #[arg(long)]
+    max_cache_size: Option<u64>,
+
+    /// Enable cache compression
+    #[arg(long)]
+    compress_cache: bool,
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Search for patterns in files
-    Search {
-        /// Search pattern(s) to use
-        #[arg(required = true)]
-        patterns: Vec<String>,
-
-        /// Root directory to search in
-        #[arg(short, long, default_value = ".")]
-        root: PathBuf,
-
-        /// File extensions to include (e.g. rs,go,js)
-        #[arg(short = 'e', long)]
-        extensions: Option<String>,
-
-        /// Patterns to ignore (glob format)
-        #[arg(short, long)]
-        ignore: Vec<String>,
-
-        /// Number of context lines before match
-        #[arg(short = 'B', long, default_value = "0")]
-        context_before: usize,
-
-        /// Number of context lines after match
-        #[arg(short = 'A', long, default_value = "0")]
-        context_after: usize,
-
-        /// Show only statistics, not matches
-        #[arg(short, long)]
-        stats: bool,
-
-        /// Number of threads to use
-        #[arg(short = 'j', long)]
-        threads: Option<NonZeroUsize>,
-
-        /// Enable incremental search using cache
-        #[arg(short = 'I', long)]
-        incremental: bool,
-
-        /// Path to cache file (default: .rustscout-cache.json)
-        #[arg(long)]
-        cache_path: Option<PathBuf>,
-
-        /// Strategy for detecting file changes (auto|git|signature)
-        #[arg(long, default_value = "auto")]
-        cache_strategy: String,
-
-        /// Maximum cache size in MB (0 for unlimited)
-        #[arg(long)]
-        max_cache_size: Option<u64>,
-
-        /// Enable cache compression
-        #[arg(long)]
-        compress_cache: bool,
-    },
+    Search(Box<CliSearchConfig>),
 
     /// Replace patterns in files
     Replace {
@@ -103,57 +118,77 @@ enum Commands {
     },
 }
 
-fn main() -> Result<(), SearchError> {
+fn main() -> Result<()> {
+    run()
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Search {
-            patterns,
-            root,
-            extensions,
-            ignore,
-            stats,
-            threads,
-            context_before,
-            context_after,
-            incremental,
-            cache_path,
-            cache_strategy,
-            max_cache_size,
-            compress_cache,
-        } => {
-            let file_extensions = extensions.map(|e| {
+        Commands::Search(config) => {
+            let mut patterns = config.patterns.clone();
+            patterns.extend(config.legacy_patterns.iter().cloned());
+
+            let mut pattern_defs = Vec::new();
+            let mut is_regex = config.is_regex.clone();
+            let mut word_boundary = config.word_boundary.clone();
+
+            // Ensure we have enough flags for all patterns
+            while is_regex.len() < patterns.len() {
+                is_regex.push(false);
+            }
+            while word_boundary.len() < patterns.len() {
+                word_boundary.push(false);
+            }
+
+            for (i, pattern) in patterns.iter().enumerate() {
+                pattern_defs.push(PatternDefinition::new(
+                    pattern.clone(),
+                    is_regex[i],
+                    if word_boundary[i] {
+                        WordBoundaryMode::WholeWords
+                    } else {
+                        WordBoundaryMode::None
+                    },
+                ));
+            }
+
+            let file_extensions = config.extensions.as_ref().map(|e| {
                 e.split(',')
                     .map(|s| s.trim().to_string())
                     .collect::<Vec<_>>()
             });
 
-            let cache_strategy = match cache_strategy.as_str() {
+            let cache_strategy = match config.cache_strategy.as_str() {
                 "git" => ChangeDetectionStrategy::GitStatus,
                 "signature" => ChangeDetectionStrategy::FileSignature,
                 _ => ChangeDetectionStrategy::Auto,
             };
 
-            let config = SearchConfig {
-                patterns,
-                pattern: String::new(),
-                root_path: root,
+            let search_config = SearchConfig {
+                pattern_definitions: pattern_defs,
+                patterns: Vec::new(),   // Legacy field, not used
+                pattern: String::new(), // Legacy field, not used
+                root_path: config.root,
                 file_extensions,
-                ignore_patterns: ignore,
-                stats_only: stats,
-                thread_count: threads.unwrap_or_else(|| NonZeroUsize::new(4).unwrap()),
+                ignore_patterns: config.ignore,
+                stats_only: config.stats,
+                thread_count: config
+                    .threads
+                    .unwrap_or_else(|| NonZeroUsize::new(4).unwrap()),
                 log_level: "info".to_string(),
-                context_before,
-                context_after,
-                incremental,
-                cache_path,
+                context_before: config.context_before,
+                context_after: config.context_after,
+                incremental: config.incremental,
+                cache_path: config.cache_path,
                 cache_strategy,
-                max_cache_size: max_cache_size.map(|size| size * 1024 * 1024),
-                use_compression: compress_cache,
+                max_cache_size: config.max_cache_size.map(|size| size * 1024 * 1024),
+                use_compression: config.compress_cache,
             };
 
-            let result = search(&config)?;
-            print_search_results(&result, stats);
+            let result = search(&search_config)?;
+            print_search_results(&result, config.stats);
             Ok(())
         }
         Commands::Replace {
@@ -168,13 +203,13 @@ fn main() -> Result<(), SearchError> {
             Ok(())
         }
         Commands::ListUndo => {
-            let config = ReplacementConfig::load_from(Path::new(".rustscout/config.json"))?;
+            let config = ReplacementConfig::load_from(&PathBuf::from(".rustscout/config.json"))?;
             let operations = ReplacementSet::list_undo_operations(&config)?;
             print_undo_operations(&operations);
             Ok(())
         }
         Commands::Undo { id } => {
-            let config = ReplacementConfig::load_from(Path::new(".rustscout/config.json"))?;
+            let config = ReplacementConfig::load_from(&PathBuf::from(".rustscout/config.json"))?;
             let id = id
                 .parse::<u64>()
                 .map_err(|e| SearchError::config_error(format!("Invalid undo ID: {}", e)))?;
