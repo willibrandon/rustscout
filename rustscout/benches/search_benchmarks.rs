@@ -33,7 +33,7 @@ fn create_base_config(dir: &tempfile::TempDir) -> SearchConfig {
         patterns: vec!["TODO".to_string()],
         pattern: String::new(),
         root_path: dir.path().to_path_buf(),
-        ignore_patterns: vec![],
+        ignore_patterns: vec![".git/**".to_string()],
         file_extensions: None,
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
@@ -62,15 +62,24 @@ fn bench_repeated_pattern(c: &mut Criterion) -> std::io::Result<()> {
     ];
 
     let mut group = c.benchmark_group("Repeated Pattern");
+    group.sample_size(20);
+    group.warm_up_time(std::time::Duration::from_secs(1));
+
     for (i, pattern) in patterns.iter().enumerate() {
         let mut config = create_base_config(&dir);
         config.pattern = pattern.to_string();
         config.patterns = vec![pattern.to_string()];
 
         group.bench_function(format!("pattern_{}", i), |b| {
-            b.iter(|| black_box(search(&config).unwrap()));
+            b.iter_with_setup(
+                || config.clone(),
+                |cfg| {
+                    black_box(search(&cfg).unwrap());
+                },
+            );
         });
     }
+
     group.finish();
     Ok(())
 }
@@ -81,13 +90,30 @@ fn bench_file_scaling(c: &mut Criterion) -> std::io::Result<()> {
     let base_config = create_base_config(&dir);
 
     let mut group = c.benchmark_group("File Scaling");
+    group.sample_size(10);
+    group.warm_up_time(std::time::Duration::from_secs(1));
+
     for &count in &file_counts {
+        // Clean up previous files
+        if count > 1 {
+            for i in 0..count - 1 {
+                let _ = std::fs::remove_file(dir.path().join(format!("test_{}.txt", i)));
+            }
+        }
+
+        // Create new test files
         create_test_files(&dir, count, 10)?;
 
         group.bench_function(format!("files_{}", count), |b| {
-            b.iter(|| black_box(search(&base_config).unwrap()));
+            b.iter_with_setup(
+                || base_config.clone(),
+                |config| {
+                    black_box(search(&config).unwrap());
+                },
+            );
         });
     }
+
     group.finish();
     Ok(())
 }
@@ -102,21 +128,37 @@ fn bench_incremental_search(c: &mut Criterion) -> std::io::Result<()> {
     base_config.cache_path = Some(cache_path.clone());
 
     let mut group = c.benchmark_group("Incremental Search");
+    group.sample_size(10);
+    group.warm_up_time(std::time::Duration::from_secs(1));
 
     // Initial search (no cache)
     group.bench_function("initial_search", |b| {
-        b.iter(|| {
-            let config = base_config.clone();
-            black_box(search(&config).unwrap());
-        });
+        b.iter_with_setup(
+            || {
+                if cache_path.exists() {
+                    let _ = std::fs::remove_file(&cache_path);
+                }
+                base_config.clone()
+            },
+            |config| {
+                black_box(search(&config).unwrap());
+            },
+        );
     });
 
     // Subsequent search (with cache, no changes)
     group.bench_function("cached_search", |b| {
-        b.iter(|| {
-            let config = base_config.clone();
-            search(black_box(&config)).unwrap();
-        });
+        b.iter_with_setup(
+            || {
+                if !cache_path.exists() {
+                    search(&base_config).unwrap();
+                }
+                base_config.clone()
+            },
+            |config| {
+                search(black_box(&config)).unwrap();
+            },
+        );
     });
 
     // Search with some changes
@@ -140,6 +182,11 @@ fn bench_incremental_search(c: &mut Criterion) -> std::io::Result<()> {
     });
 
     group.finish();
+
+    // Cleanup
+    if cache_path.exists() {
+        let _ = std::fs::remove_file(&cache_path);
+    }
     Ok(())
 }
 
@@ -154,35 +201,64 @@ fn bench_cache_operations(c: &mut Criterion) -> std::io::Result<()> {
 
     let mut group = c.benchmark_group("Cache Operations");
 
-    // Cache creation
+    // Ensure clean state before each benchmark
+    group.sample_size(10); // Reduce sample size to minimize race conditions
+    group.warm_up_time(std::time::Duration::from_secs(1));
+
+    // Cache creation - ensure clean state
     group.bench_function("cache_creation", |b| {
-        b.iter(|| {
-            let config = base_config.clone();
-            if cache_path.exists() {
-                std::fs::remove_file(&cache_path).unwrap();
-            }
-            search(black_box(&config)).unwrap();
-        });
+        b.iter_with_setup(
+            || {
+                if cache_path.exists() {
+                    let _ = std::fs::remove_file(&cache_path);
+                }
+                base_config.clone()
+            },
+            |config| {
+                search(black_box(&config)).unwrap();
+            },
+        );
     });
 
-    // Cache loading
+    // Cache loading - ensure cache exists
     group.bench_function("cache_loading", |b| {
-        b.iter(|| {
-            let cache = IncrementalCache::load_from(black_box(&cache_path)).unwrap();
-            black_box(cache);
-        });
+        b.iter_with_setup(
+            || {
+                if !cache_path.exists() {
+                    search(&base_config).unwrap();
+                }
+                &cache_path
+            },
+            |path| {
+                let cache = IncrementalCache::load_from(black_box(path)).unwrap();
+                black_box(cache);
+            },
+        );
     });
 
-    // Cache with compression
+    // Cache with compression - clean state each time
     group.bench_function("compressed_cache", |b| {
-        b.iter(|| {
-            let mut config = base_config.clone();
-            config.use_compression = true;
-            search(black_box(&config)).unwrap();
-        });
+        b.iter_with_setup(
+            || {
+                if cache_path.exists() {
+                    let _ = std::fs::remove_file(&cache_path);
+                }
+                let mut config = base_config.clone();
+                config.use_compression = true;
+                config
+            },
+            |config| {
+                search(black_box(&config)).unwrap();
+            },
+        );
     });
 
     group.finish();
+
+    // Cleanup
+    if cache_path.exists() {
+        let _ = std::fs::remove_file(&cache_path);
+    }
     Ok(())
 }
 
@@ -190,54 +266,116 @@ fn bench_change_detection(c: &mut Criterion) -> std::io::Result<()> {
     let dir = tempdir().unwrap();
     create_test_files(&dir, 50, 20)?;
 
-    // Initialize git repo for git strategy testing
-    std::process::Command::new("git")
-        .args(["init"])
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args(["add", "."])
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args(["commit", "-m", "Initial commit"])
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-
     let mut base_config = create_base_config(&dir);
     base_config.incremental = true;
     base_config.cache_path = Some(dir.path().join("cache.json"));
 
+    // Check if git is available
+    let git_available = std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+
+    // Initialize git repo for git strategy testing
+    let git_initialized = if git_available {
+        // Configure git for CI environment
+        let git_config = [
+            ("user.name", "Benchmark Test"),
+            ("user.email", "test@example.com"),
+            ("init.defaultBranch", "main"),
+            ("core.autocrlf", "false"), // Prevent CRLF conversion
+        ];
+
+        let mut success = true;
+        for (key, value) in git_config.iter() {
+            success &= std::process::Command::new("git")
+                .args(["config", "--local", key, value])
+                .current_dir(dir.path())
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false);
+        }
+
+        // Create .gitignore to exclude binary and temp files
+        std::fs::write(
+            dir.path().join(".gitignore"),
+            "*.bin\n*.tmp\n*.idx\n*.pack\n",
+        )?;
+
+        success &= std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir.path())
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false);
+
+        // Only add text files to git
+        success &= std::process::Command::new("git")
+            .args(["add", "*.txt"])
+            .current_dir(dir.path())
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false);
+
+        success &= std::process::Command::new("git")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(dir.path())
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false);
+
+        success
+    } else {
+        false
+    };
+
     let mut group = c.benchmark_group("Change Detection");
+    group.sample_size(10); // Reduce sample size
+    group.warm_up_time(std::time::Duration::from_secs(1));
 
-    // FileSignature strategy
+    // FileSignature strategy - always run
     group.bench_function("filesig_detection", |b| {
-        b.iter(|| {
-            let mut config = base_config.clone();
-            config.cache_strategy = ChangeDetectionStrategy::FileSignature;
-            search(black_box(&config)).unwrap();
-        });
+        b.iter_with_setup(
+            || {
+                let mut config = base_config.clone();
+                config.cache_strategy = ChangeDetectionStrategy::FileSignature;
+                config
+            },
+            |config| {
+                black_box(search(&config).unwrap());
+            },
+        );
     });
 
-    // Git strategy
-    group.bench_function("git_detection", |b| {
-        b.iter(|| {
-            let mut config = base_config.clone();
-            config.cache_strategy = ChangeDetectionStrategy::GitStatus;
-            search(black_box(&config)).unwrap();
+    // Git strategy - only run if git is available and initialized
+    if git_initialized {
+        group.bench_function("git_detection", |b| {
+            b.iter_with_setup(
+                || {
+                    let mut config = base_config.clone();
+                    config.cache_strategy = ChangeDetectionStrategy::GitStatus;
+                    config
+                },
+                |config| {
+                    black_box(search(&config).unwrap());
+                },
+            );
         });
-    });
+    }
 
-    // Auto strategy
+    // Auto strategy - always run
     group.bench_function("auto_detection", |b| {
-        b.iter(|| {
-            let mut config = base_config.clone();
-            config.cache_strategy = ChangeDetectionStrategy::Auto;
-            search(black_box(&config)).unwrap();
-        });
+        b.iter_with_setup(
+            || {
+                let mut config = base_config.clone();
+                config.cache_strategy = ChangeDetectionStrategy::Auto;
+                config
+            },
+            |config| {
+                black_box(search(&config).unwrap());
+            },
+        );
     });
 
     group.finish();
