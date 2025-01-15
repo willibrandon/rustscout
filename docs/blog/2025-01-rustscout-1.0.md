@@ -154,24 +154,7 @@ While actual performance can vary by environment, these internal tests prove Rus
 
 ---
 
-## 6. Community Impact
-
-**User Feedback**  
-- We've heard from countless devs who rely on RustScout to scour thousands of lines for "TODO" or fix code patterns quickly.  
-- One quote from a user at Redwood Labs: "RustScout saves us hours during code audits each month. The incremental caching is a game-changer!"
-
-**Real-World Use Cases**  
-- Automated pre-commit checks for "FIXME" or "HACK."  
-- Searching monorepos with hundreds of microservices.  
-- Replacing outdated imports across massive multi-language codebases.
-
-**Community Contributions**  
-- Over a dozen PRs from external devs refined features like word boundaries, Windows path support, and test coverage.  
-- Our GitHub stars soared from ~100 to over ~1,200 in under a year—**thank you** to everyone who believed in RustScout!
-
----
-
-## 7. Technical Deep Dive
+## 6. Technical Deep Dive
 
 ### Architecture
 
@@ -217,7 +200,7 @@ pub fn process_mmap_file(&self, path: &Path) -> SearchResult<FileResult> {
 
 ---
 
-## 8. Future Roadmap
+## 7. Future Roadmap
 
 Though RustScout 1.0 is a major milestone, we have **ambitious plans**:
 
@@ -252,7 +235,7 @@ We want to **thank** everyone who contributed code, tested pre-release builds, o
 - **Try RustScout 1.0**:  
   ```bash
   cargo install rustscout-cli
-  rustscout search -p "TODO" .
+  rustscout-cli search -p "TODO" .
   ```
 - **Check out the repo** at [GitHub: willibrandon/rustscout](https://github.com/willibrandon/rustscout).  
 - **Open an issue** or propose a PR for your ideas.  
