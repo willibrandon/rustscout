@@ -10,6 +10,7 @@ use rustscout::{
 use std::fs::File;
 use std::io::Write;
 use std::num::NonZeroUsize;
+#[cfg(target_os = "windows")]
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use tempfile::tempdir;
@@ -39,8 +40,14 @@ fn create_test_file(dir: &tempfile::TempDir, name: &str, content: &[u8]) -> Resu
 }
 
 // Convert a `Path` into a vector of wide characters (u16).
+#[cfg(target_os = "windows")]
 fn path_wide_chars(p: &Path) -> Vec<u16> {
     p.as_os_str().encode_wide().collect()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn path_wide_chars(_p: &Path) -> Vec<u16> {
+    Vec::new() // Return empty vector on non-Windows platforms
 }
 
 #[test]
