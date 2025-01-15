@@ -1038,7 +1038,7 @@ dependencies = [
 
 [[package]]
 name = "rustscout"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "config",
@@ -1066,7 +1066,7 @@ dependencies = [
 
 [[package]]
 name = "rustscout-cli"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "clap",
