@@ -1355,6 +1355,4 @@ pub fn sanitize_path_for_output(path: &Path) -> String {
 }
 ```
 
-**.NET Dev Note**: *Like ASP.NET's request validation and output encoding, RustScout ensures both input and output are properly sanitized.*
-
-// ... rest of existing content ... 
+**.NET Dev Note**: *Like ASP.NET's request validation and output encoding, RustScout ensures both input and output are properly sanitized.* 
