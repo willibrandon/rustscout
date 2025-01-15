@@ -20,7 +20,7 @@ A high-performance, concurrent code search tool written in Rust. RustScout is de
 - 🔍 **Smart Search**: Support for multiple patterns with mix of simple text and regex
   - Word boundary matching for precise identifier search
     - Smart hyphen handling (by default, uses code/joining mode where `test-case` is one token; use `--hyphen-mode=boundary` for natural text where `hello-world` is two words)
-    - Underscores always join words, even when bridging different scripts (e.g., hello_世界 or café_안녕)
+    - Underscores always join words, even when bridging different scripts (e.g., `hello_世界` or `café_안녕`)
     - Full Unicode support for word boundaries
     - Configurable per-pattern behavior
 
@@ -98,6 +98,7 @@ rustscout-cli --threads 8 "pattern" .
 ## Usage Examples
 
 ### Basic Search
+
 ```bash
 # Search for a pattern in current directory
 rustscout-cli "pattern" .
@@ -117,6 +118,7 @@ rustscout-cli -A 2 "pattern" .  # 2 lines after
 ### Advanced Pattern Matching
 
 #### Basic Regex Examples
+
 ```bash
 # Find function definitions
 rustscout-cli "fn\s+\w+\s*\([^)]*\)" .
@@ -132,6 +134,7 @@ rustscout-cli --pattern "test" --word-boundary --pattern "FIXME:.*bug.*line \d+"
 ```
 
 #### Hyphen and Underscore Handling
+
 ```bash
 # Smart hyphen handling (--hyphen-mode flag)
 rustscout-cli --pattern "test" --word-boundary .                    # Won't match in "test-case" (default: code/joining mode)
@@ -145,6 +148,7 @@ rustscout-cli --pattern "test_café_안녕" --word-boundary . # Matches full mix
 ```
 
 #### Unicode Hyphen Support
+
 ```bash
 # Matches with any hyphen type:
 rustscout-cli --pattern "hello" --word-boundary --hyphen-mode=boundary .  
@@ -156,6 +160,7 @@ rustscout-cli --pattern "hello" --word-boundary --hyphen-mode=boundary .
 ```
 
 #### Regex with Word Boundaries
+
 ```bash
 # Explicit \b in pattern vs. --word-boundary flag
 rustscout-cli --pattern "\bhello-\w+\b" --regex --hyphen-mode=boundary .  # \b matches word boundaries in pattern
@@ -166,6 +171,7 @@ rustscout-cli --pattern "address" .                        # Matches "address" w
 ```
 
 #### Unicode Word Boundaries
+
 ```bash
 # Unicode-aware word boundaries
 rustscout-cli --pattern "café" --word-boundary .          # Matches "café" but not "café-bar"
@@ -180,6 +186,7 @@ rustscout-cli --pattern "my_∑_total" --word-boundary .    # Math symbols in id
 ```
 
 ### Incremental Search
+
 ```bash
 # Enable incremental search with default settings
 rustscout search "TODO" --incremental
@@ -198,6 +205,7 @@ rustscout search "TODO" --incremental --max-cache-size 100MB
 ```
 
 ### Search and Replace
+
 ```bash
 # Simple text replacement
 rustscout replace "old_text" --replace "new_text" src/*.rs
@@ -221,6 +229,7 @@ rustscout replace "pattern" --replace "new" --backup --output-dir backups/ src/
 ```
 
 ### File Filtering
+
 ```bash
 # Search only Rust files
 rustscout-cli --extensions rs "pattern" .
@@ -234,7 +243,8 @@ rustscout-cli --ignore "target/*,*.tmp" "pattern" .
 
 ## Configuration
 
-RustScout can be configured via YAML file (`.rustscout.yaml`). Configuration files are loaded from multiple locations in order of precedence:
+RustScout can be configured via a YAML file (`.rustscout.yaml`). Configuration files are loaded from multiple locations in order of precedence:
+
 1. Custom config file specified via `--config` flag
 2. Local `.rustscout.yaml` in the current directory
 3. Global `$HOME/.config/rustscout/config.yaml`
@@ -250,12 +260,12 @@ Example configuration with explanations:
 patterns:
   - "TODO"                    # Simple text pattern
   - "FIXME"                   # Another simple pattern
-  - "BUG-\\d+"               # Regex pattern with number
-  - text: "test"             # Pattern with explicit settings
+  - "BUG-\\d+"                # Regex pattern with number
+  - text: "test"              # Pattern with explicit settings
     is_regex: false
     boundary_mode: WholeWords # Match whole words only
-  - text: "address"          # Pattern with no boundaries
-    boundary_mode: None      # Match within words too
+  - text: "address"           # Pattern with no boundaries
+    boundary_mode: None        # Match within words too
 
 # Legacy single pattern support (using regex alternation)
 pattern: "TODO|FIXME"
@@ -276,26 +286,26 @@ file_extensions:
 # - Built-in ignores: .git/, target/
 ignore_patterns:
   - "target/**"              # Ignore target directory
-  - ".git/**"               # Ignore git directory
-  - "**/*.min.js"           # Ignore minified JS
+  - ".git/**"                # Ignore git directory
+  - "**/*.min.js"            # Ignore minified JS
 
 # Performance Settings
-stats_only: false           # Show only statistics
-thread_count: 4             # Number of threads (default: CPU cores)
+stats_only: false            # Show only statistics
+thread_count: 4              # Number of threads (default: CPU cores)
 
 # Logging
-log_level: "info"          # trace, debug, info, warn, error
+log_level: "info"            # trace, debug, info, warn, error
 
 # Context Lines
-context_before: 2          # Lines before matches
-context_after: 2           # Lines after matches
+context_before: 2            # Lines before matches
+context_after: 2             # Lines after matches
 
 # Incremental Search
-incremental: false         # Enable incremental search
+incremental: false           # Enable incremental search
 cache_path: ".rustscout/cache.json"
-cache_strategy: "auto"     # "auto", "git", or "signature"
-max_cache_size: "100MB"    # Optional size limit
-use_compression: false     # Enable cache compression
+cache_strategy: "auto"       # "auto", "git", or "signature"
+max_cache_size: "100MB"      # Optional size limit
+use_compression: false       # Enable cache compression
 ```
 
 ### Command-Line Options
@@ -312,43 +322,43 @@ SUBCOMMANDS:
     search       Search for patterns in files
     replace      Search and replace patterns in files
     list-undo    List available undo operations
-    undo        Undo a previous replacement operation
+    undo         Undo a previous replacement operation
 
 SEARCH OPTIONS:
-    [PATTERN]      Pattern to search for (supports regex)
-    [ROOT_PATH]    Root directory to search in [default: .]
-    -p, --pattern <PATTERN>         Pattern to search for (can be specified multiple times)
-    -e, --extensions <EXTENSIONS>    Comma-separated list of file extensions to search (e.g. "rs,toml")
-    -i, --ignore <PATTERNS>         Glob patterns to ignore
+    [PATTERN]                      Pattern to search for (supports regex)
+    [ROOT_PATH]                    Root directory to search in [default: .]
+    -p, --pattern <PATTERN>        Pattern to search for (can be specified multiple times)
+    -e, --extensions <EXTENSIONS>  Comma-separated list of file extensions to search (e.g. "rs,toml")
+    -i, --ignore <PATTERNS>        Glob patterns to ignore
     -c, --case-sensitive           Enable case-sensitive search
-    -s, --stats-only              Show only statistics
-    -t, --threads <COUNT>         Number of threads to use
-    -B, --context-before <LINES>  Lines of context before matches
-    -A, --context-after <LINES>   Lines of context after matches
-    -C, --context <LINES>         Lines of context around matches
-    --incremental                 Enable incremental search
-    --cache-path <PATH>           Path to store search cache [default: .rustscout/cache.json]
-    --cache-strategy <STRATEGY>   Change detection strategy: auto, git, or signature [default: auto]
-    --max-cache-size <SIZE>       Maximum cache size (e.g. "100MB")
-    --use-compression            Enable cache compression
+    -s, --stats-only               Show only statistics
+    -t, --threads <COUNT>          Number of threads to use
+    -B, --context-before <LINES>   Lines of context before matches
+    -A, --context-after <LINES>    Lines of context after matches
+    -C, --context <LINES>          Lines of context around matches
+    --incremental                  Enable incremental search
+    --cache-path <PATH>            Path to store search cache [default: .rustscout/cache.json]
+    --cache-strategy <STRATEGY>    Change detection strategy: auto, git, or signature [default: auto]
+    --max-cache-size <SIZE>        Maximum cache size (e.g. "100MB")
+    --use-compression              Enable cache compression
 
 REPLACE OPTIONS:
-    <PATTERN>                       Pattern to search for
-    <FILES>...                      Files or directories to process
-    -r, --replace <TEXT>           The replacement text
-    -R, --regex                    Use regex pattern matching
-    -g, --capture-groups <GROUPS>  Use capture groups in the replacement (e.g. "$1, $2")
-    -n, --dry-run                  Show what would be changed without modifying files
-    -b, --backup                   Create backups of modified files
-    -o, --output-dir <DIR>         Directory for backups and temporary files
-    -p, --preview                  Show detailed preview of changes
-    --preserve                     Preserve file permissions and timestamps
-    -t, --threads <COUNT>          Number of threads to use
-    -l, --log-level <LEVEL>        Log level (trace, debug, info, warn, error) [default: warn]
+    <PATTERN>                        Pattern to search for
+    <FILES>...                       Files or directories to process
+    -r, --replace <TEXT>             The replacement text
+    -R, --regex                      Use regex pattern matching
+    -g, --capture-groups <GROUPS>    Use capture groups in the replacement (e.g. "$1, $2")
+    -n, --dry-run                    Show what would be changed without modifying files
+    -b, --backup                     Create backups of modified files
+    -o, --output-dir <DIR>           Directory for backups and temporary files
+    -p, --preview                    Show detailed preview of changes
+    --preserve                       Preserve file permissions and timestamps
+    -t, --threads <COUNT>            Number of threads to use
+    -l, --log-level <LEVEL>          Log level (trace, debug, info, warn, error) [default: warn]
 
 GLOBAL OPTIONS:
-    -h, --help                      Print help information
-    -V, --version                   Print version information
+    -h, --help                       Print help information
+    -V, --version                    Print version information
 ```
 
 ## Library Usage
@@ -361,6 +371,7 @@ rustscout = "0.1.0"
 ```
 
 ### Search Example
+
 ```rust
 use rustscout::{SearchConfig, search, WordBoundaryMode, HyphenHandling};
 use std::num::NonZeroUsize;
@@ -391,8 +402,10 @@ fn main() -> anyhow::Result<()> {
     println!("Found {} matches", result.total_matches);
     Ok(())
 }
+```
 
 ### Replace Example
+
 ```rust
 use rustscout::{FileReplacementPlan, ReplacementConfig, ReplacementSet, ReplacementTask};
 use std::path::PathBuf;
@@ -439,6 +452,7 @@ fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
+```
 
 ## Performance & Benchmarks
 
@@ -499,94 +513,100 @@ RustScout now includes comprehensive memory metrics:
 ### Performance Tips
 
 1. **Use Simple Patterns** when possible:
-   ```bash
-   # Faster - uses optimized literal search
-   rustscout-cli "TODO" .
-   
-   # Slower - requires regex engine
-   rustscout-cli "TODO.*FIXME" .
-   ```
+
+    ```bash
+    # Faster - uses optimized literal search
+    rustscout-cli "TODO" .
+
+    # Slower - requires regex engine
+    rustscout-cli "TODO.*FIXME" .
+    ```
 
 2. **Control Thread Count** based on your system:
-   ```bash
-   # Use all available cores (default)
-   rustscout-cli "pattern" .
-   
-   # Limit to 4 threads for lower CPU usage
-   rustscout-cli --threads 4 "pattern" .
-   ```
+
+    ```bash
+    # Use all available cores (default)
+    rustscout-cli "pattern" .
+
+    # Limit to 4 threads for lower CPU usage
+    rustscout-cli --threads 4 "pattern" .
+    ```
 
 3. **Filter File Types** to reduce search space:
-   ```bash
-   # Search only Rust and TOML files
-   rustscout-cli --extensions rs,toml "pattern" .
-   ```
+
+    ```bash
+    # Search only Rust and TOML files
+    rustscout-cli --extensions rs,toml "pattern" .
+    ```
 
 4. **Monitor Memory Usage**:
-   ```bash
-   # Show memory usage statistics
-   rustscout-cli "pattern" --stats .
-   ```
+
+    ```bash
+    # Show memory usage statistics
+    rustscout-cli "pattern" --stats .
+    ```
 
 ## Troubleshooting
 
 ### Common Issues and Solutions
 
 1. **Pattern Not Found**
-   - Issue: Search returns no results
-   - Solutions:
+   - **Issue**: Search returns no results
+   - **Solutions**:
      - Check if pattern is case-sensitive
      - Verify file extensions are correctly specified
      - Check ignore patterns aren't too broad
 
 2. **Performance Issues**
-   - Issue: Search is slower than expected
-   - Solutions:
+   - **Issue**: Search is slower than expected
+   - **Solutions**:
      - Use simple patterns instead of complex regex
      - Adjust thread count with `--threads`
      - Filter specific file types with `--extensions`
      - Check if searching binary files (use `--stats-only` to verify)
 
 3. **Permission Errors**
-   - Issue: "Permission denied" errors
-   - Solutions:
+   - **Issue**: "Permission denied" errors
+   - **Solutions**:
      - Run with appropriate permissions
      - Check file and directory access rights
      - Use ignore patterns to skip problematic directories
 
 4. **Invalid Regex Pattern**
-   - Issue: "Invalid regex pattern" error
-   - Solutions:
-     - Escape special characters: `\.`, `\*`, `\+`
+   - **Issue**: "Invalid regex pattern" error
+   - **Solutions**:
+     - Escape special characters: `\., \*, \+`
      - Use raw strings for Windows paths: `\\path\\to\\file`
      - Verify regex syntax at [regex101.com](https://regex101.com)
 
 5. **Memory Usage**
-   - Issue: High memory consumption
-   - Solutions:
+   - **Issue**: High memory consumption
+   - **Solutions**:
      - Use `--stats-only` for large codebases
      - Filter specific file types
      - Adjust thread count to limit concurrency
 
 ### Error Messages
 
-| Error Message | Cause | Solution |
-|--------------|-------|----------|
-| `Error: Invalid regex pattern` | Malformed regex expression | Check regex syntax and escape special characters |
-| `Error: Permission denied` | Insufficient file permissions | Run with appropriate permissions or ignore problematic paths |
-| `Error: File too large` | File exceeds size limit | Use `--stats-only` or filter by file type |
-| `Error: Invalid thread count` | Invalid `--threads` value | Use a positive number within system limits |
-| `Error: Invalid file extension` | Malformed extension filter | Use comma-separated list without spaces |
+| Error Message               | Cause                       | Solution                                                             |
+|-----------------------------|-----------------------------|----------------------------------------------------------------------|
+| Error: Invalid regex pattern | Malformed regex expression  | Check regex syntax and escape special characters                    |
+| Error: Permission denied      | Insufficient file permissions | Run with appropriate permissions or ignore problematic paths         |
+| Error: File too large         | File exceeds size limit      | Use `--stats-only` or filter by file type                           |
+| Error: Invalid thread count   | Invalid `--threads` value    | Use a positive number within system limits                           |
+| Error: Invalid file extension | Malformed extension filter   | Use comma-separated list without spaces                              |
 
 ## Development Process
 
 RustScout represents an interesting experiment in AI-assisted software development. The entire codebase was primarily developed through collaboration with AI language models, with human oversight focusing on:
+
 - Project direction and requirements
 - Design decisions and architecture
 - Testing and validation
 - User experience
 
 This approach demonstrates how AI can be leveraged to:
+
 1. Bootstrap complex software projects
 2. Implement best practices and patterns
 3. Handle sophisticated technical implementations
@@ -595,6 +615,7 @@ This approach demonstrates how AI can be leveraged to:
 The project serves as a case study in AI-driven development, showing that with proper orchestration, AI can produce production-quality code while adhering to language idioms and best practices. Notably, this was achieved without the human overseer having prior Rust experience, illustrating how AI can bridge the gap between concept and implementation.
 
 ### Development Principles
+
 - AI handles implementation details
 - Humans focus on high-level direction
 - Continuous testing and validation
@@ -602,6 +623,7 @@ The project serves as a case study in AI-driven development, showing that with p
 - Regular review and refinement cycles
 
 This transparent approach to development aims to:
+
 1. Demonstrate the capabilities of AI-assisted development
 2. Provide insights into new software development methodologies
 3. Encourage discussion about AI's role in software engineering
