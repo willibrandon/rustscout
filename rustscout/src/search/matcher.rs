@@ -39,6 +39,10 @@ pub struct PatternDefinition {
     pub boundary_mode: WordBoundaryMode,
     /// How to handle hyphens in word boundaries
     pub hyphen_handling: HyphenHandling,
+    /// The replacement text for this pattern.
+    pub replacement: Option<String>,
+    /// The capture template for this pattern.
+    pub capture_template: Option<String>,
 }
 
 impl PatternDefinition {
@@ -49,6 +53,8 @@ impl PatternDefinition {
             is_regex,
             boundary_mode,
             hyphen_handling: HyphenHandling::default(),
+            replacement: None,
+            capture_template: None,
         }
     }
 }
@@ -97,6 +103,8 @@ impl PatternMatcher {
                 is_regex: false,
                 boundary_mode: WordBoundaryMode::None,
                 hyphen_handling: HyphenHandling::default(),
+                replacement: None,
+                capture_template: None,
             })
             .collect();
         Self::from_definitions(pattern_defs)
@@ -345,7 +353,7 @@ impl PatternMatcher {
     }
 
     /// Finds all matches in the given text
-    pub fn find_matches(&self, text: &str) -> Vec<(usize, usize)> {
+    pub fn find_matches(&self, text: &str) -> Vec<(usize, usize, Vec<Option<String>>)> {
         let mut matches = Vec::new();
         for strategy in &self.strategies {
             match strategy {
@@ -367,8 +375,8 @@ impl PatternMatcher {
 
                     let indices = text
                         .match_indices(pattern)
-                        .map(|(start, matched)| (start, start + matched.len()))
-                        .filter(|&(start, end)| match boundary_mode {
+                        .map(|(start, matched)| (start, start + matched.len(), vec![None]))
+                        .filter(|&(start, end, _)| match boundary_mode {
                             WordBoundaryMode::None => true,
                             WordBoundaryMode::WholeWords => {
                                 let is_boundary =
@@ -389,11 +397,17 @@ impl PatternMatcher {
                     hyphen_handling: _,
                 } => {
                     // For regex, word boundaries are handled in the pattern itself
-                    matches.extend(regex.find_iter(text).map(|m| (m.start(), m.end())));
+                    matches.extend(regex.captures_iter(text).map(|caps| {
+                        let mut groups = Vec::new();
+                        for i in 0..caps.len() {
+                            groups.push(caps.get(i).map(|m| m.as_str().to_string()));
+                        }
+                        (caps.get(0).unwrap().start(), caps.get(0).unwrap().end(), groups)
+                    }));
                 }
             }
         }
-        matches.sort_unstable_by_key(|&(start, _)| start);
+        matches.sort_unstable_by_key(|&(start, _, _)| start);
 
         #[cfg(test)]
         eprintln!("DEBUG: Final matches: {:?}", matches);
@@ -419,6 +433,8 @@ mod tests {
             is_regex: false,
             boundary_mode: WordBoundaryMode::WholeWords,
             hyphen_handling: HyphenHandling::default(),
+            replacement: None,
+            capture_template: None,
         };
         let _matcher1 = PatternMatcher::with_metrics(vec![pattern1.clone()], metrics.clone());
         assert_eq!(
@@ -441,6 +457,8 @@ mod tests {
             is_regex: false,
             boundary_mode: WordBoundaryMode::None,
             hyphen_handling: HyphenHandling::default(),
+            replacement: None,
+            capture_template: None,
         };
         let _matcher3 = PatternMatcher::with_metrics(vec![pattern2], metrics.clone());
         assert_eq!(
@@ -687,6 +705,8 @@ mod tests {
                         is_regex: false,
                         boundary_mode: *boundary_mode,
                         hyphen_handling: *hyphen_handling,
+                        replacement: None,
+                        capture_template: None,
                     }],
                     metrics.clone(),
                 );
@@ -733,6 +753,8 @@ mod tests {
                     is_regex: true,
                     boundary_mode: WordBoundaryMode::WholeWords,
                     hyphen_handling: HyphenHandling::default(),
+                    replacement: None,
+                    capture_template: None,
                 }],
                 metrics.clone(),
             );

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use rustscout::replace::{FileReplacementPlan, ReplacementConfig, ReplacementSet, ReplacementTask};
+use rustscout::search::matcher::{PatternDefinition, WordBoundaryMode, HyphenHandling};
 use std::fs;
 use std::path::Path;
 use tempfile::tempdir;
@@ -20,16 +21,20 @@ fn test_replace_basic() -> Result<()> {
     let undo_dir = dir.path().join(".rustscout").join("undo");
     fs::create_dir_all(&undo_dir)?;
 
-    let config = ReplacementConfig {
-        pattern: "Hello".to_string(),
-        replacement: "Hi".to_string(),
+    let pattern_def = PatternDefinition {
+        text: "Hello".to_string(),
         is_regex: false,
+        boundary_mode: WordBoundaryMode::None,
+        hyphen_handling: HyphenHandling::default(),
+        replacement: Some("Hi".to_string()),
+        capture_template: None,
+    };
+
+    let config = ReplacementConfig {
+        patterns: vec![pattern_def],
         backup_enabled: false,
         dry_run: false,
-        backup_dir: None,
-        preserve_metadata: false,
-        capture_groups: None,
-        undo_dir,
+        ..Default::default()
     };
 
     let mut plan = FileReplacementPlan::new(dir.path().join("test.txt"))?;
@@ -59,16 +64,20 @@ fn test_replace_with_backup() -> Result<()> {
 
     create_test_files(&dir, &[("test.txt", "Hello world")])?;
 
-    let config = ReplacementConfig {
-        pattern: "Hello".to_string(),
-        replacement: "Hi".to_string(),
+    let pattern_def = PatternDefinition {
+        text: "Hello".to_string(),
         is_regex: false,
+        boundary_mode: WordBoundaryMode::None,
+        hyphen_handling: HyphenHandling::default(),
+        replacement: Some("Hi".to_string()),
+        capture_template: None,
+    };
+
+    let config = ReplacementConfig {
+        patterns: vec![pattern_def],
         backup_enabled: true,
         dry_run: false,
-        backup_dir: Some(backup_dir.clone()),
-        preserve_metadata: false,
-        capture_groups: None,
-        undo_dir,
+        ..Default::default()
     };
 
     let mut plan = FileReplacementPlan::new(dir.path().join("test.txt"))?;
@@ -103,16 +112,20 @@ fn test_replace_dry_run() -> Result<()> {
     let undo_dir = dir.path().join(".rustscout").join("undo");
     fs::create_dir_all(&undo_dir)?;
 
-    let config = ReplacementConfig {
-        pattern: "Hello".to_string(),
-        replacement: "Hi".to_string(),
+    let pattern_def = PatternDefinition {
+        text: "Hello".to_string(),
         is_regex: false,
+        boundary_mode: WordBoundaryMode::None,
+        hyphen_handling: HyphenHandling::default(),
+        replacement: Some("Hi".to_string()),
+        capture_template: None,
+    };
+
+    let config = ReplacementConfig {
+        patterns: vec![pattern_def],
         backup_enabled: false,
         dry_run: true,
-        backup_dir: None,
-        preserve_metadata: false,
-        capture_groups: None,
-        undo_dir,
+        ..Default::default()
     };
 
     let mut plan = FileReplacementPlan::new(test_file.clone())?;
@@ -141,16 +154,20 @@ fn test_replace_preview() -> Result<()> {
     let undo_dir = dir.path().join(".rustscout").join("undo");
     fs::create_dir_all(&undo_dir)?;
 
-    let config = ReplacementConfig {
-        pattern: "Hello".to_string(),
-        replacement: "Hi".to_string(),
+    let pattern_def = PatternDefinition {
+        text: "Hello".to_string(),
         is_regex: false,
+        boundary_mode: WordBoundaryMode::None,
+        hyphen_handling: HyphenHandling::default(),
+        replacement: Some("Hi".to_string()),
+        capture_template: None,
+    };
+
+    let config = ReplacementConfig {
+        patterns: vec![pattern_def],
         backup_enabled: false,
         dry_run: false,
-        backup_dir: None,
-        preserve_metadata: false,
-        capture_groups: None,
-        undo_dir,
+        ..Default::default()
     };
 
     let mut plan = FileReplacementPlan::new(test_file.clone())?;
@@ -190,16 +207,20 @@ fn test_replace_undo_list() -> Result<()> {
     let undo_dir = dir.path().join(".rustscout").join("undo");
     fs::create_dir_all(&undo_dir)?;
 
-    let config = ReplacementConfig {
-        pattern: "Hello".to_string(),
-        replacement: "Hi".to_string(),
+    let pattern_def = PatternDefinition {
+        text: "Hello".to_string(),
         is_regex: false,
+        boundary_mode: WordBoundaryMode::None,
+        hyphen_handling: HyphenHandling::default(),
+        replacement: Some("Hi".to_string()),
+        capture_template: None,
+    };
+
+    let config = ReplacementConfig {
+        patterns: vec![pattern_def],
         backup_enabled: true,
         dry_run: false,
-        backup_dir: None,
-        preserve_metadata: false,
-        capture_groups: None,
-        undo_dir,
+        ..Default::default()
     };
 
     let mut plan = FileReplacementPlan::new(test_file.clone())?;
@@ -234,16 +255,20 @@ fn test_replace_undo_restore() -> Result<()> {
     let undo_dir = dir.path().join(".rustscout").join("undo");
     fs::create_dir_all(&undo_dir)?;
 
-    let config = ReplacementConfig {
-        pattern: "Hello".to_string(),
-        replacement: "Hi".to_string(),
+    let pattern_def = PatternDefinition {
+        text: "Hello".to_string(),
         is_regex: false,
+        boundary_mode: WordBoundaryMode::None,
+        hyphen_handling: HyphenHandling::default(),
+        replacement: Some("Hi".to_string()),
+        capture_template: None,
+    };
+
+    let config = ReplacementConfig {
+        patterns: vec![pattern_def],
         backup_enabled: true,
         dry_run: false,
-        backup_dir: None,
-        preserve_metadata: false,
-        capture_groups: None,
-        undo_dir: undo_dir.clone(),
+        ..Default::default()
     };
 
     let mut plan = FileReplacementPlan::new(test_file.clone())?;
@@ -271,5 +296,235 @@ fn test_replace_undo_restore() -> Result<()> {
 
     // Verify the file was restored
     assert_eq!(fs::read_to_string(&test_file)?, original_content);
+    Ok(())
+}
+
+#[test]
+fn test_replace_regex() -> Result<()> {
+    let dir = tempdir()?;
+    let test_file = dir.path().join("test.txt");
+    fs::write(&test_file, "Hello world! Hello Rust!")?;
+
+    let undo_dir = dir.path().join(".rustscout").join("undo");
+    fs::create_dir_all(&undo_dir)?;
+
+    let pattern_def = PatternDefinition {
+        text: r"Hello\s(\w+)".to_string(),
+        is_regex: true,
+        boundary_mode: WordBoundaryMode::None,
+        hyphen_handling: HyphenHandling::default(),
+        replacement: Some("Hi $1".to_string()),
+        capture_template: None,
+    };
+
+    let config = ReplacementConfig {
+        patterns: vec![pattern_def],
+        backup_enabled: false,
+        dry_run: false,
+        ..Default::default()
+    };
+
+    let mut plan = FileReplacementPlan::new(test_file.clone())?;
+    plan.add_replacement(ReplacementTask::new(
+        test_file.clone(),
+        (0, 11),
+        "Hi world".to_string(),
+        config.clone(),
+    ))?;
+    plan.add_replacement(ReplacementTask::new(
+        test_file.clone(),
+        (13, 24),
+        "Hi Rust".to_string(),
+        config.clone(),
+    ))?;
+
+    let mut replacement_set = ReplacementSet::new(config);
+    replacement_set.add_plan(plan);
+    replacement_set.apply()?;
+
+    assert_eq!(fs::read_to_string(&test_file)?, "Hi world! Hi Rust!");
+    Ok(())
+}
+
+#[test]
+fn test_replace_word_boundary() -> Result<()> {
+    let dir = tempdir()?;
+    let test_file = dir.path().join("test.txt");
+    fs::write(&test_file, "Hello world! HelloWorld!")?;
+
+    let undo_dir = dir.path().join(".rustscout").join("undo");
+    fs::create_dir_all(&undo_dir)?;
+
+    let pattern_def = PatternDefinition {
+        text: "Hello".to_string(),
+        is_regex: false,
+        boundary_mode: WordBoundaryMode::WholeWords,
+        hyphen_handling: HyphenHandling::default(),
+        replacement: Some("Hi".to_string()),
+        capture_template: None,
+    };
+
+    let config = ReplacementConfig {
+        patterns: vec![pattern_def],
+        backup_enabled: false,
+        dry_run: false,
+        ..Default::default()
+    };
+
+    let mut plan = FileReplacementPlan::new(test_file.clone())?;
+    plan.add_replacement(ReplacementTask::new(
+        test_file.clone(),
+        (0, 5),
+        "Hi".to_string(),
+        config.clone(),
+    ))?;
+
+    let mut replacement_set = ReplacementSet::new(config);
+    replacement_set.add_plan(plan);
+    replacement_set.apply()?;
+
+    assert_eq!(fs::read_to_string(&test_file)?, "Hi world! HelloWorld!");
+    Ok(())
+}
+
+#[test]
+fn test_replace_hyphen_handling() -> Result<()> {
+    let dir = tempdir()?;
+    let test_file = dir.path().join("test.txt");
+    fs::write(&test_file, "Hello-world! HelloWorld!")?;
+
+    let undo_dir = dir.path().join(".rustscout").join("undo");
+    fs::create_dir_all(&undo_dir)?;
+
+    let pattern_def = PatternDefinition {
+        text: "Hello".to_string(),
+        is_regex: false,
+        boundary_mode: WordBoundaryMode::WholeWords,
+        hyphen_handling: HyphenHandling::Boundary,
+        replacement: Some("Hi".to_string()),
+        capture_template: None,
+    };
+
+    let config = ReplacementConfig {
+        patterns: vec![pattern_def],
+        backup_enabled: false,
+        dry_run: false,
+        ..Default::default()
+    };
+
+    let mut plan = FileReplacementPlan::new(test_file.clone())?;
+    plan.add_replacement(ReplacementTask::new(
+        test_file.clone(),
+        (0, 5),
+        "Hi".to_string(),
+        config.clone(),
+    ))?;
+
+    let mut replacement_set = ReplacementSet::new(config);
+    replacement_set.add_plan(plan);
+    replacement_set.apply()?;
+
+    assert_eq!(fs::read_to_string(&test_file)?, "Hi-world! HelloWorld!");
+    Ok(())
+}
+
+#[test]
+fn test_replace_multiple_patterns() -> Result<()> {
+    let dir = tempdir()?;
+    let test_file = dir.path().join("test.txt");
+    fs::write(&test_file, "Hello world! Goodbye world!")?;
+
+    let undo_dir = dir.path().join(".rustscout").join("undo");
+    fs::create_dir_all(&undo_dir)?;
+
+    let pattern_def1 = PatternDefinition {
+        text: "Hello".to_string(),
+        is_regex: false,
+        boundary_mode: WordBoundaryMode::None,
+        hyphen_handling: HyphenHandling::default(),
+        replacement: Some("Hi".to_string()),
+        capture_template: None,
+    };
+
+    let pattern_def2 = PatternDefinition {
+        text: "Goodbye".to_string(),
+        is_regex: false,
+        boundary_mode: WordBoundaryMode::None,
+        hyphen_handling: HyphenHandling::default(),
+        replacement: Some("Bye".to_string()),
+        capture_template: None,
+    };
+
+    let config = ReplacementConfig {
+        patterns: vec![pattern_def1, pattern_def2],
+        backup_enabled: false,
+        dry_run: false,
+        ..Default::default()
+    };
+
+    let mut plan = FileReplacementPlan::new(test_file.clone())?;
+    plan.add_replacement(ReplacementTask::new(
+        test_file.clone(),
+        (0, 5),
+        "Hi".to_string(),
+        config.clone(),
+    ))?;
+    plan.add_replacement(ReplacementTask::new(
+        test_file.clone(),
+        (13, 20),
+        "Bye".to_string(),
+        config.clone(),
+    ))?;
+
+    let mut replacement_set = ReplacementSet::new(config);
+    replacement_set.add_plan(plan);
+    replacement_set.apply()?;
+
+    assert_eq!(fs::read_to_string(&test_file)?, "Hi world! Bye world!");
+    Ok(())
+}
+
+#[test]
+fn test_replace_multithreaded() -> Result<()> {
+    let dir = tempdir()?;
+    let test_file = dir.path().join("test.txt");
+    let content = "Hello world! ".repeat(1000);
+    fs::write(&test_file, &content)?;
+
+    let undo_dir = dir.path().join(".rustscout").join("undo");
+    fs::create_dir_all(&undo_dir)?;
+
+    let pattern_def = PatternDefinition {
+        text: "Hello".to_string(),
+        is_regex: false,
+        boundary_mode: WordBoundaryMode::None,
+        hyphen_handling: HyphenHandling::default(),
+        replacement: Some("Hi".to_string()),
+        capture_template: None,
+    };
+
+    let config = ReplacementConfig {
+        patterns: vec![pattern_def],
+        backup_enabled: false,
+        dry_run: false,
+        ..Default::default()
+    };
+
+    let mut plan = FileReplacementPlan::new(test_file.clone())?;
+    for i in 0..1000 {
+        plan.add_replacement(ReplacementTask::new(
+            test_file.clone(),
+            (i * 13, i * 13 + 5),
+            "Hi".to_string(),
+            config.clone(),
+        ))?;
+    }
+
+    let mut replacement_set = ReplacementSet::new(config);
+    replacement_set.add_plan(plan);
+    replacement_set.apply()?;
+
+    let expected_content = "Hi world! ".repeat(1000);
+    assert_eq!(fs::read_to_string(&test_file)?, expected_content);
     Ok(())
 }

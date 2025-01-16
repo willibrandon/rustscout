@@ -6,7 +6,7 @@ use rustscout::{
     replace::{ReplacementConfig, ReplacementSet, UndoInfo},
     results::SearchResult,
     search,
-    search::matcher::{PatternDefinition, WordBoundaryMode},
+    search::matcher::{PatternDefinition, WordBoundaryMode, HyphenHandling},
     SearchError,
 };
 use std::{num::NonZeroUsize, path::PathBuf};
@@ -98,9 +98,25 @@ enum Commands {
 
     /// Replace patterns in files
     Replace {
-        /// Configuration file for replacements
-        #[arg(short, long)]
-        config: PathBuf,
+        /// Pattern to search for
+        #[arg(short = 'p', long = "pattern")]
+        pattern: String,
+
+        /// Replacement text
+        #[arg(short = 'r', long = "replacement")]
+        replacement: String,
+
+        /// Treat the pattern as a regular expression
+        #[arg(long)]
+        regex: bool,
+
+        /// Match whole words only
+        #[arg(short = 'w', long = "word-boundary")]
+        word_boundary: bool,
+
+        /// Hyphen handling mode (boundary|joining)
+        #[arg(long, default_value = "boundary")]
+        hyphen_handling: String,
 
         /// Dry run - show what would be changed without making changes
         #[arg(short = 'n', long)]
@@ -109,6 +125,10 @@ enum Commands {
         /// Number of threads to use
         #[arg(short = 'j', long)]
         threads: Option<NonZeroUsize>,
+
+        /// Enable backups
+        #[arg(long)]
+        backup_enabled: bool,
     },
 
     /// List available undo operations
@@ -177,8 +197,6 @@ fn run() -> Result<()> {
 
             let search_config = SearchConfig {
                 pattern_definitions: pattern_defs,
-                patterns: Vec::new(),   // Legacy field, not used
-                pattern: String::new(), // Legacy field, not used
                 root_path: config.root,
                 file_extensions,
                 ignore_patterns: config.ignore,
@@ -202,11 +220,40 @@ fn run() -> Result<()> {
             Ok(())
         }
         Commands::Replace {
-            config,
+            pattern,
+            replacement,
+            regex,
+            word_boundary,
+            hyphen_handling,
             dry_run,
             threads: _,
+            backup_enabled,
         } => {
-            let config = ReplacementConfig::load_from(&config)?;
+            let hyphen_mode = match hyphen_handling.as_str() {
+                "joining" => HyphenHandling::Joining,
+                _ => HyphenHandling::Boundary,
+            };
+
+            let pattern_def = PatternDefinition {
+                text: pattern,
+                is_regex: regex,
+                boundary_mode: if word_boundary {
+                    WordBoundaryMode::WholeWords
+                } else {
+                    WordBoundaryMode::None
+                },
+                hyphen_handling: hyphen_mode,
+                replacement: Some(replacement),
+                capture_template: None,
+            };
+
+            let config = ReplacementConfig {
+                patterns: vec![pattern_def],
+                backup_enabled,
+                dry_run,
+                ..Default::default()
+            };
+
             let set = ReplacementSet::new(config.clone());
             set.apply()?;
             print_replacement_results(&set, dry_run);

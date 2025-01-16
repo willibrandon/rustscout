@@ -1,5 +1,6 @@
 use crate::errors::{SearchError, SearchResult};
 use crate::metrics::MemoryMetrics;
+use crate::search::matcher::{PatternDefinition, PatternMatcher};
 use indicatif::{ProgressBar, ProgressStyle};
 use memmap2::MmapOptions;
 use rayon::prelude::*;
@@ -19,15 +20,6 @@ const LARGE_FILE_THRESHOLD: u64 = 10 * 1024 * 1024; // 10MB
 /// Configuration for replacement operations
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplacementConfig {
-    /// The pattern to search for (supports regex)
-    pub pattern: String,
-
-    /// The text to replace matches with
-    pub replacement: String,
-
-    /// Whether the pattern is a regex
-    pub is_regex: bool,
-
     /// Whether to create backups of modified files
     pub backup_enabled: bool,
 
@@ -40,11 +32,11 @@ pub struct ReplacementConfig {
     /// Whether to preserve file permissions and timestamps
     pub preserve_metadata: bool,
 
-    /// Capture groups for regex replacement
-    pub capture_groups: Option<String>,
-
     /// Directory for storing undo information
     pub undo_dir: PathBuf,
+
+    /// Pattern definitions for replacements
+    pub patterns: Vec<PatternDefinition>,
 }
 
 impl ReplacementConfig {
@@ -56,16 +48,9 @@ impl ReplacementConfig {
 
     pub fn merge_with_cli(&mut self, cli_config: ReplacementConfig) {
         // CLI options take precedence over config file
-        if !cli_config.pattern.is_empty() {
-            self.pattern = cli_config.pattern;
+        if !cli_config.patterns.is_empty() {
+            self.patterns = cli_config.patterns;
         }
-        if !cli_config.replacement.is_empty() {
-            self.replacement = cli_config.replacement;
-        }
-        if cli_config.capture_groups.is_some() {
-            self.capture_groups = cli_config.capture_groups;
-        }
-        self.is_regex |= cli_config.is_regex;
         self.backup_enabled |= cli_config.backup_enabled;
         self.dry_run |= cli_config.dry_run;
         if cli_config.backup_dir.is_some() {
@@ -108,18 +93,20 @@ impl ReplacementTask {
 
     pub fn validate(&self) -> SearchResult<()> {
         // Check empty pattern
-        if self.config.pattern.trim().is_empty() {
+        if self.config.patterns.is_empty() {
             return Err(SearchError::invalid_pattern("Pattern cannot be empty"));
         }
 
         // Validate regex if enabled
-        if self.config.is_regex {
-            let test_regex = regex::Regex::new(&self.config.pattern)
-                .map_err(|e| SearchError::invalid_pattern(e.to_string()))?;
+        for pattern in &self.config.patterns {
+            if pattern.is_regex {
+                let test_regex = regex::Regex::new(&pattern.text)
+                    .map_err(|e| SearchError::invalid_pattern(e.to_string()))?;
 
-            // Validate capture groups if provided
-            if let Some(ref capture_fmt) = self.config.capture_groups {
-                validate_capture_groups(&test_regex, capture_fmt)?;
+                // Validate capture groups if provided
+                if let Some(ref capture_fmt) = pattern.capture_template {
+                    validate_capture_groups(&test_regex, capture_fmt)?;
+                }
             }
         }
         Ok(())
@@ -129,20 +116,22 @@ impl ReplacementTask {
         // Validate before applying
         self.validate()?;
 
-        if self.config.is_regex {
-            let regex = regex::Regex::new(&self.config.pattern)
-                .map_err(|e| SearchError::invalid_pattern(e.to_string()))?;
+        let mut new_content = content.to_string();
+        for pattern in &self.config.patterns {
+            if pattern.is_regex {
+                let regex = regex::Regex::new(&pattern.text)
+                    .map_err(|e| SearchError::invalid_pattern(e.to_string()))?;
 
-            if let Some(capture_fmt) = &self.config.capture_groups {
-                Ok(regex.replace_all(content, capture_fmt).into_owned())
+                if let Some(capture_fmt) = &pattern.capture_template {
+                    new_content = regex.replace_all(&new_content, capture_fmt).into_owned();
+                } else {
+                    new_content = regex.replace_all(&new_content, &pattern.replacement.clone().unwrap_or_default()).into_owned();
+                }
             } else {
-                Ok(regex
-                    .replace_all(content, &self.config.replacement)
-                    .into_owned())
+                new_content = new_content.replace(&pattern.text, &pattern.replacement.clone().unwrap_or_default());
             }
-        } else {
-            Ok(content.replace(&self.config.pattern, &self.config.replacement))
         }
+        Ok(new_content)
     }
 }
 
@@ -290,7 +279,8 @@ impl FileReplacementPlan {
                     timestamp,
                     description: format!(
                         "Replace '{}' with '{}'",
-                        config.pattern, config.replacement
+                        config.patterns.iter().map(|p| &p.text).collect::<Vec<_>>().join(", "),
+                        config.patterns.iter().map(|p| p.replacement.clone().unwrap_or_default()).collect::<Vec<_>>().join(", ")
                     ),
                     backups: vec![(self.file_path.clone(), backup.clone())],
                     total_size: fs::metadata(backup).map(|m| m.len()).unwrap_or(0),
@@ -772,7 +762,8 @@ impl ReplacementSet {
 
             let description = format!(
                 "Replace '{}' with '{}'",
-                self.config.pattern, self.config.replacement
+                self.config.patterns.iter().map(|p| &p.text).collect::<Vec<_>>().join(", "),
+                self.config.patterns.iter().map(|p| p.replacement.clone().unwrap_or_default()).collect::<Vec<_>>().join(", ")
             );
 
             let total_size: u64 = backup_paths
@@ -868,7 +859,8 @@ impl ReplacementSet {
             timestamp,
             description: format!(
                 "Replace '{}' with '{}'",
-                self.config.pattern, self.config.replacement
+                self.config.patterns.iter().map(|p| &p.text).collect::<Vec<_>>().join(", "),
+                self.config.patterns.iter().map(|p| p.replacement.clone().unwrap_or_default()).collect::<Vec<_>>().join(", ")
             ),
             backups: backups.to_vec(),
             total_size: backups
@@ -963,39 +955,40 @@ mod tests {
     #[test]
     fn test_replacement_config_merge() {
         let mut base_config = ReplacementConfig {
-            pattern: "old".to_string(),
-            replacement: "new".to_string(),
-            is_regex: false,
             backup_enabled: false,
             dry_run: false,
             backup_dir: None,
             preserve_metadata: false,
-            capture_groups: None,
             undo_dir: PathBuf::from("undo"),
+            patterns: vec![],
         };
 
         let cli_config = ReplacementConfig {
-            pattern: "cli_pattern".to_string(),
-            replacement: "cli_replacement".to_string(),
-            is_regex: true,
             backup_enabled: true,
             dry_run: true,
             backup_dir: Some(PathBuf::from("backup")),
             preserve_metadata: true,
-            capture_groups: Some("$1".to_string()),
             undo_dir: PathBuf::from("cli_undo"),
+            patterns: vec![PatternDefinition {
+                text: "cli_pattern".to_string(),
+                is_regex: true,
+                boundary_mode: crate::search::matcher::WordBoundaryMode::None,
+                hyphen_handling: crate::search::matcher::HyphenHandling::default(),
+                replacement: Some("cli_replacement".to_string()),
+                capture_template: None,
+            }],
         };
 
         base_config.merge_with_cli(cli_config);
 
-        assert_eq!(base_config.pattern, "cli_pattern");
-        assert_eq!(base_config.replacement, "cli_replacement");
-        assert!(base_config.is_regex);
+        assert_eq!(base_config.patterns.len(), 1);
+        assert_eq!(base_config.patterns[0].text, "cli_pattern");
+        assert_eq!(base_config.patterns[0].replacement, Some("cli_replacement".to_string()));
+        assert!(base_config.patterns[0].is_regex);
         assert!(base_config.backup_enabled);
         assert!(base_config.dry_run);
         assert_eq!(base_config.backup_dir, Some(PathBuf::from("backup")));
         assert!(base_config.preserve_metadata);
-        assert_eq!(base_config.capture_groups, Some("$1".to_string()));
     }
 
     #[test]
@@ -1011,15 +1004,19 @@ mod tests {
         fs::write(&file_path, "test content").map_err(SearchError::IoError)?;
 
         let config = ReplacementConfig {
-            pattern: "test".to_string(),
-            replacement: "replaced".to_string(),
-            is_regex: false,
             backup_enabled: true,
             dry_run: false,
             backup_dir: Some(dir.path().to_path_buf()),
             preserve_metadata: false,
-            capture_groups: None,
             undo_dir: dir.path().to_path_buf(),
+            patterns: vec![PatternDefinition {
+                text: "test".to_string(),
+                is_regex: false,
+                boundary_mode: crate::search::matcher::WordBoundaryMode::None,
+                hyphen_handling: crate::search::matcher::HyphenHandling::default(),
+                replacement: Some("replaced".to_string()),
+                capture_template: None,
+            }],
         };
 
         let mut plan = FileReplacementPlan::new(file_path.clone())?;
@@ -1058,15 +1055,19 @@ mod tests {
         fs::write(&file_path, original_content).map_err(SearchError::IoError)?;
 
         let config = ReplacementConfig {
-            pattern: "test".to_string(),
-            replacement: "replaced".to_string(),
-            is_regex: false,
             backup_enabled: true,
             dry_run: true,
             backup_dir: Some(dir.path().to_path_buf()),
             preserve_metadata: false,
-            capture_groups: None,
             undo_dir: dir.path().to_path_buf(),
+            patterns: vec![PatternDefinition {
+                text: "test".to_string(),
+                is_regex: false,
+                boundary_mode: crate::search::matcher::WordBoundaryMode::None,
+                hyphen_handling: crate::search::matcher::HyphenHandling::default(),
+                replacement: Some("replaced".to_string()),
+                capture_template: None,
+            }],
         };
 
         let mut plan = FileReplacementPlan::new(file_path.clone())?;
@@ -1099,15 +1100,19 @@ mod tests {
         fs::write(&file_path, "fn test_func() {}").map_err(SearchError::IoError)?;
 
         let config = ReplacementConfig {
-            pattern: r"fn (\w+)\(\)".to_string(),
-            replacement: "fn new_$1()".to_string(),
-            is_regex: true,
             backup_enabled: false,
             dry_run: false,
             backup_dir: None,
             preserve_metadata: false,
-            capture_groups: Some("$1".to_string()),
             undo_dir: dir.path().to_path_buf(),
+            patterns: vec![PatternDefinition {
+                text: r"fn (\w+)\(\)".to_string(),
+                is_regex: true,
+                boundary_mode: crate::search::matcher::WordBoundaryMode::None,
+                hyphen_handling: crate::search::matcher::HyphenHandling::default(),
+                replacement: Some("fn new_$1()".to_string()),
+                capture_template: Some("$1".to_string()),
+            }],
         };
 
         let mut plan = FileReplacementPlan::new(file_path.clone())?;
@@ -1139,15 +1144,19 @@ mod tests {
         fs::write(&file_path, "test content").map_err(SearchError::IoError)?;
 
         let config = ReplacementConfig {
-            pattern: "[invalid".to_string(),
-            replacement: "replacement".to_string(),
-            is_regex: true,
             backup_enabled: false,
             dry_run: false,
             backup_dir: None,
             preserve_metadata: false,
-            capture_groups: None,
             undo_dir: dir.path().to_path_buf(),
+            patterns: vec![PatternDefinition {
+                text: "[invalid".to_string(),
+                is_regex: true,
+                boundary_mode: crate::search::matcher::WordBoundaryMode::None,
+                hyphen_handling: crate::search::matcher::HyphenHandling::default(),
+                replacement: Some("replacement".to_string()),
+                capture_template: None,
+            }],
         };
 
         let mut plan = FileReplacementPlan::new(file_path.clone())?;
@@ -1178,15 +1187,19 @@ mod tests {
         fs::write(&file_path, "test content").map_err(SearchError::IoError)?;
 
         let config = ReplacementConfig {
-            pattern: r"(\w+)".to_string(),
-            replacement: "$2".to_string(), // Reference to non-existent capture group
-            is_regex: true,
             backup_enabled: false,
             dry_run: false,
             backup_dir: None,
             preserve_metadata: false,
-            capture_groups: Some("$2".to_string()),
             undo_dir: dir.path().to_path_buf(),
+            patterns: vec![PatternDefinition {
+                text: r"(\w+)".to_string(),
+                is_regex: true,
+                boundary_mode: crate::search::matcher::WordBoundaryMode::None,
+                hyphen_handling: crate::search::matcher::HyphenHandling::default(),
+                replacement: Some("$2".to_string()), // Reference to non-existent capture group
+                capture_template: Some("$2".to_string()),
+            }],
         };
 
         let mut plan = FileReplacementPlan::new(file_path.clone())?;
@@ -1223,15 +1236,19 @@ mod tests {
         fs::set_permissions(&file_path, perms).map_err(SearchError::IoError)?;
 
         let config = ReplacementConfig {
-            pattern: "test".to_string(),
-            replacement: "replaced".to_string(),
-            is_regex: false,
             backup_enabled: false,
             dry_run: false,
             backup_dir: None,
             preserve_metadata: true,
-            capture_groups: None,
             undo_dir: dir.path().to_path_buf(),
+            patterns: vec![PatternDefinition {
+                text: "test".to_string(),
+                is_regex: false,
+                boundary_mode: crate::search::matcher::WordBoundaryMode::None,
+                hyphen_handling: crate::search::matcher::HyphenHandling::default(),
+                replacement: Some("replaced".to_string()),
+                capture_template: None,
+            }],
         };
 
         let mut plan = FileReplacementPlan::new(file_path.clone())?;
@@ -1269,15 +1286,19 @@ mod tests {
         fs::write(&file_path, "test test test").map_err(SearchError::IoError)?;
 
         let config = ReplacementConfig {
-            pattern: "test".to_string(),
-            replacement: "replaced".to_string(),
-            is_regex: false,
             backup_enabled: false,
             dry_run: false,
             backup_dir: None,
             preserve_metadata: false,
-            capture_groups: None,
             undo_dir: dir.path().to_path_buf(),
+            patterns: vec![PatternDefinition {
+                text: "test".to_string(),
+                is_regex: false,
+                boundary_mode: crate::search::matcher::WordBoundaryMode::None,
+                hyphen_handling: crate::search::matcher::HyphenHandling::default(),
+                replacement: Some("replaced".to_string()),
+                capture_template: None,
+            }],
         };
 
         let mut plan = FileReplacementPlan::new(file_path.clone())?;
@@ -1323,15 +1344,12 @@ mod tests {
         fs::write(&file_path, "test content").map_err(SearchError::IoError)?;
 
         let config = ReplacementConfig {
-            pattern: "".to_string(),
-            replacement: "something".to_string(),
-            is_regex: false,
             backup_enabled: false,
             dry_run: false,
             backup_dir: None,
             preserve_metadata: false,
-            capture_groups: None,
             undo_dir: dir.path().to_path_buf(),
+            patterns: vec![],
         };
 
         let mut plan = FileReplacementPlan::new(file_path.clone())?;
@@ -1359,15 +1377,19 @@ mod tests {
         fs::write(&file_path, "test content").map_err(SearchError::IoError)?;
 
         let config = ReplacementConfig {
-            pattern: "test".to_string(),
-            replacement: "replaced".to_string(),
-            is_regex: false,
             backup_enabled: false,
             dry_run: false,
             backup_dir: None,
             preserve_metadata: false,
-            capture_groups: None,
             undo_dir: dir.path().to_path_buf(),
+            patterns: vec![PatternDefinition {
+                text: "test".to_string(),
+                is_regex: false,
+                boundary_mode: crate::search::matcher::WordBoundaryMode::None,
+                hyphen_handling: crate::search::matcher::HyphenHandling::default(),
+                replacement: Some("replaced".to_string()),
+                capture_template: None,
+            }],
         };
 
         let mut plan = FileReplacementPlan::new(file_path.clone())?;
@@ -1410,15 +1432,19 @@ mod tests {
         fs::write(&file_path, original_content).map_err(SearchError::IoError)?;
 
         let config = ReplacementConfig {
-            pattern: "test".to_string(),
-            replacement: "replaced".to_string(),
-            is_regex: false,
             backup_enabled: true,
             dry_run: false,
             backup_dir: Some(dir.path().to_path_buf()),
             preserve_metadata: false,
-            capture_groups: None,
             undo_dir: dir.path().to_path_buf(),
+            patterns: vec![PatternDefinition {
+                text: "test".to_string(),
+                is_regex: false,
+                boundary_mode: crate::search::matcher::WordBoundaryMode::None,
+                hyphen_handling: crate::search::matcher::HyphenHandling::default(),
+                replacement: Some("replaced".to_string()),
+                capture_template: None,
+            }],
         };
 
         let mut plan = FileReplacementPlan::new(file_path.clone())?;
@@ -1462,15 +1488,19 @@ mod tests {
         fs::write(&file_path, original_content).map_err(SearchError::IoError)?;
 
         let config = ReplacementConfig {
-            pattern: "test".to_string(),
-            replacement: "replaced".to_string(),
-            is_regex: false,
             backup_enabled: false,
             dry_run: false,
             backup_dir: None,
             preserve_metadata: false,
-            capture_groups: None,
             undo_dir: dir.path().to_path_buf(),
+            patterns: vec![PatternDefinition {
+                text: "test".to_string(),
+                is_regex: false,
+                boundary_mode: crate::search::matcher::WordBoundaryMode::None,
+                hyphen_handling: crate::search::matcher::HyphenHandling::default(),
+                replacement: Some("replaced".to_string()),
+                capture_template: None,
+            }],
         };
 
         let mut plan = FileReplacementPlan::new(file_path.clone())?;
@@ -1524,15 +1554,19 @@ mod tests {
 
         let backup_dir = dir.path().join("backups");
         let config = ReplacementConfig {
-            pattern: "test".to_string(),
-            replacement: "replaced".to_string(),
-            is_regex: false,
             backup_enabled: true,
             dry_run: false,
             backup_dir: Some(backup_dir.clone()),
             preserve_metadata: false,
-            capture_groups: None,
             undo_dir: dir.path().to_path_buf(),
+            patterns: vec![PatternDefinition {
+                text: "test".to_string(),
+                is_regex: false,
+                boundary_mode: crate::search::matcher::WordBoundaryMode::None,
+                hyphen_handling: crate::search::matcher::HyphenHandling::default(),
+                replacement: Some("replaced".to_string()),
+                capture_template: None,
+            }],
         };
 
         let mut plan = FileReplacementPlan::new(file_path.clone())?;
@@ -1565,15 +1599,19 @@ mod tests {
         fs::write(&file_path, &content).map_err(SearchError::IoError)?;
 
         let config = ReplacementConfig {
-            pattern: "test".to_string(),
-            replacement: "replaced".to_string(),
-            is_regex: false,
             backup_enabled: false,
             dry_run: false,
             backup_dir: None,
             preserve_metadata: false,
-            capture_groups: None,
             undo_dir: dir.path().to_path_buf(),
+            patterns: vec![PatternDefinition {
+                text: "test".to_string(),
+                is_regex: false,
+                boundary_mode: crate::search::matcher::WordBoundaryMode::None,
+                hyphen_handling: crate::search::matcher::HyphenHandling::default(),
+                replacement: Some("replaced".to_string()),
+                capture_template: None,
+            }],
         };
 
         let metrics = Arc::new(MemoryMetrics::new());
