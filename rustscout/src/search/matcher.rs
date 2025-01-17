@@ -112,7 +112,8 @@ impl PatternMatcher {
 
     /// Checks if a regex pattern already contains boundary tokens
     fn contains_boundary_tokens(pattern: &str) -> bool {
-        pattern.contains("\\b") || pattern.contains("^") || pattern.contains("$")
+        pattern.contains("\\b") || pattern.contains("^") || pattern.contains("$") || 
+        pattern.contains(r"\B") || pattern.contains(r"\<") || pattern.contains(r"\>")
     }
 
     /// Creates a new PatternMatcher with the specified metrics
@@ -145,12 +146,22 @@ impl PatternMatcher {
                         // Special handling for café test case
                         if pattern.text.starts_with("café\\s+\\w+") {
                             r"(?u)café(?:\s+|\d*)\w+".to_string()
-                        } else if pattern.boundary_mode == WordBoundaryMode::WholeWords
-                            && !Self::contains_boundary_tokens(&pattern.text)
-                        {
-                            format!(r"(?u)\b(?:{})\b", pattern.text)
                         } else {
-                            format!(r"(?u){}", pattern.text)
+                            // Only add word boundaries if:
+                            // 1. WholeWords mode is requested
+                            // 2. Pattern doesn't already have boundary tokens
+                            // 3. Pattern doesn't contain alternation or groups that would be affected
+                            let needs_boundaries = pattern.boundary_mode == WordBoundaryMode::WholeWords 
+                                && !Self::contains_boundary_tokens(&pattern.text)
+                                && !pattern.text.contains('|')  // No alternation
+                                && !pattern.text.contains("(?:") // No non-capturing groups
+                                && !pattern.text.contains('('); // No capturing groups
+
+                            if needs_boundaries {
+                                format!(r"(?u)\b(?:{})\b", pattern.text)
+                            } else {
+                                format!(r"(?u){}", pattern.text)
+                            }
                         }
                     } else {
                         match pattern.boundary_mode {
@@ -944,6 +955,53 @@ mod tests {
                 "Partial mode failed for pattern '{}' in text '{}': {}",
                 pattern,
                 text,
+                comment
+            );
+        }
+    }
+
+    #[test]
+    fn test_regex_boundary_handling() {
+        let metrics = Arc::new(MemoryMetrics::new());
+
+        // Test cases: (pattern, is_regex, boundary_mode, text, expected_matches, comment)
+        let test_cases = vec![
+            // User-supplied boundary tokens should be respected
+            (r"\bYOLO\b", true, WordBoundaryMode::WholeWords, "YOLO test", 1, "Explicit boundary tokens respected"),
+            (r"\bYOLO\b", true, WordBoundaryMode::None, "YOLO test", 1, "Boundary tokens respected even in None mode"),
+            
+            // Complex regex patterns should not get auto-wrapped
+            (r"(YOLO)+", true, WordBoundaryMode::WholeWords, "YOLOYOLO test", 1, "Group not wrapped with boundaries"),
+            (r"YOLO|FOMO", true, WordBoundaryMode::WholeWords, "YOLO test FOMO", 2, "Alternation not wrapped"),
+            (r"(?:YOLO){2}", true, WordBoundaryMode::WholeWords, "YOLOYOLO test", 1, "Non-capturing group not wrapped"),
+            
+            // Partial mode should not add boundaries
+            (r"YOLO", true, WordBoundaryMode::Partial, "YOLOYOLO", 2, "Partial mode allows internal matches"),
+            
+            // Edge cases
+            (r"\BYOLO", true, WordBoundaryMode::WholeWords, "testYOLO", 1, "Custom boundary token \\B respected"),
+            (r"^\w+YOLO$", true, WordBoundaryMode::WholeWords, "testYOLO", 1, "Start/end anchors respected"),
+            (r"\<YOLO\>", true, WordBoundaryMode::WholeWords, "YOLO test", 1, "Word boundary alternatives respected"),
+        ];
+
+        for (pattern, is_regex, boundary_mode, text, expected_matches, comment) in test_cases {
+            let matcher = PatternMatcher::with_metrics(
+                vec![PatternDefinition {
+                    text: pattern.to_string(),
+                    is_regex,
+                    boundary_mode,
+                    hyphen_mode: HyphenMode::default(),
+                }],
+                metrics.clone(),
+            );
+
+            let matches = matcher.find_matches(text);
+            assert_eq!(
+                matches.len(),
+                expected_matches,
+                "Failed for pattern '{}' with boundary_mode {:?}: {}",
+                pattern,
+                boundary_mode,
                 comment
             );
         }
