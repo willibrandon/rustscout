@@ -1,5 +1,7 @@
 use anyhow::Result;
-use rustscout::replace::{FileReplacementPlan, ReplacementConfig, ReplacementSet, ReplacementTask};
+use rustscout::replace::{
+    FileReplacementPlan, ReplacementConfig, ReplacementPattern, ReplacementSet, ReplacementTask,
+};
 use rustscout::search::matcher::{HyphenHandling, PatternDefinition, WordBoundaryMode};
 use std::fs;
 use std::path::Path;
@@ -22,13 +24,15 @@ fn test_replace_basic() -> Result<()> {
     fs::create_dir_all(&undo_dir)?;
 
     let config = ReplacementConfig {
-        pattern_definitions: vec![PatternDefinition {
-            text: "Hello".to_string(),
-            is_regex: false,
-            boundary_mode: WordBoundaryMode::None,
-            hyphen_handling: HyphenHandling::Joining,
+        patterns: vec![ReplacementPattern {
+            definition: PatternDefinition {
+                text: "Hello".to_string(),
+                is_regex: false,
+                boundary_mode: WordBoundaryMode::None,
+                hyphen_handling: HyphenHandling::Joining,
+            },
+            replacement_text: "World".to_string(),
         }],
-        replacement: "World".to_string(),
         backup_enabled: true,
         dry_run: false,
         backup_dir: None,
@@ -41,6 +45,7 @@ fn test_replace_basic() -> Result<()> {
         dir.path().join("test.txt"),
         (0, 5),
         "World".to_string(),
+        0,
         config.clone(),
     ))?;
 
@@ -67,13 +72,15 @@ fn test_replace_with_backup() -> Result<()> {
     create_test_files(&dir, &[("test.txt", "Hello world")])?;
 
     let config = ReplacementConfig {
-        pattern_definitions: vec![PatternDefinition {
-            text: "Hello".to_string(),
-            is_regex: false,
-            boundary_mode: WordBoundaryMode::None,
-            hyphen_handling: HyphenHandling::Joining,
+        patterns: vec![ReplacementPattern {
+            definition: PatternDefinition {
+                text: "Hello".to_string(),
+                is_regex: false,
+                boundary_mode: WordBoundaryMode::None,
+                hyphen_handling: HyphenHandling::Joining,
+            },
+            replacement_text: "World".to_string(),
         }],
-        replacement: "World".to_string(),
         backup_enabled: true,
         dry_run: false,
         backup_dir: Some(backup_dir.clone()),
@@ -86,6 +93,7 @@ fn test_replace_with_backup() -> Result<()> {
         dir.path().join("test.txt"),
         (0, 5),
         "World".to_string(),
+        0,
         config.clone(),
     ))?;
 
@@ -117,13 +125,15 @@ fn test_replace_dry_run() -> Result<()> {
     fs::create_dir_all(&undo_dir)?;
 
     let config = ReplacementConfig {
-        pattern_definitions: vec![PatternDefinition {
-            text: "Hello".to_string(),
-            is_regex: false,
-            boundary_mode: WordBoundaryMode::None,
-            hyphen_handling: HyphenHandling::Joining,
+        patterns: vec![ReplacementPattern {
+            definition: PatternDefinition {
+                text: "Hello".to_string(),
+                is_regex: false,
+                boundary_mode: WordBoundaryMode::None,
+                hyphen_handling: HyphenHandling::Joining,
+            },
+            replacement_text: "World".to_string(),
         }],
-        replacement: "World".to_string(),
         backup_enabled: true,
         dry_run: true,
         backup_dir: None,
@@ -136,6 +146,7 @@ fn test_replace_dry_run() -> Result<()> {
         test_file.clone(),
         (0, 5),
         "World".to_string(),
+        0,
         config.clone(),
     ))?;
 
@@ -158,13 +169,15 @@ fn test_replace_preview() -> Result<()> {
     fs::create_dir_all(&undo_dir)?;
 
     let config = ReplacementConfig {
-        pattern_definitions: vec![PatternDefinition {
-            text: "Hello".to_string(),
-            is_regex: false,
-            boundary_mode: WordBoundaryMode::None,
-            hyphen_handling: HyphenHandling::Joining,
+        patterns: vec![ReplacementPattern {
+            definition: PatternDefinition {
+                text: "Hello".to_string(),
+                is_regex: false,
+                boundary_mode: WordBoundaryMode::None,
+                hyphen_handling: HyphenHandling::Joining,
+            },
+            replacement_text: "World".to_string(),
         }],
-        replacement: "World".to_string(),
         backup_enabled: true,
         dry_run: false,
         backup_dir: None,
@@ -177,12 +190,14 @@ fn test_replace_preview() -> Result<()> {
         test_file.clone(),
         (0, 5),
         "World".to_string(),
+        0,
         config.clone(),
     ))?;
     plan.add_replacement(ReplacementTask::new(
         test_file.clone(),
         (13, 18),
         "World".to_string(),
+        0,
         config.clone(),
     ))?;
 
@@ -210,13 +225,15 @@ fn test_replace_undo_list() -> Result<()> {
     fs::create_dir_all(&undo_dir)?;
 
     let config = ReplacementConfig {
-        pattern_definitions: vec![PatternDefinition {
-            text: "Hello".to_string(),
-            is_regex: false,
-            boundary_mode: WordBoundaryMode::None,
-            hyphen_handling: HyphenHandling::Joining,
+        patterns: vec![ReplacementPattern {
+            definition: PatternDefinition {
+                text: "Hello".to_string(),
+                is_regex: false,
+                boundary_mode: WordBoundaryMode::None,
+                hyphen_handling: HyphenHandling::Joining,
+            },
+            replacement_text: "World".to_string(),
         }],
-        replacement: "World".to_string(),
         backup_enabled: true,
         dry_run: false,
         backup_dir: None,
@@ -229,6 +246,7 @@ fn test_replace_undo_list() -> Result<()> {
         test_file.clone(),
         (0, 5),
         "World".to_string(),
+        0,
         config.clone(),
     ))?;
 
@@ -257,13 +275,15 @@ fn test_replace_undo_restore() -> Result<()> {
     fs::create_dir_all(&undo_dir)?;
 
     let config = ReplacementConfig {
-        pattern_definitions: vec![PatternDefinition {
-            text: "Hello".to_string(),
-            is_regex: false,
-            boundary_mode: WordBoundaryMode::None,
-            hyphen_handling: HyphenHandling::Joining,
+        patterns: vec![ReplacementPattern {
+            definition: PatternDefinition {
+                text: "Hello".to_string(),
+                is_regex: false,
+                boundary_mode: WordBoundaryMode::None,
+                hyphen_handling: HyphenHandling::Joining,
+            },
+            replacement_text: "World".to_string(),
         }],
-        replacement: "World".to_string(),
         backup_enabled: true,
         dry_run: false,
         backup_dir: None,
@@ -276,6 +296,7 @@ fn test_replace_undo_restore() -> Result<()> {
         test_file.clone(),
         (0, 5),
         "World".to_string(),
+        0,
         config.clone(),
     ))?;
 

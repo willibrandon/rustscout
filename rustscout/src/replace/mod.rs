@@ -17,14 +17,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const SMALL_FILE_THRESHOLD: u64 = 32 * 1024; // 32KB
 const LARGE_FILE_THRESHOLD: u64 = 10 * 1024 * 1024; // 10MB
 
+/// A pattern and its replacement text
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplacementPattern {
+    /// The pattern definition
+    pub definition: PatternDefinition,
+    /// The text to replace matches with
+    pub replacement_text: String,
+}
+
 /// Configuration for replacement operations
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplacementConfig {
-    /// The patterns to search for and replace
-    pub pattern_definitions: Vec<PatternDefinition>,
-
-    /// The text to replace matches with
-    pub replacement: String,
+    /// The patterns and their replacements
+    pub patterns: Vec<ReplacementPattern>,
 
     /// Whether to create backups of modified files
     pub backup_enabled: bool,
@@ -51,11 +57,8 @@ impl ReplacementConfig {
 
     pub fn merge_with_cli(&mut self, cli_config: ReplacementConfig) {
         // CLI options take precedence over config file
-        if !cli_config.pattern_definitions.is_empty() {
-            self.pattern_definitions = cli_config.pattern_definitions;
-        }
-        if !cli_config.replacement.is_empty() {
-            self.replacement = cli_config.replacement;
+        if !cli_config.patterns.is_empty() {
+            self.patterns = cli_config.patterns;
         }
         self.backup_enabled |= cli_config.backup_enabled;
         self.dry_run |= cli_config.dry_run;
@@ -78,6 +81,9 @@ pub struct ReplacementTask {
     /// The text to insert in place of the matched range
     pub replacement_text: String,
 
+    /// The pattern definition that matched
+    pub pattern_index: usize,
+
     /// The configuration for this replacement operation
     pub config: ReplacementConfig,
 }
@@ -87,56 +93,60 @@ impl ReplacementTask {
         file_path: PathBuf,
         original_range: (usize, usize),
         replacement_text: String,
+        pattern_index: usize,
         config: ReplacementConfig,
     ) -> Self {
         Self {
             file_path,
             original_range,
             replacement_text,
+            pattern_index,
             config,
         }
     }
 
     pub fn validate(&self) -> SearchResult<()> {
         // Check empty pattern
-        if self.config.pattern_definitions.is_empty() {
+        if self.config.patterns.is_empty() {
             return Err(SearchError::invalid_pattern("Pattern cannot be empty"));
         }
 
-        // Get the first pattern definition
-        let pattern_def = &self.config.pattern_definitions[0];
+        // Get the pattern definition
+        let pattern = &self.config.patterns[self.pattern_index];
 
         // Validate regex if enabled
-        if pattern_def.is_regex {
-            let test_regex = regex::Regex::new(&pattern_def.text)
+        if pattern.definition.is_regex {
+            let test_regex = regex::Regex::new(&pattern.definition.text)
                 .map_err(|e| SearchError::invalid_pattern(e.to_string()))?;
 
             // If word boundary is enabled, ensure the pattern has proper boundary markers
-            if matches!(pattern_def.boundary_mode, WordBoundaryMode::WholeWords) {
+            if matches!(
+                pattern.definition.boundary_mode,
+                WordBoundaryMode::WholeWords
+            ) {
                 validate_word_boundaries(&test_regex)?;
             }
 
             // Validate capture groups
-            validate_capture_groups(&test_regex, &self.config.replacement)?;
+            validate_capture_groups(&test_regex, &pattern.replacement_text)?;
         }
         Ok(())
     }
 
-    pub fn apply(&self, content: &str) -> Result<String, SearchError> {
-        // Validate before applying
+    pub fn apply(&self, content: &str) -> SearchResult<String> {
         self.validate()?;
 
-        let pattern_def = &self.config.pattern_definitions[0];
+        let pattern = &self.config.patterns[self.pattern_index];
 
-        if pattern_def.is_regex {
-            let regex = regex::Regex::new(&pattern_def.text)
+        if pattern.definition.is_regex {
+            let regex = regex::Regex::new(&pattern.definition.text)
                 .map_err(|e| SearchError::invalid_pattern(e.to_string()))?;
 
             Ok(regex
-                .replace_all(content, &self.config.replacement)
+                .replace_all(content, &pattern.replacement_text)
                 .into_owned())
         } else {
-            Ok(content.replace(&pattern_def.text, &self.config.replacement))
+            Ok(content.replace(&pattern.definition.text, &pattern.replacement_text))
         }
     }
 }
@@ -227,12 +237,8 @@ impl ProcessingStrategy {
 impl FileReplacementPlan {
     /// Creates a new plan for the given file
     pub fn new(file_path: PathBuf) -> SearchResult<Self> {
-        let metadata = if fs::metadata(&file_path)
-            .map_err(SearchError::IoError)?
-            .permissions()
-            .readonly()
-        {
-            Some(fs::metadata(&file_path).map_err(SearchError::IoError)?)
+        let metadata = if let Ok(meta) = fs::metadata(&file_path) {
+            Some(meta)
         } else {
             None
         };
@@ -246,10 +252,10 @@ impl FileReplacementPlan {
 
     /// Adds a replacement task to this plan
     pub fn add_replacement(&mut self, task: ReplacementTask) -> SearchResult<()> {
-        // Validate the task
+        // Validate the task first
         task.validate()?;
 
-        // Check for overlapping ranges
+        // Check for overlapping replacements
         for existing in &self.replacements {
             if task.original_range.0 < existing.original_range.1
                 && existing.original_range.0 < task.original_range.1
@@ -260,7 +266,12 @@ impl FileReplacementPlan {
             }
         }
 
-        self.replacements.push(task);
+        // Add the task, keeping replacements sorted by range start
+        let insert_pos = self
+            .replacements
+            .binary_search_by_key(&task.original_range.0, |t| t.original_range.0)
+            .unwrap_or_else(|e| e);
+        self.replacements.insert(insert_pos, task);
         Ok(())
     }
 
@@ -270,10 +281,6 @@ impl FileReplacementPlan {
         config: &ReplacementConfig,
         metrics: &MemoryMetrics,
     ) -> SearchResult<Option<PathBuf>> {
-        if self.replacements.is_empty() {
-            return Ok(None);
-        }
-
         // Create backup if enabled
         let backup_path = if config.backup_enabled {
             self.create_backup(config)?
@@ -281,200 +288,122 @@ impl FileReplacementPlan {
             None
         };
 
-        // Apply replacements based on file size
-        let metadata = fs::metadata(&self.file_path).map_err(SearchError::IoError)?;
-        let size = metadata.len();
+        // Don't modify files in dry run mode
+        if config.dry_run {
+            return Ok(backup_path);
+        }
 
-        let result = match ProcessingStrategy::for_file_size(size) {
+        // Choose processing strategy based on file size
+        let strategy = if let Some(metadata) = &self.original_metadata {
+            ProcessingStrategy::for_file_size(metadata.len())
+        } else {
+            ProcessingStrategy::InMemory
+        };
+
+        // Apply replacements using chosen strategy
+        match strategy {
             ProcessingStrategy::InMemory => self.apply_in_memory(config, metrics),
             ProcessingStrategy::Streaming => self.apply_streaming(config, metrics),
             ProcessingStrategy::MemoryMapped => self.apply_memory_mapped(config, metrics),
-        };
+        }?;
 
-        // Handle errors and cleanup backup if needed
-        if result.is_err() {
-            if let Some(backup_path) = backup_path.as_ref() {
-                let _ = fs::copy(backup_path, &self.file_path);
-                let _ = fs::remove_file(backup_path);
+        // Restore metadata if needed
+        if config.preserve_metadata {
+            if let Some(metadata) = &self.original_metadata {
+                fs::set_permissions(&self.file_path, metadata.permissions())?;
             }
         }
 
-        result.map(|_| backup_path)
+        Ok(backup_path)
     }
 
     /// Process small files entirely in memory
     fn apply_in_memory(
         &self,
-        config: &ReplacementConfig,
+        _config: &ReplacementConfig,
         _metrics: &MemoryMetrics,
-    ) -> SearchResult<Option<PathBuf>> {
-        let content = fs::read_to_string(&self.file_path).map_err(SearchError::IoError)?;
-        let mut result = content;
+    ) -> SearchResult<()> {
+        let content = fs::read_to_string(&self.file_path)?;
+        let mut result = content.clone();
 
-        for task in &self.replacements {
-            result = task.apply(&result)?;
+        // Apply replacements in reverse order to maintain correct offsets
+        for task in self.replacements.iter().rev() {
+            result.replace_range(
+                task.original_range.0..task.original_range.1,
+                &task.replacement_text,
+            );
         }
 
-        if !config.dry_run {
-            fs::write(&self.file_path, result).map_err(SearchError::IoError)?;
+        // Write to temporary file and rename atomically
+        let tmp_path = self.file_path.with_extension("tmp");
+        fs::write(&tmp_path, result)?;
+        fs::rename(&tmp_path, &self.file_path)?;
 
-            if config.preserve_metadata {
-                if let Some(ref metadata) = self.original_metadata {
-                    fs::set_permissions(&self.file_path, metadata.permissions())
-                        .map_err(SearchError::IoError)?;
-                }
-            }
-        }
-
-        Ok(None)
+        Ok(())
     }
 
     /// Process medium files using buffered streaming I/O
     fn apply_streaming(
         &self,
-        config: &ReplacementConfig,
+        _config: &ReplacementConfig,
         _metrics: &MemoryMetrics,
-    ) -> SearchResult<Option<PathBuf>> {
-        // Create backup if enabled
-        let _backup_path = if config.backup_enabled {
-            self.create_backup(config)?
-        } else {
-            None
-        };
-
-        if config.dry_run {
-            return Ok(None);
-        }
-
-        let input_file = File::open(&self.file_path).map_err(SearchError::IoError)?;
-        let mut reader = BufReader::new(input_file);
-
+    ) -> SearchResult<()> {
+        let mut reader = BufReader::new(File::open(&self.file_path)?);
         let tmp_path = self.file_path.with_extension("tmp");
-        let output_file = File::create(&tmp_path).map_err(SearchError::IoError)?;
-        let mut writer = BufWriter::new(output_file);
+        let mut writer = BufWriter::new(File::create(&tmp_path)?);
 
-        let mut current_offset = 0u64;
-        let mut buffer = [0u8; 8192];
-
+        let mut current_pos = 0;
         for task in &self.replacements {
-            let start = task.original_range.0 as u64;
-            let end = task.original_range.1 as u64;
+            // Copy unchanged content up to the start of replacement
+            let bytes_to_copy = task.original_range.0 as u64 - current_pos;
+            let mut limited_reader = reader.by_ref().take(bytes_to_copy);
+            std::io::copy(&mut limited_reader, &mut writer)?;
 
-            // Copy bytes from current_offset to start
-            while current_offset < start {
-                let to_read = std::cmp::min(start - current_offset, buffer.len() as u64) as usize;
-
-                let bytes_read = reader
-                    .read(&mut buffer[..to_read])
-                    .map_err(SearchError::IoError)?;
-                if bytes_read == 0 {
-                    break;
-                }
-
-                writer
-                    .write_all(&buffer[..bytes_read])
-                    .map_err(SearchError::IoError)?;
-                current_offset += bytes_read as u64;
-            }
-
-            // Write replacement text
-            writer
-                .write_all(task.replacement_text.as_bytes())
-                .map_err(SearchError::IoError)?;
-
-            // Skip replaced content in input
-            reader
-                .seek(SeekFrom::Current((end - start) as i64))
-                .map_err(SearchError::IoError)?;
-            current_offset = end;
+            // Write replacement
+            writer.write_all(task.replacement_text.as_bytes())?;
+            reader.seek(SeekFrom::Start(task.original_range.1 as u64))?;
+            current_pos = task.original_range.1 as u64;
         }
 
         // Copy remaining content
-        loop {
-            let bytes_read = reader.read(&mut buffer).map_err(SearchError::IoError)?;
-            if bytes_read == 0 {
-                break;
-            }
-            writer
-                .write_all(&buffer[..bytes_read])
-                .map_err(SearchError::IoError)?;
-        }
+        std::io::copy(&mut reader, &mut writer)?;
+        writer.flush()?;
 
-        writer.flush().map_err(SearchError::IoError)?;
-        drop(writer);
+        // Atomically rename
+        fs::rename(&tmp_path, &self.file_path)?;
 
-        fs::rename(&tmp_path, &self.file_path).map_err(SearchError::IoError)?;
-
-        if config.preserve_metadata {
-            if let Some(metadata) = &self.original_metadata {
-                fs::set_permissions(&self.file_path, metadata.permissions()).ok();
-            }
-        }
-
-        Ok(None)
+        Ok(())
     }
 
     /// Process large files using memory mapping
     fn apply_memory_mapped(
         &self,
-        config: &ReplacementConfig,
+        _config: &ReplacementConfig,
         _metrics: &MemoryMetrics,
-    ) -> SearchResult<Option<PathBuf>> {
-        // Create backup if enabled
-        let _backup_path = if config.backup_enabled {
-            self.create_backup(config)?
-        } else {
-            None
-        };
+    ) -> SearchResult<()> {
+        let file = File::open(&self.file_path)?;
+        let mmap = unsafe { MmapOptions::new().map(&file)? };
 
-        if config.dry_run {
-            return Ok(None);
-        }
-
-        let file = File::open(&self.file_path).map_err(SearchError::IoError)?;
-        let mmap = unsafe { MmapOptions::new().map(&file) }.map_err(SearchError::IoError)?;
-
-        let tmp_path = self.file_path.with_extension("tmp");
-        let output_file = File::create(&tmp_path).map_err(SearchError::IoError)?;
-        let mut writer = BufWriter::new(output_file);
-
-        let mut current_offset = 0;
+        let mut result = Vec::with_capacity(mmap.len());
+        let mut current_pos = 0;
 
         for task in &self.replacements {
-            let start = task.original_range.0;
-
-            // Write unmodified content
-            writer
-                .write_all(&mmap[current_offset..start])
-                .map_err(SearchError::IoError)?;
-
+            // Copy unchanged content
+            result.extend_from_slice(&mmap[current_pos..task.original_range.0]);
             // Write replacement
-            writer
-                .write_all(task.replacement_text.as_bytes())
-                .map_err(SearchError::IoError)?;
-
-            current_offset = task.original_range.1;
+            result.extend_from_slice(task.replacement_text.as_bytes());
+            current_pos = task.original_range.1;
         }
 
-        // Write remaining content
-        if current_offset < mmap.len() {
-            writer
-                .write_all(&mmap[current_offset..])
-                .map_err(SearchError::IoError)?;
-        }
+        // Copy remaining content
+        result.extend_from_slice(&mmap[current_pos..]);
 
-        writer.flush().map_err(SearchError::IoError)?;
-        drop(writer);
+        // Write to temporary file and rename atomically
+        let tmp_path = self.file_path.with_extension("tmp");
+        fs::write(&tmp_path, result)?;
+        fs::rename(&tmp_path, &self.file_path)?;
 
-        fs::rename(&tmp_path, &self.file_path).map_err(SearchError::IoError)?;
-
-        if config.preserve_metadata {
-            if let Some(metadata) = &self.original_metadata {
-                fs::set_permissions(&self.file_path, metadata.permissions()).ok();
-            }
-        }
-
-        Ok(None)
+        Ok(())
     }
 
     /// Create a backup of the file
@@ -735,12 +664,12 @@ impl ReplacementSet {
 
             let description = format!(
                 "Replace '{}' with '{}'",
-                if !self.config.pattern_definitions.is_empty() {
-                    &self.config.pattern_definitions[0].text
+                if !self.config.patterns.is_empty() {
+                    &self.config.patterns[0].definition.text
                 } else {
                     "empty pattern"
                 },
-                self.config.replacement
+                self.config.patterns[0].replacement_text
             );
 
             let total_size: u64 = backup_paths
@@ -831,8 +760,8 @@ impl ReplacementSet {
             .unwrap()
             .as_secs();
 
-        let pattern_text = if !self.config.pattern_definitions.is_empty() {
-            &self.config.pattern_definitions[0].text
+        let pattern_text = if !self.config.patterns.is_empty() {
+            &self.config.patterns[0].definition.text
         } else {
             "empty pattern"
         };
@@ -841,7 +770,7 @@ impl ReplacementSet {
             timestamp,
             description: format!(
                 "Replace '{}' with '{}'",
-                pattern_text, self.config.replacement
+                pattern_text, self.config.patterns[0].replacement_text
             ),
             backups: backups.to_vec(),
             total_size: backups
@@ -958,8 +887,10 @@ mod tests {
     #[test]
     fn test_replacement_config_merge() {
         let mut base_config = ReplacementConfig {
-            pattern_definitions: vec![create_pattern_def("old", false)],
-            replacement: "new".to_string(),
+            patterns: vec![ReplacementPattern {
+                definition: create_pattern_def("old", false),
+                replacement_text: "new".to_string(),
+            }],
             backup_enabled: false,
             dry_run: false,
             backup_dir: None,
@@ -968,8 +899,10 @@ mod tests {
         };
 
         let cli_config = ReplacementConfig {
-            pattern_definitions: vec![create_pattern_def("cli_pattern", false)],
-            replacement: "cli_replacement".to_string(),
+            patterns: vec![ReplacementPattern {
+                definition: create_pattern_def("cli_pattern", false),
+                replacement_text: "cli_replacement".to_string(),
+            }],
             backup_enabled: true,
             dry_run: true,
             backup_dir: Some(PathBuf::from("backup")),
@@ -979,8 +912,8 @@ mod tests {
 
         base_config.merge_with_cli(cli_config);
 
-        assert_eq!(base_config.pattern_definitions[0].text, "cli_pattern");
-        assert_eq!(base_config.replacement, "cli_replacement");
+        assert_eq!(base_config.patterns[0].definition.text, "cli_pattern");
+        assert_eq!(base_config.patterns[0].replacement_text, "cli_replacement");
         assert!(base_config.backup_enabled);
         assert!(base_config.dry_run);
         assert_eq!(base_config.backup_dir, Some(PathBuf::from("backup")));
@@ -994,8 +927,10 @@ mod tests {
         fs::write(&file_path, "test content")?;
 
         let config = ReplacementConfig {
-            pattern_definitions: vec![create_pattern_def("test", false)],
-            replacement: "replaced".to_string(),
+            patterns: vec![ReplacementPattern {
+                definition: create_pattern_def("test", false),
+                replacement_text: "replaced".to_string(),
+            }],
             backup_enabled: true,
             dry_run: false,
             backup_dir: Some(dir.path().to_path_buf()),
@@ -1008,6 +943,7 @@ mod tests {
             file_path.clone(),
             (0, 4),
             "replaced".to_string(),
+            0,
             config.clone(),
         ))?;
 
@@ -1033,8 +969,10 @@ mod tests {
         fs::write(&file_path, original_content)?;
 
         let config = ReplacementConfig {
-            pattern_definitions: vec![create_pattern_def("test", false)],
-            replacement: "replaced".to_string(),
+            patterns: vec![ReplacementPattern {
+                definition: create_pattern_def("test", false),
+                replacement_text: "replaced".to_string(),
+            }],
             backup_enabled: true,
             dry_run: true,
             backup_dir: Some(dir.path().to_path_buf()),
@@ -1047,6 +985,7 @@ mod tests {
             file_path.clone(),
             (0, 4),
             "replaced".to_string(),
+            0,
             config.clone(),
         ))?;
 
@@ -1066,8 +1005,10 @@ mod tests {
         fs::write(&file_path, "fn test_func() {}")?;
 
         let config = ReplacementConfig {
-            pattern_definitions: vec![create_pattern_def(r"fn (\w+)\(\)", true)],
-            replacement: "fn new_$1()".to_string(),
+            patterns: vec![ReplacementPattern {
+                definition: create_pattern_def(r"fn (\w+)\(\)", true),
+                replacement_text: "fn new_$1()".to_string(),
+            }],
             backup_enabled: false,
             dry_run: false,
             backup_dir: None,
@@ -1080,6 +1021,7 @@ mod tests {
             file_path.clone(),
             (0, 14),
             "fn new_test_func()".to_string(),
+            0,
             config.clone(),
         ))?;
 
@@ -1098,8 +1040,10 @@ mod tests {
         fs::write(&file_path, "test content")?;
 
         let config = ReplacementConfig {
-            pattern_definitions: vec![create_pattern_def("[invalid", true)],
-            replacement: "replacement".to_string(),
+            patterns: vec![ReplacementPattern {
+                definition: create_pattern_def("[invalid", true),
+                replacement_text: "replacement".to_string(),
+            }],
             backup_enabled: false,
             dry_run: false,
             backup_dir: None,
@@ -1112,6 +1056,7 @@ mod tests {
             file_path,
             (0, 4),
             "replacement".to_string(),
+            0,
             config.clone(),
         ));
 
@@ -1129,8 +1074,10 @@ mod tests {
         fs::write(&file_path, "test content")?;
 
         let config = ReplacementConfig {
-            pattern_definitions: vec![create_pattern_def(r"(\w+)", true)],
-            replacement: "$2".to_string(), // $2 doesn't exist, only $1 exists
+            patterns: vec![ReplacementPattern {
+                definition: create_pattern_def(r"(\w+)", true),
+                replacement_text: "$2".to_string(), // $2 doesn't exist, only $1 exists
+            }],
             backup_enabled: false,
             dry_run: false,
             backup_dir: None,
@@ -1138,7 +1085,7 @@ mod tests {
             undo_dir: dir.path().to_path_buf(),
         };
 
-        let task = ReplacementTask::new(file_path, (0, 4), "$2".to_string(), config.clone());
+        let task = ReplacementTask::new(file_path, (0, 4), "$2".to_string(), 0, config.clone());
 
         let result = task.validate();
 
@@ -1162,8 +1109,10 @@ mod tests {
         fs::set_permissions(&file_path, perms).map_err(SearchError::IoError)?;
 
         let config = ReplacementConfig {
-            pattern_definitions: vec![create_pattern_def("test", false)],
-            replacement: "replaced".to_string(),
+            patterns: vec![ReplacementPattern {
+                definition: create_pattern_def("test", false),
+                replacement_text: "replaced".to_string(),
+            }],
             backup_enabled: false,
             dry_run: false,
             backup_dir: None,
@@ -1176,6 +1125,7 @@ mod tests {
             file_path.clone(),
             (0, 4),
             "replaced".to_string(),
+            0,
             config.clone(),
         ))?;
 
@@ -1201,8 +1151,10 @@ mod tests {
         fs::write(&file_path, "test test test")?;
 
         let config = ReplacementConfig {
-            pattern_definitions: vec![create_pattern_def("test", false)],
-            replacement: "replaced".to_string(),
+            patterns: vec![ReplacementPattern {
+                definition: create_pattern_def("test", false),
+                replacement_text: "replaced".to_string(),
+            }],
             backup_enabled: false,
             dry_run: false,
             backup_dir: None,
@@ -1217,18 +1169,21 @@ mod tests {
             file_path.clone(),
             (0, 4),
             "replaced".to_string(),
+            0,
             config.clone(),
         ))?;
         plan.add_replacement(ReplacementTask::new(
             file_path.clone(),
             (5, 9),
             "replaced".to_string(),
+            0,
             config.clone(),
         ))?;
         plan.add_replacement(ReplacementTask::new(
             file_path.clone(),
             (10, 14),
             "replaced".to_string(),
+            0,
             config.clone(),
         ))?;
 
@@ -1247,8 +1202,7 @@ mod tests {
         fs::write(&file_path, "test content")?;
 
         let config = ReplacementConfig {
-            pattern_definitions: vec![], // Empty pattern_definitions to test validation
-            replacement: "something".to_string(),
+            patterns: vec![], // Empty pattern_definitions to test validation
             backup_enabled: false,
             dry_run: false,
             backup_dir: None,
@@ -1261,6 +1215,7 @@ mod tests {
             file_path,
             (0, 0),
             "something".to_string(),
+            0,
             config.clone(),
         ));
 
@@ -1275,8 +1230,10 @@ mod tests {
         fs::write(&file_path, "test content")?;
 
         let config = ReplacementConfig {
-            pattern_definitions: vec![create_pattern_def("test", false)],
-            replacement: "replaced".to_string(),
+            patterns: vec![ReplacementPattern {
+                definition: create_pattern_def("test", false),
+                replacement_text: "replaced".to_string(),
+            }],
             backup_enabled: false,
             dry_run: false,
             backup_dir: None,
@@ -1291,6 +1248,7 @@ mod tests {
             file_path.clone(),
             (0, 6),
             "replaced".to_string(),
+            0,
             config.clone(),
         ));
         assert!(result1.is_ok(), "First replacement should succeed");
@@ -1300,6 +1258,7 @@ mod tests {
             file_path.clone(),
             (4, 8),
             "new".to_string(),
+            0,
             config.clone(),
         ));
         assert!(
@@ -1322,8 +1281,10 @@ mod tests {
         fs::create_dir_all(&undo_dir).map_err(SearchError::IoError)?;
 
         let config = ReplacementConfig {
-            pattern_definitions: vec![create_pattern_def("test", false)],
-            replacement: "replaced".to_string(),
+            patterns: vec![ReplacementPattern {
+                definition: create_pattern_def("test", false),
+                replacement_text: "replaced".to_string(),
+            }],
             backup_enabled: true,
             dry_run: false,
             backup_dir: Some(dir.path().to_path_buf()),
@@ -1338,6 +1299,7 @@ mod tests {
             file_path.clone(),
             (0, 4),
             "replaced".to_string(),
+            0,
             config.clone(),
         ))?;
 
@@ -1367,8 +1329,10 @@ mod tests {
         fs::write(&file_path, original_content)?;
 
         let config = ReplacementConfig {
-            pattern_definitions: vec![create_pattern_def("test", false)],
-            replacement: "replaced".to_string(),
+            patterns: vec![ReplacementPattern {
+                definition: create_pattern_def("test", false),
+                replacement_text: "replaced".to_string(),
+            }],
             backup_enabled: false,
             dry_run: false,
             backup_dir: None,
@@ -1383,18 +1347,21 @@ mod tests {
             file_path.clone(),
             (0, 4),
             "replaced".to_string(),
+            0,
             config.clone(),
         ))?;
         plan.add_replacement(ReplacementTask::new(
             file_path.clone(),
             (5, 9),
             "replaced".to_string(),
+            0,
             config.clone(),
         ))?;
         plan.add_replacement(ReplacementTask::new(
             file_path.clone(),
             (20, 24),
             "replaced".to_string(),
+            0,
             config.clone(),
         ))?;
 
@@ -1421,8 +1388,10 @@ mod tests {
 
         let backup_dir = dir.path().join("backups");
         let config = ReplacementConfig {
-            pattern_definitions: vec![create_pattern_def("test", false)],
-            replacement: "replaced".to_string(),
+            patterns: vec![ReplacementPattern {
+                definition: create_pattern_def("test", false),
+                replacement_text: "replaced".to_string(),
+            }],
             backup_enabled: true,
             dry_run: false,
             backup_dir: Some(backup_dir.clone()),
@@ -1435,6 +1404,7 @@ mod tests {
             file_path.clone(),
             (0, 4),
             "replaced".to_string(),
+            0,
             config.clone(),
         ))?;
 
@@ -1454,8 +1424,10 @@ mod tests {
         fs::write(&file_path, &content)?;
 
         let config = ReplacementConfig {
-            pattern_definitions: vec![create_pattern_def("test", false)],
-            replacement: "replaced".to_string(),
+            patterns: vec![ReplacementPattern {
+                definition: create_pattern_def("test", false),
+                replacement_text: "replaced".to_string(),
+            }],
             backup_enabled: false,
             dry_run: false,
             backup_dir: None,
@@ -1469,6 +1441,7 @@ mod tests {
             file_path.clone(),
             (0, 4),
             "replaced".to_string(),
+            0,
             config.clone(),
         ))?;
 
@@ -1486,12 +1459,14 @@ mod tests {
         let file_path = dir.path().join("test.txt");
         fs::write(&file_path, "test testing tested")?;
 
-        let mut pattern_def = create_pattern_def(r"\btest\b", true);
-        pattern_def.boundary_mode = WordBoundaryMode::WholeWords;
+        let mut pattern_def = ReplacementPattern {
+            definition: create_pattern_def(r"\btest\b", true),
+            replacement_text: "pass".to_string(),
+        };
+        pattern_def.definition.boundary_mode = WordBoundaryMode::WholeWords;
 
         let config = ReplacementConfig {
-            pattern_definitions: vec![pattern_def],
-            replacement: "pass".to_string(),
+            patterns: vec![pattern_def],
             backup_enabled: false,
             dry_run: false,
             backup_dir: None,
@@ -1504,6 +1479,7 @@ mod tests {
             file_path.clone(),
             (0, 4),
             "pass".to_string(),
+            0,
             config.clone(),
         ))?;
 
