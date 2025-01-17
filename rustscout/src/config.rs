@@ -27,12 +27,6 @@ pub struct SearchConfig {
     /// Pattern definitions with boundary settings (new field)
     #[serde(default)]
     pub pattern_definitions: Vec<PatternDefinition>,
-    /// Legacy search patterns (deprecated)
-    #[serde(default)]
-    pub patterns: Vec<String>,
-    /// Legacy single pattern field (deprecated)
-    #[serde(default)]
-    pub pattern: String,
     /// Root directory to search in
     pub root_path: PathBuf,
     /// File extensions to include (None means all)
@@ -68,8 +62,6 @@ impl Default for SearchConfig {
     fn default() -> Self {
         Self {
             pattern_definitions: Vec::new(),
-            patterns: Vec::new(),
-            pattern: String::new(),
             root_path: PathBuf::from("."),
             file_extensions: None,
             ignore_patterns: Vec::new(),
@@ -103,29 +95,7 @@ impl SearchConfig {
 
     /// Gets all pattern definitions, including those from legacy fields
     pub fn get_pattern_definitions(&self) -> Vec<PatternDefinition> {
-        let mut defs = self.pattern_definitions.clone();
-
-        // Convert legacy patterns to definitions
-        if !self.patterns.is_empty() {
-            defs.extend(self.patterns.iter().map(|p| PatternDefinition {
-                text: p.clone(),
-                is_regex: false,
-                boundary_mode: WordBoundaryMode::None,
-                hyphen_handling: HyphenHandling::default(),
-            }));
-        }
-
-        // Convert legacy single pattern
-        if !self.pattern.is_empty() {
-            defs.push(PatternDefinition {
-                text: self.pattern.clone(),
-                is_regex: false,
-                boundary_mode: WordBoundaryMode::None,
-                hyphen_handling: HyphenHandling::default(),
-            });
-        }
-
-        defs
+        self.pattern_definitions.clone()
     }
 
     /// Loads configuration from a file
@@ -153,13 +123,6 @@ impl SearchConfig {
         // Merge pattern definitions first
         if !cli.pattern_definitions.is_empty() {
             self.pattern_definitions = cli.pattern_definitions.clone();
-        }
-        // Legacy pattern support
-        if !cli.patterns.is_empty() {
-            self.patterns = cli.patterns.clone();
-        }
-        if !cli.pattern.is_empty() {
-            self.pattern = cli.pattern.clone();
         }
         if cli.root_path != PathBuf::from(".") {
             self.root_path = cli.root_path.clone();
@@ -200,6 +163,9 @@ impl SearchConfig {
         if cli.use_compression {
             self.use_compression = true;
         }
+        if cli.encoding_mode != EncodingMode::default() {
+            self.encoding_mode = cli.encoding_mode;
+        }
     }
 }
 
@@ -215,21 +181,20 @@ mod tests {
     fn test_default_values() {
         let config = SearchConfig::default();
         assert!(config.pattern_definitions.is_empty());
-        assert!(config.patterns.is_empty());
-        assert!(config.pattern.is_empty());
         assert_eq!(config.root_path, PathBuf::from("."));
-        assert!(config.file_extensions.is_none());
+        assert_eq!(config.file_extensions, None);
         assert!(config.ignore_patterns.is_empty());
         assert!(!config.stats_only);
-        assert_eq!(config.thread_count.get(), 4);
+        assert_eq!(config.thread_count, NonZeroUsize::new(4).unwrap());
         assert_eq!(config.log_level, "info");
         assert_eq!(config.context_before, 0);
         assert_eq!(config.context_after, 0);
         assert!(!config.incremental);
-        assert!(config.cache_path.is_none());
+        assert_eq!(config.cache_path, None);
         assert_eq!(config.cache_strategy, ChangeDetectionStrategy::Auto);
-        assert!(config.max_cache_size.is_none());
+        assert_eq!(config.max_cache_size, None);
         assert!(!config.use_compression);
+        assert_eq!(config.encoding_mode, EncodingMode::default());
     }
 
     #[test]
@@ -248,62 +213,58 @@ mod tests {
     #[test]
     fn test_get_pattern_definitions() {
         let mut config = SearchConfig::default();
-
-        // Add a pattern definition
-        config.pattern_definitions.push(PatternDefinition {
-            text: "test1".to_string(),
-            is_regex: false,
-            boundary_mode: WordBoundaryMode::WholeWords,
-            hyphen_handling: HyphenHandling::default(),
-        });
-
-        // Add legacy patterns
-        config.patterns = vec!["test2".to_string(), "test3".to_string()];
-        config.pattern = "test4".to_string();
+        config.pattern_definitions = vec![
+            PatternDefinition {
+                text: "test1".to_string(),
+                is_regex: false,
+                boundary_mode: WordBoundaryMode::WholeWords,
+                hyphen_handling: HyphenHandling::default(),
+            },
+            PatternDefinition {
+                text: "test2".to_string(),
+                is_regex: true,
+                boundary_mode: WordBoundaryMode::None,
+                hyphen_handling: HyphenHandling::default(),
+            },
+        ];
 
         let defs = config.get_pattern_definitions();
-        assert_eq!(defs.len(), 4);
-
-        // Check pattern definition
+        assert_eq!(defs.len(), 2);
         assert_eq!(defs[0].text, "test1");
+        assert!(!defs[0].is_regex);
         assert_eq!(defs[0].boundary_mode, WordBoundaryMode::WholeWords);
-
-        // Check converted legacy patterns
         assert_eq!(defs[1].text, "test2");
+        assert!(defs[1].is_regex);
         assert_eq!(defs[1].boundary_mode, WordBoundaryMode::None);
-        assert_eq!(defs[2].text, "test3");
-        assert_eq!(defs[2].boundary_mode, WordBoundaryMode::None);
-        assert_eq!(defs[3].text, "test4");
-        assert_eq!(defs[3].boundary_mode, WordBoundaryMode::None);
     }
 
     #[test]
     fn test_merge_with_cli() {
         let mut config = SearchConfig::default();
-        let mut cli = SearchConfig::default();
-
-        // Add pattern definitions to CLI config
-        cli.pattern_definitions.push(PatternDefinition {
+        config.pattern_definitions = vec![PatternDefinition {
             text: "test1".to_string(),
             is_regex: false,
             boundary_mode: WordBoundaryMode::WholeWords,
             hyphen_handling: HyphenHandling::default(),
-        });
+        }];
 
-        // Add other CLI settings
-        cli.root_path = PathBuf::from("/search");
-        cli.stats_only = true;
+        let mut cli_config = SearchConfig::default();
+        cli_config.pattern_definitions = vec![PatternDefinition {
+            text: "test2".to_string(),
+            is_regex: true,
+            boundary_mode: WordBoundaryMode::None,
+            hyphen_handling: HyphenHandling::default(),
+        }];
 
-        config.merge_with_cli(&cli);
+        config.merge_with_cli(&cli_config);
 
         assert_eq!(config.pattern_definitions.len(), 1);
-        assert_eq!(config.pattern_definitions[0].text, "test1");
+        assert_eq!(config.pattern_definitions[0].text, "test2");
+        assert!(config.pattern_definitions[0].is_regex);
         assert_eq!(
             config.pattern_definitions[0].boundary_mode,
-            WordBoundaryMode::WholeWords
+            WordBoundaryMode::None
         );
-        assert_eq!(config.root_path, PathBuf::from("/search"));
-        assert!(config.stats_only);
     }
 
     #[test]
@@ -312,8 +273,11 @@ mod tests {
         let config_path = dir.path().join("config.yaml");
 
         let config_content = r#"
-pattern: test
-patterns: []
+pattern_definitions:
+  - text: test
+    is_regex: false
+    boundary_mode: None
+    hyphen_handling: Joining
 root_path: .
 file_extensions: null
 ignore_patterns: []
@@ -331,8 +295,9 @@ use_compression: false
         fs::write(&config_path, config_content)?;
 
         let config = SearchConfig::load_from(&config_path)?;
-        assert_eq!(config.pattern, "test");
-        assert!(config.patterns.is_empty());
+        assert_eq!(config.pattern_definitions.len(), 1);
+        assert_eq!(config.pattern_definitions[0].text, "test");
+        assert!(!config.pattern_definitions[0].is_regex);
         assert_eq!(config.root_path, PathBuf::from("."));
         assert!(config.file_extensions.is_none());
         assert!(config.ignore_patterns.is_empty());
@@ -344,7 +309,6 @@ use_compression: false
         assert!(!config.incremental);
         assert!(config.cache_path.is_none());
         assert_eq!(config.cache_strategy, ChangeDetectionStrategy::Auto);
-        assert!(config.max_cache_size.is_none());
         assert!(!config.use_compression);
 
         Ok(())

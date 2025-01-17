@@ -6,7 +6,7 @@ use rustscout::{
     replace::{ReplacementConfig, ReplacementSet, UndoInfo},
     results::SearchResult,
     search,
-    search::matcher::{PatternDefinition, WordBoundaryMode},
+    search::matcher::{HyphenHandling, PatternDefinition, WordBoundaryMode},
     SearchError,
 };
 use std::{num::NonZeroUsize, path::PathBuf};
@@ -131,31 +131,25 @@ fn run() -> Result<()> {
 
     match cli.command {
         Commands::Search(config) => {
-            let mut patterns = config.patterns.clone();
-            patterns.extend(config.legacy_patterns.iter().cloned());
-
             let mut pattern_defs = Vec::new();
-            let mut is_regex = config.is_regex.clone();
-            let mut word_boundary = config.word_boundary.clone();
 
-            // Ensure we have enough flags for all patterns
-            while is_regex.len() < patterns.len() {
-                is_regex.push(false);
-            }
-            while word_boundary.len() < patterns.len() {
-                word_boundary.push(false);
-            }
-
-            for (i, pattern) in patterns.iter().enumerate() {
-                pattern_defs.push(PatternDefinition::new(
-                    pattern.clone(),
-                    is_regex[i],
-                    if word_boundary[i] {
+            // Convert CLI patterns to pattern definitions
+            for (i, pattern) in config
+                .patterns
+                .iter()
+                .chain(config.legacy_patterns.iter())
+                .enumerate()
+            {
+                pattern_defs.push(PatternDefinition {
+                    text: pattern.clone(),
+                    is_regex: i < config.is_regex.len() && config.is_regex[i],
+                    boundary_mode: if i < config.word_boundary.len() && config.word_boundary[i] {
                         WordBoundaryMode::WholeWords
                     } else {
                         WordBoundaryMode::None
                     },
-                ));
+                    hyphen_handling: HyphenHandling::default(),
+                });
             }
 
             let file_extensions = config.extensions.as_ref().map(|e| {
@@ -177,8 +171,6 @@ fn run() -> Result<()> {
 
             let search_config = SearchConfig {
                 pattern_definitions: pattern_defs,
-                patterns: Vec::new(),   // Legacy field, not used
-                pattern: String::new(), // Legacy field, not used
                 root_path: config.root,
                 file_extensions,
                 ignore_patterns: config.ignore,

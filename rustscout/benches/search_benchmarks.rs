@@ -30,8 +30,7 @@ fn create_test_files(
 
 fn create_base_config(dir: &tempfile::TempDir) -> SearchConfig {
     SearchConfig {
-        patterns: vec!["TODO".to_string()],
-        pattern: String::new(),
+        pattern_definitions: vec![],
         root_path: dir.path().to_path_buf(),
         ignore_patterns: vec![".git/**".to_string()],
         file_extensions: None,
@@ -46,7 +45,6 @@ fn create_base_config(dir: &tempfile::TempDir) -> SearchConfig {
         max_cache_size: None,
         use_compression: false,
         encoding_mode: EncodingMode::FailFast,
-        pattern_definitions: vec![],
     }
 }
 
@@ -67,8 +65,12 @@ fn bench_repeated_pattern(c: &mut Criterion) -> std::io::Result<()> {
 
     for (i, pattern) in patterns.iter().enumerate() {
         let mut config = create_base_config(&dir);
-        config.pattern = pattern.to_string();
-        config.patterns = vec![pattern.to_string()];
+        config.pattern_definitions = vec![PatternDefinition {
+            text: pattern.to_string(),
+            is_regex: false,
+            boundary_mode: WordBoundaryMode::None,
+            hyphen_handling: HyphenHandling::default(),
+        }];
 
         group.bench_function(format!("pattern_{}", i), |b| {
             b.iter_with_setup(
