@@ -5,7 +5,7 @@ use rustscout::{
         FileReplacementPlan, ReplacementConfig, ReplacementPattern, ReplacementSet, ReplacementTask,
     },
     search,
-    search::matcher::{HyphenHandling, PatternDefinition, WordBoundaryMode},
+    search::matcher::{HyphenMode, PatternDefinition, WordBoundaryMode},
     SearchError,
 };
 use std::{fs, num::NonZeroUsize, path::Path};
@@ -35,7 +35,7 @@ fn test_replace_basic() -> Result<()> {
                 text: "Hello".to_string(),
                 is_regex: false,
                 boundary_mode: WordBoundaryMode::None,
-                hyphen_handling: HyphenHandling::Joining,
+                hyphen_mode: HyphenMode::Joining,
             },
             replacement_text: "World".to_string(),
         }],
@@ -83,7 +83,7 @@ fn test_replace_with_backup() -> Result<()> {
                 text: "Hello".to_string(),
                 is_regex: false,
                 boundary_mode: WordBoundaryMode::None,
-                hyphen_handling: HyphenHandling::Joining,
+                hyphen_mode: HyphenMode::Joining,
             },
             replacement_text: "World".to_string(),
         }],
@@ -136,7 +136,7 @@ fn test_replace_dry_run() -> Result<()> {
                 text: "Hello".to_string(),
                 is_regex: false,
                 boundary_mode: WordBoundaryMode::None,
-                hyphen_handling: HyphenHandling::Joining,
+                hyphen_mode: HyphenMode::Joining,
             },
             replacement_text: "World".to_string(),
         }],
@@ -180,7 +180,7 @@ fn test_replace_preview() -> Result<()> {
                 text: "Hello".to_string(),
                 is_regex: false,
                 boundary_mode: WordBoundaryMode::None,
-                hyphen_handling: HyphenHandling::Joining,
+                hyphen_mode: HyphenMode::Joining,
             },
             replacement_text: "World".to_string(),
         }],
@@ -236,7 +236,7 @@ fn test_replace_undo_list() -> Result<()> {
                 text: "Hello".to_string(),
                 is_regex: false,
                 boundary_mode: WordBoundaryMode::None,
-                hyphen_handling: HyphenHandling::Joining,
+                hyphen_mode: HyphenMode::Joining,
             },
             replacement_text: "World".to_string(),
         }],
@@ -286,7 +286,7 @@ fn test_replace_undo_restore() -> Result<()> {
                 text: "Hello".to_string(),
                 is_regex: false,
                 boundary_mode: WordBoundaryMode::None,
-                hyphen_handling: HyphenHandling::Joining,
+                hyphen_mode: HyphenMode::Joining,
             },
             replacement_text: "World".to_string(),
         }],
@@ -342,7 +342,7 @@ fn test_replace_cli_args() -> Result<()> {
                 text: r"\bfoo\b".to_string(),
                 is_regex: true,
                 boundary_mode: WordBoundaryMode::WholeWords,
-                hyphen_handling: HyphenHandling::Boundary,
+                hyphen_mode: HyphenMode::Boundary,
             },
             replacement_text: "bar".to_string(),
         }],
@@ -428,7 +428,7 @@ fn test_replace_multiple_patterns() -> Result<()> {
                     text: "Hello".to_string(),
                     is_regex: false,
                     boundary_mode: WordBoundaryMode::None,
-                    hyphen_handling: HyphenHandling::Joining,
+                    hyphen_mode: HyphenMode::Joining,
                 },
                 replacement_text: "Hi".to_string(),
             },
@@ -437,7 +437,7 @@ fn test_replace_multiple_patterns() -> Result<()> {
                     text: "Goodbye".to_string(),
                     is_regex: false,
                     boundary_mode: WordBoundaryMode::None,
-                    hyphen_handling: HyphenHandling::Joining,
+                    hyphen_mode: HyphenMode::Joining,
                 },
                 replacement_text: "Bye".to_string(),
             },
@@ -473,5 +473,61 @@ fn test_replace_multiple_patterns() -> Result<()> {
     replacement_set.apply()?;
 
     assert_eq!(fs::read_to_string(&test_file)?, "Hi world! Bye world!");
+    Ok(())
+}
+
+#[test]
+fn test_search_hyphen_mode() -> Result<()> {
+    let dir = tempdir()?;
+    create_test_files(
+        &dir,
+        &[
+            ("code.txt", "test-case\ntest case\npretest-case"),
+            ("text.txt", "hello-world\ngood-morning\nworld-class"),
+        ],
+    )?;
+
+    // Test joining mode (default, for code identifiers)
+    let config = SearchConfig {
+        pattern_definitions: vec![PatternDefinition {
+            text: "test".to_string(),
+            is_regex: false,
+            boundary_mode: WordBoundaryMode::WholeWords,
+            hyphen_mode: HyphenMode::Joining, // --hyphen-mode=joining
+        }],
+        root_path: dir.path().to_path_buf(),
+        ..SearchConfig::default()
+    };
+
+    let results = search(&config)?;
+    assert_eq!(results.total_matches, 1); // Should only match "test case"
+    assert_eq!(results.files_with_matches, 1);
+    let file_result = &results.file_results[0];
+    assert!(file_result
+        .matches
+        .iter()
+        .any(|m| m.line_content.contains("test case")));
+
+    // Test boundary mode (for natural text)
+    let config = SearchConfig {
+        pattern_definitions: vec![PatternDefinition {
+            text: "hello".to_string(),
+            is_regex: false,
+            boundary_mode: WordBoundaryMode::WholeWords,
+            hyphen_mode: HyphenMode::Boundary, // --hyphen-mode=boundary
+        }],
+        root_path: dir.path().to_path_buf(),
+        ..SearchConfig::default()
+    };
+
+    let results = search(&config)?;
+    assert_eq!(results.total_matches, 1);
+    assert_eq!(results.files_with_matches, 1);
+    let file_result = &results.file_results[0];
+    assert!(file_result
+        .matches
+        .iter()
+        .any(|m| m.line_content.contains("hello-world")));
+
     Ok(())
 }

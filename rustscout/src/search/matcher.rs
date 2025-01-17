@@ -20,7 +20,7 @@ pub enum WordBoundaryMode {
 
 /// Defines how hyphens are handled in word boundaries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-pub enum HyphenHandling {
+pub enum HyphenMode {
     /// Treat hyphens as word boundaries (natural text mode)
     Boundary,
     /// Treat hyphens as joining characters (code identifier mode)
@@ -38,7 +38,7 @@ pub struct PatternDefinition {
     /// The boundary mode for this pattern.
     pub boundary_mode: WordBoundaryMode,
     /// How to handle hyphens in word boundaries
-    pub hyphen_handling: HyphenHandling,
+    pub hyphen_mode: HyphenMode,
 }
 
 impl PatternDefinition {
@@ -48,14 +48,13 @@ impl PatternDefinition {
             text,
             is_regex,
             boundary_mode,
-            hyphen_handling: HyphenHandling::default(),
+            hyphen_mode: HyphenMode::default(),
         }
     }
 }
 
-static PATTERN_CACHE: Lazy<
-    DashMap<(String, bool, WordBoundaryMode, HyphenHandling), MatchStrategy>,
-> = Lazy::new(DashMap::new);
+static PATTERN_CACHE: Lazy<DashMap<(String, bool, WordBoundaryMode, HyphenMode), MatchStrategy>> =
+    Lazy::new(DashMap::new);
 
 /// Strategy for pattern matching
 #[derive(Debug, Clone)]
@@ -64,13 +63,13 @@ pub enum MatchStrategy {
     Simple {
         pattern: String,
         boundary_mode: WordBoundaryMode,
-        hyphen_handling: HyphenHandling,
+        hyphen_mode: HyphenMode,
     },
     /// Regex-based match with optional word boundary checks.
     Regex {
         regex: Arc<Regex>,
         boundary_mode: WordBoundaryMode,
-        hyphen_handling: HyphenHandling,
+        hyphen_mode: HyphenMode,
     },
 }
 
@@ -96,7 +95,7 @@ impl PatternMatcher {
                 text,
                 is_regex: false,
                 boundary_mode: WordBoundaryMode::None,
-                hyphen_handling: HyphenHandling::default(),
+                hyphen_mode: HyphenMode::default(),
             })
             .collect();
         Self::from_definitions(pattern_defs)
@@ -125,7 +124,7 @@ impl PatternMatcher {
                 pattern.text.clone(),
                 pattern.is_regex,
                 pattern.boundary_mode,
-                pattern.hyphen_handling,
+                pattern.hyphen_mode,
             );
             let strategy = if let Some(entry) = PATTERN_CACHE.get(&cache_key) {
                 metrics.record_cache_operation(pattern.text.len() as i64, true);
@@ -135,7 +134,7 @@ impl PatternMatcher {
                     MatchStrategy::Simple {
                         pattern: pattern.text.clone(),
                         boundary_mode: pattern.boundary_mode,
-                        hyphen_handling: pattern.hyphen_handling,
+                        hyphen_mode: pattern.hyphen_mode,
                     }
                 } else {
                     let regex_pattern = if pattern.is_regex {
@@ -158,7 +157,7 @@ impl PatternMatcher {
                     MatchStrategy::Regex {
                         regex: Arc::new(Regex::new(&regex_pattern).expect("Invalid regex pattern")),
                         boundary_mode: pattern.boundary_mode,
-                        hyphen_handling: pattern.hyphen_handling,
+                        hyphen_mode: pattern.hyphen_mode,
                     }
                 };
 
@@ -187,12 +186,7 @@ impl PatternMatcher {
     }
 
     /// Checks if a position represents a word boundary
-    fn is_word_boundary(
-        text: &str,
-        _start: usize,
-        end: usize,
-        hyphen_handling: HyphenHandling,
-    ) -> bool {
+    fn is_word_boundary(text: &str, _start: usize, end: usize, hyphen_mode: HyphenMode) -> bool {
         // Get the last character of the matched text by going from start to end
         let last_char = text[..end].chars().last();
 
@@ -202,7 +196,7 @@ impl PatternMatcher {
         #[cfg(test)]
         eprintln!(
             "DEBUG: Checking boundary for text='{}' [{},{}] before={:?} after={:?} hyphen_mode={:?}",
-            text, _start, end, last_char, after_char, hyphen_handling
+            text, _start, end, last_char, after_char, hyphen_mode
         );
 
         // Helper to check if a character is word-like (letter, digit, or underscore)
@@ -307,7 +301,7 @@ impl PatternMatcher {
                 '\u{FE58}' | // SMALL EM DASH
                 '\u{FE63}' | // SMALL HYPHEN-MINUS
                 '\u{FF0D}'   // FULLWIDTH HYPHEN-MINUS
-                    => hyphen_handling == HyphenHandling::Joining,
+                    => hyphen_mode == HyphenMode::Joining,
                 _ => false,
             };
 
@@ -321,7 +315,7 @@ impl PatternMatcher {
                 Some(ch) if ch.is_whitespace() => false, // Whitespace does not continue a word
                 Some(ch) => {
                     // In Joining mode, math symbols can join with underscores
-                    if hyphen_handling == HyphenHandling::Joining && is_joinable_symbol(ch) {
+                    if hyphen_mode == HyphenMode::Joining && is_joinable_symbol(ch) {
                         true
                     } else {
                         is_word_char(ch) || is_joining_char(ch) // Word chars and joiners continue words
@@ -352,7 +346,7 @@ impl PatternMatcher {
                 MatchStrategy::Simple {
                     pattern,
                     boundary_mode,
-                    hyphen_handling,
+                    hyphen_mode,
                 } => {
                     // Skip empty patterns
                     if pattern.is_empty() {
@@ -362,7 +356,7 @@ impl PatternMatcher {
                     #[cfg(test)]
                     eprintln!(
                         "DEBUG: Simple match for pattern='{}' text='{}' boundary_mode={:?} hyphen_mode={:?}",
-                        pattern, text, boundary_mode, hyphen_handling
+                        pattern, text, boundary_mode, hyphen_mode
                     );
 
                     let indices = text
@@ -372,7 +366,7 @@ impl PatternMatcher {
                             WordBoundaryMode::None => true,
                             WordBoundaryMode::WholeWords => {
                                 let is_boundary =
-                                    Self::is_word_boundary(text, start, end, *hyphen_handling);
+                                    Self::is_word_boundary(text, start, end, *hyphen_mode);
                                 #[cfg(test)]
                                 eprintln!(
                                     "DEBUG: Checking boundary for match at [{},{}] => {}",
@@ -386,7 +380,7 @@ impl PatternMatcher {
                 MatchStrategy::Regex {
                     regex,
                     boundary_mode: _,
-                    hyphen_handling: _,
+                    hyphen_mode: _,
                 } => {
                     // For regex, word boundaries are handled in the pattern itself
                     matches.extend(regex.find_iter(text).map(|m| (m.start(), m.end())));
@@ -418,7 +412,7 @@ mod tests {
             text: "test".to_string(),
             is_regex: false,
             boundary_mode: WordBoundaryMode::WholeWords,
-            hyphen_handling: HyphenHandling::default(),
+            hyphen_mode: HyphenMode::default(),
         };
         let _matcher1 = PatternMatcher::with_metrics(vec![pattern1.clone()], metrics.clone());
         assert_eq!(
@@ -440,7 +434,7 @@ mod tests {
             text: "test".to_string(),
             is_regex: false,
             boundary_mode: WordBoundaryMode::None,
-            hyphen_handling: HyphenHandling::default(),
+            hyphen_mode: HyphenMode::default(),
         };
         let _matcher3 = PatternMatcher::with_metrics(vec![pattern2], metrics.clone());
         assert_eq!(
@@ -456,10 +450,10 @@ mod tests {
 
         // Define all possible mode combinations
         let modes = vec![
-            (WordBoundaryMode::WholeWords, HyphenHandling::Boundary),
-            (WordBoundaryMode::WholeWords, HyphenHandling::Joining),
-            (WordBoundaryMode::None, HyphenHandling::Boundary),
-            (WordBoundaryMode::None, HyphenHandling::Joining),
+            (WordBoundaryMode::WholeWords, HyphenMode::Boundary),
+            (WordBoundaryMode::WholeWords, HyphenMode::Joining),
+            (WordBoundaryMode::None, HyphenMode::Boundary),
+            (WordBoundaryMode::None, HyphenMode::Joining),
         ];
 
         // Test cases: (text, pattern, expected_matches_whole_word_boundary, expected_matches_whole_word_joining,
@@ -673,12 +667,12 @@ mod tests {
             comment,
         ) in test_cases
         {
-            for (boundary_mode, hyphen_handling) in modes.iter() {
-                let expected = match (boundary_mode, hyphen_handling) {
-                    (WordBoundaryMode::WholeWords, HyphenHandling::Boundary) => exp_whole_boundary,
-                    (WordBoundaryMode::WholeWords, HyphenHandling::Joining) => exp_whole_joining,
-                    (WordBoundaryMode::None, HyphenHandling::Boundary) => exp_none_boundary,
-                    (WordBoundaryMode::None, HyphenHandling::Joining) => exp_none_joining,
+            for (boundary_mode, hyphen_mode) in modes.iter() {
+                let expected = match (boundary_mode, hyphen_mode) {
+                    (WordBoundaryMode::WholeWords, HyphenMode::Boundary) => exp_whole_boundary,
+                    (WordBoundaryMode::WholeWords, HyphenMode::Joining) => exp_whole_joining,
+                    (WordBoundaryMode::None, HyphenMode::Boundary) => exp_none_boundary,
+                    (WordBoundaryMode::None, HyphenMode::Joining) => exp_none_joining,
                 };
 
                 let matcher = PatternMatcher::with_metrics(
@@ -686,7 +680,7 @@ mod tests {
                         text: pattern.to_string(),
                         is_regex: false,
                         boundary_mode: *boundary_mode,
-                        hyphen_handling: *hyphen_handling,
+                        hyphen_mode: *hyphen_mode,
                     }],
                     metrics.clone(),
                 );
@@ -695,11 +689,11 @@ mod tests {
                 assert_eq!(
                     matches.len(),
                     expected,
-                    "Failed for pattern '{}' in text '{}' with mode {:?}, hyphen_handling {:?}: {}",
+                    "Failed for pattern '{}' in text '{}' with mode {:?}, hyphen_mode {:?}: {}",
                     pattern,
                     text,
                     boundary_mode,
-                    hyphen_handling,
+                    hyphen_mode,
                     comment
                 );
             }
@@ -732,7 +726,7 @@ mod tests {
                     text: pattern.to_string(),
                     is_regex: true,
                     boundary_mode: WordBoundaryMode::WholeWords,
-                    hyphen_handling: HyphenHandling::default(),
+                    hyphen_mode: HyphenMode::default(),
                 }],
                 metrics.clone(),
             );

@@ -7,7 +7,7 @@ use rustscout::{
     replace::{PreviewResult, ReplacementConfig, ReplacementPattern, ReplacementSet, UndoInfo},
     results::SearchResult,
     search,
-    search::matcher::{HyphenHandling, PatternDefinition, WordBoundaryMode},
+    search::matcher::{HyphenMode, PatternDefinition, WordBoundaryMode},
 };
 use std::{num::NonZeroUsize, path::PathBuf};
 
@@ -37,6 +37,10 @@ struct CliSearchConfig {
     /// Match whole words only for the most recently specified pattern
     #[arg(short = 'w', long = "word-boundary", action = clap::ArgAction::Append)]
     word_boundary: Vec<bool>,
+
+    /// How to handle hyphens in word boundaries (boundary|joining)
+    #[arg(long = "hyphen-mode", default_value = "joining")]
+    hyphen_mode: String,
 
     /// Root directory to search in
     #[arg(short = 'd', long, default_value = ".")]
@@ -115,8 +119,8 @@ enum Commands {
         word_boundary: Vec<bool>,
 
         /// How to handle hyphens in word boundaries (boundary|joining)
-        #[arg(long = "hyphen-handling", default_value = "joining")]
-        hyphen_handling: String,
+        #[arg(long = "hyphen-mode", default_value = "joining")]
+        hyphen_mode: String,
 
         /// Configuration file for replacements
         #[arg(short, long)]
@@ -168,7 +172,11 @@ fn run() -> Result<()> {
                     } else {
                         WordBoundaryMode::None
                     },
-                    hyphen_handling: HyphenHandling::default(),
+                    hyphen_mode: match config.hyphen_mode.as_str() {
+                        "boundary" => HyphenMode::Boundary,
+                        "joining" => HyphenMode::Joining,
+                        _ => return Err(SearchError::config_error("Invalid hyphen mode")),
+                    },
                 });
             }
 
@@ -218,7 +226,7 @@ fn run() -> Result<()> {
             replacements,
             regex,
             word_boundary,
-            hyphen_handling,
+            hyphen_mode,
             config,
             dry_run,
             threads,
@@ -270,10 +278,10 @@ fn run() -> Result<()> {
             };
 
             // Parse hyphen handling
-            let hyphen_mode = match hyphen_handling.as_str() {
-                "boundary" => HyphenHandling::Boundary,
-                "joining" => HyphenHandling::Joining,
-                _ => return Err(SearchError::config_error("Invalid hyphen handling mode")),
+            let hyphen_mode = match hyphen_mode.as_str() {
+                "boundary" => HyphenMode::Boundary,
+                "joining" => HyphenMode::Joining,
+                _ => return Err(SearchError::config_error("Invalid hyphen mode")),
             };
 
             // Create pattern definitions
@@ -293,7 +301,7 @@ fn run() -> Result<()> {
                         } else {
                             WordBoundaryMode::None
                         },
-                        hyphen_handling: hyphen_mode,
+                        hyphen_mode,
                     },
                     replacement_text: replacements[i].clone(),
                 });

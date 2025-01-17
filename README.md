@@ -467,7 +467,7 @@ rustscout = "0.1.0"
 ### Search Example
 
 ```rust
-use rustscout::{SearchConfig, search, WordBoundaryMode, HyphenHandling};
+use rustscout::{SearchConfig, search, WordBoundaryMode, HyphenMode};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
@@ -486,7 +486,7 @@ fn main() -> anyhow::Result<()> {
                 text: "hello".to_string(),
                 is_regex: false,
                 boundary_mode: WordBoundaryMode::WholeWords,
-                hyphen_handling: HyphenHandling::Boundary, // for natural text
+                hyphen_mode: HyphenMode::Boundary, // for natural text
             }
         ],
         // ... other settings ...

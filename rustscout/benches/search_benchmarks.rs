@@ -5,7 +5,7 @@ use rustscout::{
     cache::{ChangeDetectionStrategy, IncrementalCache},
     config::SearchConfig,
     search,
-    search::matcher::{HyphenHandling, PatternDefinition, WordBoundaryMode},
+    search::matcher::{HyphenMode, PatternDefinition, WordBoundaryMode},
 };
 use std::{fs::File, io::Write, num::NonZeroUsize};
 use tempfile::tempdir;
@@ -35,7 +35,7 @@ fn create_base_config(dir: &tempfile::TempDir) -> SearchConfig {
             text: "TODO".to_string(),
             is_regex: false,
             boundary_mode: WordBoundaryMode::None,
-            hyphen_handling: HyphenHandling::default(),
+            hyphen_mode: HyphenMode::default(),
         }],
         root_path: dir.path().to_path_buf(),
         file_extensions: None,
@@ -75,7 +75,7 @@ fn bench_repeated_pattern(c: &mut Criterion) -> std::io::Result<()> {
             text: pattern.to_string(),
             is_regex: false,
             boundary_mode: WordBoundaryMode::None,
-            hyphen_handling: HyphenHandling::default(),
+            hyphen_mode: HyphenMode::default(),
         }];
 
         group.bench_function(format!("pattern_{}", i), |b| {

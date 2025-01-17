@@ -22,5 +22,5 @@ pub use glob::Pattern;
 pub use metrics::MemoryMetrics;
 pub use replace::{FileReplacementPlan, ReplacementConfig, ReplacementSet, ReplacementTask};
 pub use results::{FileResult, Match, SearchResult as SearchResultType};
-pub use search::matcher::{HyphenHandling, PatternDefinition, WordBoundaryMode};
+pub use search::matcher::{HyphenMode, PatternDefinition, WordBoundaryMode};
 pub use search::search;

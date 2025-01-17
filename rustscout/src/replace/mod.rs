@@ -823,7 +823,7 @@ fn validate_word_boundaries(regex: &regex::Regex) -> SearchResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::matcher::{HyphenHandling, PatternDefinition, WordBoundaryMode};
+    use crate::search::matcher::{HyphenMode, PatternDefinition, WordBoundaryMode};
     use tempfile::tempdir;
 
     // Helper function to create a basic pattern definition
@@ -832,7 +832,7 @@ mod tests {
             text: text.to_string(),
             is_regex,
             boundary_mode: WordBoundaryMode::None,
-            hyphen_handling: HyphenHandling::default(),
+            hyphen_mode: HyphenMode::default(),
         }
     }
 

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cache::ChangeDetectionStrategy;
 use crate::errors::{SearchError, SearchResult};
-use crate::search::matcher::{HyphenHandling, PatternDefinition, WordBoundaryMode};
+use crate::search::matcher::{HyphenMode, PatternDefinition, WordBoundaryMode};
 
 /// Controls how invalid UTF-8 sequences are handled
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -88,7 +88,7 @@ impl SearchConfig {
             text,
             is_regex,
             boundary_mode,
-            hyphen_handling: HyphenHandling::default(),
+            hyphen_mode: HyphenMode::default(),
         });
         config
     }
@@ -218,13 +218,13 @@ mod tests {
                 text: "test1".to_string(),
                 is_regex: false,
                 boundary_mode: WordBoundaryMode::WholeWords,
-                hyphen_handling: HyphenHandling::default(),
+                hyphen_mode: HyphenMode::default(),
             },
             PatternDefinition {
                 text: "test2".to_string(),
                 is_regex: true,
                 boundary_mode: WordBoundaryMode::None,
-                hyphen_handling: HyphenHandling::default(),
+                hyphen_mode: HyphenMode::default(),
             },
         ];
 
@@ -245,7 +245,7 @@ mod tests {
             text: "test1".to_string(),
             is_regex: false,
             boundary_mode: WordBoundaryMode::WholeWords,
-            hyphen_handling: HyphenHandling::default(),
+            hyphen_mode: HyphenMode::default(),
         }];
 
         let mut cli_config = SearchConfig::default();
@@ -253,7 +253,7 @@ mod tests {
             text: "test2".to_string(),
             is_regex: true,
             boundary_mode: WordBoundaryMode::None,
-            hyphen_handling: HyphenHandling::default(),
+            hyphen_mode: HyphenMode::default(),
         }];
 
         config.merge_with_cli(&cli_config);
@@ -277,7 +277,7 @@ pattern_definitions:
   - text: test
     is_regex: false
     boundary_mode: None
-    hyphen_handling: Joining
+    hyphen_mode: Joining
 root_path: .
 file_extensions: null
 ignore_patterns: []
