@@ -37,6 +37,7 @@ A high-performance, concurrent code search tool written in Rust. RustScout is de
   - Preview changes before applying
   - Backup and undo support
   - Regular expressions with capture groups
+  - Multiple patterns in a single pass
 - 📁 **File Filtering**: Flexible ignore patterns and file type filtering
 - 📊 **Rich Output**: Detailed search results with statistics
 - 📝 **Context Lines**: Show lines before and after matches for better understanding
@@ -222,6 +223,18 @@ rustscout-cli replace "old_api" --replace "new_api" --backup src/     # Creates 
 rustscout-cli list-undo                                              # Shows available undo operations with IDs
 rustscout-cli undo --dry-run 1627384952                             # Preview what would be restored
 rustscout-cli undo 1627384952                                       # Restore from backup using undo ID
+
+# Multiple patterns in one pass
+rustscout-cli replace \
+  -p "oldAPI" -r "newAPI" \
+  -p "legacyFunc" -r "modernFunc" \
+  --preview .
+
+# Multiple patterns with word boundaries
+rustscout-cli replace \
+  -p "user" -r "customer" -w \
+  -p "data" -r "record" -w \
+  --backup .
 
 # Preserve file metadata
 rustscout-cli replace "pattern" --replace "new" --preserve src/
