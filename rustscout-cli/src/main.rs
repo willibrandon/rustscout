@@ -4,7 +4,10 @@ use rustscout::{
     cache::ChangeDetectionStrategy,
     config::{EncodingMode, SearchConfig},
     errors::SearchError,
-    replace::{PreviewResult, ReplacementConfig, ReplacementPattern, ReplacementSet, UndoInfo},
+    replace::{
+        FileReplacementPlan, PreviewResult, ReplacementConfig, ReplacementPattern, ReplacementSet,
+        ReplacementTask, UndoInfo,
+    },
     results::SearchResult,
     search,
     search::matcher::{HyphenMode, PatternDefinition, WordBoundaryMode},
@@ -102,28 +105,28 @@ enum Commands {
 
     /// Replace patterns in files
     Replace {
-        /// Pattern to search for (can be specified multiple times)
-        #[arg(short = 'p', long = "pattern", action = clap::ArgAction::Append)]
-        patterns: Vec<String>,
+        /// Pattern to search for
+        #[arg(short = 'p', long = "pattern", required = true)]
+        pattern: String,
 
-        /// Text to replace matches with (must match number of patterns)
-        #[arg(short = 'r', long = "replacement", action = clap::ArgAction::Append)]
-        replacements: Vec<String>,
+        /// Text to replace matches with
+        #[arg(short = 'r', long = "replacement", required = true)]
+        replacement: String,
 
         /// Treat patterns as regular expressions
-        #[arg(long = "regex", action = clap::ArgAction::Append)]
-        regex: Vec<bool>,
+        #[arg(short = 'R', long = "regex")]
+        is_regex: bool,
 
         /// Match whole words only
-        #[arg(short = 'w', long = "word-boundary", action = clap::ArgAction::Append)]
-        word_boundary: Vec<bool>,
+        #[arg(short = 'w', long = "word-boundary")]
+        word_boundary: bool,
 
         /// How to handle hyphens in word boundaries (boundary|joining)
         #[arg(long = "hyphen-mode", default_value = "joining")]
         hyphen_mode: String,
 
         /// Configuration file for replacements
-        #[arg(short, long)]
+        #[arg(short = 'c', long = "config")]
         config: Option<PathBuf>,
 
         /// Dry run - show what would be changed without making changes
@@ -133,6 +136,10 @@ enum Commands {
         /// Number of threads to use
         #[arg(short = 'j', long)]
         threads: Option<NonZeroUsize>,
+
+        /// One or more files/directories to process
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
     },
 
     /// List available undo operations
@@ -222,14 +229,15 @@ fn run() -> Result<()> {
             Ok(())
         }
         Commands::Replace {
-            patterns,
-            replacements,
-            regex,
+            pattern,
+            replacement,
+            is_regex,
             word_boundary,
             hyphen_mode,
             config,
             dry_run,
             threads,
+            paths,
         } => {
             // Load config file if provided
             let mut repl_config = if let Some(config_path) = config {
@@ -245,69 +253,32 @@ fn run() -> Result<()> {
                 }
             };
 
-            // Validate patterns and replacements match
-            if patterns.len() != replacements.len() {
-                return Err(SearchError::config_error(
-                    "Number of patterns must match number of replacements",
-                ));
-            }
-
-            // Extend regex and word_boundary to match pattern count
-            let regex_flags = if regex.is_empty() {
-                vec![false; patterns.len()]
-            } else if regex.len() == 1 {
-                vec![regex[0]; patterns.len()]
-            } else if regex.len() != patterns.len() {
-                return Err(SearchError::config_error(
-                    "Number of --regex flags must be 0, 1, or match number of patterns",
-                ));
+            let target_paths = if paths.is_empty() {
+                vec![PathBuf::from(".")] // Default to current directory if no paths provided
             } else {
-                regex
+                paths
             };
 
-            let word_boundaries = if word_boundary.is_empty() {
-                vec![false; patterns.len()]
-            } else if word_boundary.len() == 1 {
-                vec![word_boundary[0]; patterns.len()]
-            } else if word_boundary.len() != patterns.len() {
-                return Err(SearchError::config_error(
-                    "Number of --word-boundary flags must be 0, 1, or match number of patterns",
-                ));
-            } else {
-                word_boundary
-            };
-
-            // Parse hyphen handling
-            let hyphen_mode = match hyphen_mode.as_str() {
-                "boundary" => HyphenMode::Boundary,
-                "joining" => HyphenMode::Joining,
-                _ => return Err(SearchError::config_error("Invalid hyphen mode")),
-            };
-
-            // Create pattern definitions
-            let mut pattern_defs = Vec::with_capacity(patterns.len());
-            for i in 0..patterns.len() {
-                let mut pattern_text = patterns[i].clone();
-                if word_boundaries[i] && regex_flags[i] {
-                    pattern_text = format!(r"\b{}\b", pattern_text);
-                }
-
-                pattern_defs.push(ReplacementPattern {
-                    definition: PatternDefinition {
-                        text: pattern_text,
-                        is_regex: regex_flags[i],
-                        boundary_mode: if word_boundaries[i] {
-                            WordBoundaryMode::WholeWords
-                        } else {
-                            WordBoundaryMode::None
-                        },
-                        hyphen_mode,
+            // Create pattern definition
+            let pattern_def = ReplacementPattern {
+                definition: PatternDefinition {
+                    text: pattern,
+                    is_regex,
+                    boundary_mode: if word_boundary {
+                        WordBoundaryMode::WholeWords
+                    } else {
+                        WordBoundaryMode::None
                     },
-                    replacement_text: replacements[i].clone(),
-                });
-            }
+                    hyphen_mode: match hyphen_mode.as_str() {
+                        "boundary" => HyphenMode::Boundary,
+                        _ => HyphenMode::Joining,
+                    },
+                },
+                replacement_text: replacement.clone(),
+            };
 
-            repl_config.patterns = pattern_defs;
+            // Set the pattern in the config
+            repl_config.patterns = vec![pattern_def.clone()];
 
             // Set thread count if specified
             if let Some(thread_count) = threads {
@@ -317,13 +288,94 @@ fn run() -> Result<()> {
                     .map_err(|e| SearchError::config_error(e.to_string()))?;
             }
 
-            // Create undo directory if it doesn't exist
-            std::fs::create_dir_all(&repl_config.undo_dir).map_err(|e| {
-                SearchError::config_error(format!("Failed to create undo dir: {}", e))
-            })?;
+            // Create replacement set
+            let mut replacement_set = ReplacementSet::new(repl_config.clone());
+
+            // First, find all matches using the search functionality
+            let search_config = SearchConfig {
+                pattern_definitions: vec![pattern_def.definition],
+                root_path: PathBuf::from("."),
+                file_extensions: None,
+                ignore_patterns: vec![],
+                stats_only: false,
+                thread_count: threads.unwrap_or_else(|| NonZeroUsize::new(4).unwrap()),
+                log_level: "info".to_string(),
+                context_before: 0,
+                context_after: 0,
+                incremental: false,
+                cache_path: None,
+                cache_strategy: ChangeDetectionStrategy::FileSignature,
+                max_cache_size: None,
+                use_compression: false,
+                encoding_mode: EncodingMode::FailFast,
+            };
+
+            // Process each target path
+            for path in target_paths {
+                if path.is_file() {
+                    let mut plan = FileReplacementPlan::new(path.clone())?;
+                    // Search for matches in this file
+                    let search_result = search(&SearchConfig {
+                        root_path: path.clone(),
+                        ..search_config.clone()
+                    })?;
+
+                    // Create a replacement task for each match
+                    if let Some(file_result) = search_result.file_results.first() {
+                        let content = std::fs::read_to_string(&path)?;
+
+                        // Create a map of line number to byte offset
+                        let mut line_offsets = vec![0];
+                        for (i, c) in content.char_indices() {
+                            if c == '\n' {
+                                line_offsets.push(i + 1);
+                            }
+                        }
+                        line_offsets.push(content.len());
+
+                        for m in &file_result.matches {
+                            // Convert line-relative positions to absolute file positions
+                            let line_offset = line_offsets[m.line_number - 1];
+                            let abs_start = line_offset + m.start;
+                            let abs_end = line_offset + m.end;
+
+                            let task = ReplacementTask::new(
+                                path.clone(),
+                                (abs_start, abs_end),
+                                replacement.clone(),
+                                0,
+                                repl_config.clone(),
+                            );
+                            plan.add_replacement(task)?;
+                        }
+                        replacement_set.add_plan(plan);
+                    }
+                } else if path.is_dir() {
+                    // Search for matches in all files in the directory
+                    let search_result = search(&SearchConfig {
+                        root_path: path.clone(),
+                        ..search_config.clone()
+                    })?;
+
+                    // Create plans for each file with matches
+                    for file_result in &search_result.file_results {
+                        let mut plan = FileReplacementPlan::new(file_result.path.clone())?;
+                        for m in &file_result.matches {
+                            let task = ReplacementTask::new(
+                                file_result.path.clone(),
+                                (m.start, m.end),
+                                replacement.clone(),
+                                0,
+                                repl_config.clone(),
+                            );
+                            plan.add_replacement(task)?;
+                        }
+                        replacement_set.add_plan(plan);
+                    }
+                }
+            }
 
             // Execute replacements
-            let replacement_set = ReplacementSet::new(repl_config);
             if dry_run {
                 let preview = replacement_set.preview()?;
                 print_preview_results(&preview);
@@ -331,6 +383,7 @@ fn run() -> Result<()> {
                 let _backups = replacement_set.apply_with_progress()?;
                 print_replacement_results(&replacement_set, false);
             }
+
             Ok(())
         }
         Commands::ListUndo => {

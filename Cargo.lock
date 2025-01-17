@@ -1071,6 +1071,7 @@ dependencies = [
  "anyhow",
  "clap",
  "colored",
+ "ignore",
  "itertools 0.12.1",
  "num_cpus",
  "rayon",

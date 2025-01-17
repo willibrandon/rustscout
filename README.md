@@ -75,10 +75,10 @@ Basic usage:
 rustscout-cli "pattern" /path/to/search
 
 # Search with word boundaries
-rustscout-cli search --pattern "add" --word-boundary . # Find "add" but not "address"
+rustscout-cli search --pattern "add" --word-boundary=true . # Find "add" but not "address"
 
 # Search with regex and word boundaries
-rustscout-cli search --pattern "test_.*" --word-boundary --regex . # Find test functions
+rustscout-cli search --pattern "test_.*" --word-boundary=true --regex . # Find test functions
 
 # Note: If your regex already has \b markers (e.g., "\btest\b"), RustScout preserves them.
 #       Otherwise, --word-boundary automatically adds them around your pattern.
@@ -125,34 +125,35 @@ rustscout-cli -A 2 "pattern" .  # 2 lines after
 rustscout-cli "fn\s+\w+\s*\([^)]*\)" .
 
 # Find standalone TODO comments
-rustscout-cli search --pattern "TODO" --word-boundary .
+rustscout-cli search --pattern "TODO" --word-boundary=true .
 
 # Multiple patterns with word boundaries
-rustscout-cli search --pattern "add" --word-boundary --pattern "remove" --word-boundary .
+rustscout-cli search --pattern "add" --word-boundary=true --pattern "remove" --word-boundary=true .
 
 # Mix of patterns with different settings
-rustscout-cli search --pattern "test" --word-boundary --pattern "FIXME:.*bug.*line \d+" --regex .
+rustscout-cli search --pattern "test" --word-boundary=true .                    # Won't match in "test-case" (default: code/joining mode)
+rustscout-cli search --pattern "FIXME:.*bug.*line \d+" --regex .
 ```
 
 #### Hyphen and Underscore Handling
 
 ```bash
 # Smart hyphen handling (--hyphen-mode flag)
-rustscout-cli search --pattern "test" --word-boundary .                    # Won't match in "test-case" (default: code/joining mode)
-rustscout-cli search --pattern "hello" --word-boundary --hyphen-mode=boundary .  # Will match in "hello-world" (boundary mode for text)
-rustscout-cli search --pattern "test" --word-boundary --hyphen-mode=joining .    # Won't match in "test-case" (explicit joining mode)
+rustscout-cli search --pattern "test" --word-boundary=true .                    # Won't match in "test-case" (default: code/joining mode)
+rustscout-cli search --pattern "hello" --word-boundary=true --hyphen-mode=boundary .  # Will match in "hello-world" (boundary mode for text)
+rustscout-cli search --pattern "test" --word-boundary=true --hyphen-mode=joining .    # Won't match in "test-case" (explicit joining mode)
 
 # Underscore handling (always joins in all modes)
-rustscout-cli search --pattern "test" --word-boundary .          # Won't match in "test_case" (underscores always join)
-rustscout-cli search --pattern "hello_world" --word-boundary .   # Matches full identifier only
-rustscout-cli search --pattern "test_café_안녕" --word-boundary . # Matches full mixed-script identifier
+rustscout-cli search --pattern "test" --word-boundary=true .          # Won't match in "test_case" (underscores always join)
+rustscout-cli search --pattern "hello_world" --word-boundary=true .   # Matches full identifier only
+rustscout-cli search --pattern "test_café_안녕" --word-boundary=true . # Matches full mixed-script identifier
 ```
 
 #### Unicode Hyphen Support
 
 ```bash
 # Matches with any hyphen type:
-rustscout-cli search --pattern "hello" --word-boundary --hyphen-mode=boundary .
+rustscout-cli search --pattern "hello" --word-boundary=true --hyphen-mode=boundary .
 ```
 
 #### Regex with Word Boundaries
@@ -160,7 +161,7 @@ rustscout-cli search --pattern "hello" --word-boundary --hyphen-mode=boundary .
 ```bash
 # Explicit \b in pattern vs. --word-boundary flag
 rustscout-cli search --pattern "\bhello-\w+\b" --regex --hyphen-mode=boundary .  # \b matches word boundaries in pattern
-rustscout-cli search --pattern "test-\d+" --regex --word-boundary .              # --word-boundary adds \b outside pattern
+rustscout-cli search --pattern "test-\d+" --regex --word-boundary=true .              # --word-boundary adds \b outside pattern
 
 # Pattern with no word boundaries
 rustscout-cli search --pattern "address" .                        # Matches "address" within words (e.g., "preaddress")
@@ -170,15 +171,15 @@ rustscout-cli search --pattern "address" .                        # Matches "add
 
 ```bash
 # Unicode-aware word boundaries
-rustscout-cli search --pattern "café" --word-boundary .          # Matches "café" but not "café-bar"
-rustscout-cli search --pattern "привет" --word-boundary .        # Works with Cyrillic
-rustscout-cli search --pattern "안녕" --word-boundary .          # Works with Korean
-rustscout-cli search --pattern "你好" --word-boundary .          # Works with Chinese
+rustscout-cli search --pattern "café" --word-boundary=true .          # Matches "café" but not "café-bar"
+rustscout-cli search --pattern "привет" --word-boundary=true .        # Works with Cyrillic
+rustscout-cli search --pattern "안녕" --word-boundary=true .          # Works with Korean
+rustscout-cli search --pattern "你好" --word-boundary=true .          # Works with Chinese
 
 # Mixed-script identifiers (underscore always joins different scripts)
-rustscout-cli search --pattern "hello_世界" --word-boundary .    # Smart script bridging with underscore
-rustscout-cli search --pattern "test_café_안녕" --word-boundary . # Complex mixed-script cases
-rustscout-cli search --pattern "my_∑_total" --word-boundary .    # Math symbols in identifiers
+rustscout-cli search --pattern "hello_世界" --word-boundary=true .    # Smart script bridging with underscore
+rustscout-cli search --pattern "test_café_안녕" --word-boundary=true . # Complex mixed-script cases
+rustscout-cli search --pattern "my_∑_total" --word-boundary=true .    # Math symbols in identifiers
 ```
 
 ### Incremental Search
