@@ -3,8 +3,9 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use rustscout::{
     cache::{ChangeDetectionStrategy, IncrementalCache},
-    config::EncodingMode,
-    search, SearchConfig,
+    config::SearchConfig,
+    search,
+    search::matcher::{HyphenHandling, PatternDefinition, WordBoundaryMode},
 };
 use std::{fs::File, io::Write, num::NonZeroUsize};
 use tempfile::tempdir;
@@ -30,10 +31,15 @@ fn create_test_files(
 
 fn create_base_config(dir: &tempfile::TempDir) -> SearchConfig {
     SearchConfig {
-        pattern_definitions: vec![],
+        pattern_definitions: vec![PatternDefinition {
+            text: "TODO".to_string(),
+            is_regex: false,
+            boundary_mode: WordBoundaryMode::None,
+            hyphen_handling: HyphenHandling::default(),
+        }],
         root_path: dir.path().to_path_buf(),
-        ignore_patterns: vec![".git/**".to_string()],
         file_extensions: None,
+        ignore_patterns: vec![],
         stats_only: false,
         thread_count: NonZeroUsize::new(1).unwrap(),
         log_level: "warn".to_string(),
@@ -41,10 +47,10 @@ fn create_base_config(dir: &tempfile::TempDir) -> SearchConfig {
         context_after: 0,
         incremental: false,
         cache_path: None,
-        cache_strategy: ChangeDetectionStrategy::Auto,
+        cache_strategy: ChangeDetectionStrategy::FileSignature,
         max_cache_size: None,
         use_compression: false,
-        encoding_mode: EncodingMode::FailFast,
+        encoding_mode: rustscout::config::EncodingMode::default(),
     }
 }
 

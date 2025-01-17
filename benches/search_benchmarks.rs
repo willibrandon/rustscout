@@ -3,6 +3,8 @@ use rustscout::{
     cache::{ChangeDetectionStrategy, IncrementalCache},
     replace::{ReplacementConfig, ReplacementPlan, ReplacementTask},
     search, SearchConfig,
+    PatternDefinition, WordBoundaryMode, HyphenHandling,
+    config::EncodingMode,
 };
 use std::fs::File;
 use std::io::Write;
@@ -27,8 +29,12 @@ fn create_test_files(dir: &tempdir::TempDir, count: usize, lines_per_file: usize
 
 fn create_base_config(dir: &tempdir::TempDir) -> SearchConfig {
     SearchConfig {
-        pattern: "TODO".to_string(),
-        patterns: vec!["TODO".to_string()],
+        pattern_definitions: vec![PatternDefinition {
+            text: "TODO".to_string(),
+            is_regex: false,
+            boundary_mode: WordBoundaryMode::None,
+            hyphen_handling: HyphenHandling::default(),
+        }],
         root_path: dir.path().to_path_buf(),
         file_extensions: None,
         ignore_patterns: vec![],
@@ -42,6 +48,7 @@ fn create_base_config(dir: &tempdir::TempDir) -> SearchConfig {
         cache_strategy: ChangeDetectionStrategy::FileSignature,
         max_cache_size: None,
         use_compression: false,
+        encoding_mode: EncodingMode::default(),
     }
 }
 
@@ -79,8 +86,12 @@ fn bench_regex_pattern(c: &mut Criterion) {
     let dir = tempdir().unwrap();
     create_test_files(&dir, 1, 10);
     let mut config = create_base_config(&dir);
-    config.pattern = r"TODO:.*\d+".to_string();
-    config.patterns = vec![r"TODO:.*\d+".to_string()];
+    config.pattern_definitions = vec![PatternDefinition {
+        text: r"TODO:.*\d+".to_string(),
+        is_regex: true,
+        boundary_mode: WordBoundaryMode::None,
+        hyphen_handling: HyphenHandling::default(),
+    }];
 
     let mut group = c.benchmark_group("Regex Pattern");
     group.bench_function("search", |b| {
@@ -94,17 +105,21 @@ fn bench_repeated_pattern(c: &mut Criterion) {
     create_test_files(&dir, 1, 10);
 
     let patterns = vec![
-        "TODO",
-        r"TODO:.*\d+",
-        r"FIXME:.*bug.*line \d+",
-        r"NOTE:.*important.*\d+",
+        ("TODO", false),
+        (r"TODO:.*\d+", true),
+        (r"FIXME:.*bug.*line \d+", true),
+        (r"NOTE:.*important.*\d+", true),
     ];
 
     let mut group = c.benchmark_group("Repeated Pattern");
-    for (i, pattern) in patterns.iter().enumerate() {
+    for (i, (pattern, is_regex)) in patterns.iter().enumerate() {
         let mut config = create_base_config(&dir);
-        config.pattern = pattern.to_string();
-        config.patterns = vec![pattern.to_string()];
+        config.pattern_definitions = vec![PatternDefinition {
+            text: pattern.to_string(),
+            is_regex: *is_regex,
+            boundary_mode: WordBoundaryMode::None,
+            hyphen_handling: HyphenHandling::default(),
+        }];
 
         group.bench_function(format!("pattern_{}", i), |b| {
             b.iter(|| black_box(search(&config).unwrap()));
