@@ -411,3 +411,67 @@ fn test_replace_cli_args() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_replace_multiple_patterns() -> Result<()> {
+    let dir = tempdir()?;
+    let test_file = dir.path().join("test.txt");
+    fs::write(&test_file, "Hello world! Goodbye world!")?;
+
+    let undo_dir = dir.path().join(".rustscout").join("undo");
+    fs::create_dir_all(&undo_dir)?;
+
+    let config = ReplacementConfig {
+        patterns: vec![
+            ReplacementPattern {
+                definition: PatternDefinition {
+                    text: "Hello".to_string(),
+                    is_regex: false,
+                    boundary_mode: WordBoundaryMode::None,
+                    hyphen_handling: HyphenHandling::Joining,
+                },
+                replacement_text: "Hi".to_string(),
+            },
+            ReplacementPattern {
+                definition: PatternDefinition {
+                    text: "Goodbye".to_string(),
+                    is_regex: false,
+                    boundary_mode: WordBoundaryMode::None,
+                    hyphen_handling: HyphenHandling::Joining,
+                },
+                replacement_text: "Bye".to_string(),
+            },
+        ],
+        backup_enabled: true,
+        dry_run: false,
+        backup_dir: None,
+        preserve_metadata: true,
+        undo_dir: undo_dir.clone(),
+    };
+
+    let mut plan = FileReplacementPlan::new(test_file.clone())?;
+    // Add first replacement
+    plan.add_replacement(ReplacementTask::new(
+        test_file.clone(),
+        (0, 5),
+        "Hi".to_string(),
+        0,
+        config.clone(),
+    ))?;
+
+    // Add second replacement
+    plan.add_replacement(ReplacementTask::new(
+        test_file.clone(),
+        (13, 20),
+        "Bye".to_string(),
+        1,
+        config.clone(),
+    ))?;
+
+    let mut replacement_set = ReplacementSet::new(config);
+    replacement_set.add_plan(plan);
+    replacement_set.apply()?;
+
+    assert_eq!(fs::read_to_string(&test_file)?, "Hi world! Bye world!");
+    Ok(())
+}

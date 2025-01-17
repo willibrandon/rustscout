@@ -3,16 +3,13 @@ use colored::Colorize;
 use rustscout::{
     cache::ChangeDetectionStrategy,
     config::{EncodingMode, SearchConfig},
-    replace::{
-        FileReplacementPlan, ReplacementConfig, ReplacementPattern, ReplacementSet,
-        ReplacementTask, UndoInfo,
-    },
+    errors::SearchError,
+    replace::{PreviewResult, ReplacementConfig, ReplacementPattern, ReplacementSet, UndoInfo},
     results::SearchResult,
     search,
     search::matcher::{HyphenHandling, PatternDefinition, WordBoundaryMode},
-    SearchError,
 };
-use std::{fs, num::NonZeroUsize, path::PathBuf};
+use std::{num::NonZeroUsize, path::PathBuf};
 
 type Result<T> = std::result::Result<T, SearchError>;
 
@@ -101,24 +98,24 @@ enum Commands {
 
     /// Replace patterns in files
     Replace {
-        /// Pattern to search for
-        #[arg(short = 'p', long)]
-        pattern: Option<String>,
+        /// Pattern to search for (can be specified multiple times)
+        #[arg(short = 'p', long = "pattern", action = clap::ArgAction::Append)]
+        patterns: Vec<String>,
 
-        /// Text to replace matches with
-        #[arg(short = 'r', long)]
-        replacement: Option<String>,
+        /// Text to replace matches with (must match number of patterns)
+        #[arg(short = 'r', long = "replacement", action = clap::ArgAction::Append)]
+        replacements: Vec<String>,
 
-        /// Treat pattern as a regular expression
-        #[arg(long)]
-        regex: bool,
+        /// Treat patterns as regular expressions
+        #[arg(long = "regex", action = clap::ArgAction::Append)]
+        regex: Vec<bool>,
 
         /// Match whole words only
-        #[arg(short = 'w', long)]
-        word_boundary: bool,
+        #[arg(short = 'w', long = "word-boundary", action = clap::ArgAction::Append)]
+        word_boundary: Vec<bool>,
 
         /// How to handle hyphens in word boundaries (boundary|joining)
-        #[arg(long, default_value = "joining")]
+        #[arg(long = "hyphen-handling", default_value = "joining")]
         hyphen_handling: String,
 
         /// Configuration file for replacements
@@ -217,119 +214,115 @@ fn run() -> Result<()> {
             Ok(())
         }
         Commands::Replace {
-            pattern,
-            replacement,
+            patterns,
+            replacements,
             regex,
             word_boundary,
             hyphen_handling,
             config,
             dry_run,
-            threads: _,
+            threads,
         } => {
-            // Load config from file if provided, otherwise create default
-            let mut repl_config = if let Some(path) = config {
-                ReplacementConfig::load_from(&path)?
+            // Load config file if provided
+            let mut repl_config = if let Some(config_path) = config {
+                ReplacementConfig::load_from(&config_path)?
             } else {
-                // Create default config with undo directory
-                let undo_dir = PathBuf::from(".rustscout").join("undo");
-                fs::create_dir_all(&undo_dir)?;
                 ReplacementConfig {
-                    patterns: Vec::new(),
+                    patterns: vec![],
                     backup_enabled: true,
                     dry_run,
                     backup_dir: None,
                     preserve_metadata: true,
-                    undo_dir,
+                    undo_dir: PathBuf::from(".rustscout").join("undo"),
                 }
             };
 
-            // Override pattern and replacement if provided via CLI
-            if let Some(ptn) = pattern {
-                let mut pattern_text = ptn;
-                if word_boundary && regex {
-                    pattern_text = format!(r"\b{}\b", pattern_text);
-                }
-
-                let def = PatternDefinition {
-                    text: pattern_text,
-                    is_regex: regex,
-                    boundary_mode: if word_boundary {
-                        WordBoundaryMode::WholeWords
-                    } else {
-                        WordBoundaryMode::None
-                    },
-                    hyphen_handling: match hyphen_handling.as_str() {
-                        "boundary" => HyphenHandling::Boundary,
-                        _ => HyphenHandling::Joining,
-                    },
-                };
-
-                if let Some(repl) = replacement {
-                    repl_config.patterns = vec![ReplacementPattern {
-                        definition: def,
-                        replacement_text: repl,
-                    }];
-                } else {
-                    return Err(SearchError::config_error(
-                        "Replacement text (-r) is required when pattern (-p) is specified",
-                    ));
-                }
-            } else if replacement.is_some() {
+            // Validate patterns and replacements match
+            if patterns.len() != replacements.len() {
                 return Err(SearchError::config_error(
-                    "Pattern (-p) is required when replacement (-r) is specified",
+                    "Number of patterns must match number of replacements",
                 ));
             }
 
-            // Update dry run from CLI
-            repl_config.dry_run = dry_run;
-
-            // Create search config to find files to process
-            let search_config = SearchConfig {
-                pattern_definitions: repl_config
-                    .patterns
-                    .iter()
-                    .map(|p| p.definition.clone())
-                    .collect(),
-                root_path: PathBuf::from("."),
-                file_extensions: None,
-                ignore_patterns: vec![],
-                stats_only: false,
-                thread_count: NonZeroUsize::new(4).unwrap(),
-                log_level: "info".to_string(),
-                context_before: 0,
-                context_after: 0,
-                incremental: false,
-                cache_path: None,
-                cache_strategy: ChangeDetectionStrategy::Auto,
-                max_cache_size: None,
-                use_compression: false,
-                encoding_mode: EncodingMode::FailFast,
+            // Extend regex and word_boundary to match pattern count
+            let regex_flags = if regex.is_empty() {
+                vec![false; patterns.len()]
+            } else if regex.len() == 1 {
+                vec![regex[0]; patterns.len()]
+            } else if regex.len() != patterns.len() {
+                return Err(SearchError::config_error(
+                    "Number of --regex flags must be 0, 1, or match number of patterns",
+                ));
+            } else {
+                regex
             };
 
-            // Find matches
-            let search_result = search(&search_config)?;
+            let word_boundaries = if word_boundary.is_empty() {
+                vec![false; patterns.len()]
+            } else if word_boundary.len() == 1 {
+                vec![word_boundary[0]; patterns.len()]
+            } else if word_boundary.len() != patterns.len() {
+                return Err(SearchError::config_error(
+                    "Number of --word-boundary flags must be 0, 1, or match number of patterns",
+                ));
+            } else {
+                word_boundary
+            };
 
-            // Create replacement set
-            let mut set = ReplacementSet::new(repl_config.clone());
+            // Parse hyphen handling
+            let hyphen_mode = match hyphen_handling.as_str() {
+                "boundary" => HyphenHandling::Boundary,
+                "joining" => HyphenHandling::Joining,
+                _ => return Err(SearchError::config_error("Invalid hyphen handling mode")),
+            };
 
-            // Create plans for each file with matches
-            for file_result in &search_result.file_results {
-                let mut plan = FileReplacementPlan::new(file_result.path.clone())?;
-                for m in &file_result.matches {
-                    plan.add_replacement(ReplacementTask::new(
-                        file_result.path.clone(),
-                        (m.start, m.end),
-                        repl_config.patterns[0].replacement_text.clone(),
-                        0,
-                        repl_config.clone(),
-                    ))?;
+            // Create pattern definitions
+            let mut pattern_defs = Vec::with_capacity(patterns.len());
+            for i in 0..patterns.len() {
+                let mut pattern_text = patterns[i].clone();
+                if word_boundaries[i] && regex_flags[i] {
+                    pattern_text = format!(r"\b{}\b", pattern_text);
                 }
-                set.add_plan(plan);
+
+                pattern_defs.push(ReplacementPattern {
+                    definition: PatternDefinition {
+                        text: pattern_text,
+                        is_regex: regex_flags[i],
+                        boundary_mode: if word_boundaries[i] {
+                            WordBoundaryMode::WholeWords
+                        } else {
+                            WordBoundaryMode::None
+                        },
+                        hyphen_handling: hyphen_mode,
+                    },
+                    replacement_text: replacements[i].clone(),
+                });
             }
 
-            // Apply changes
-            set.apply()?;
-            print_replacement_results(&set, dry_run);
+            repl_config.patterns = pattern_defs;
+
+            // Set thread count if specified
+            if let Some(thread_count) = threads {
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(thread_count.get())
+                    .build_global()
+                    .map_err(|e| SearchError::config_error(e.to_string()))?;
+            }
+
+            // Create undo directory if it doesn't exist
+            std::fs::create_dir_all(&repl_config.undo_dir).map_err(|e| {
+                SearchError::config_error(format!("Failed to create undo dir: {}", e))
+            })?;
+
+            // Execute replacements
+            let replacement_set = ReplacementSet::new(repl_config);
+            if dry_run {
+                let preview = replacement_set.preview()?;
+                print_preview_results(&preview);
+            } else {
+                let _backups = replacement_set.apply_with_progress()?;
+                print_replacement_results(&replacement_set, false);
+            }
             Ok(())
         }
         Commands::ListUndo => {
@@ -430,5 +423,16 @@ fn print_undo_operations(operations: &[(UndoInfo, PathBuf)]) {
     println!("Available undo operations:");
     for (info, path) in operations {
         println!("{}: {}", info.description, path.display());
+    }
+}
+
+fn print_preview_results(preview: &[PreviewResult]) {
+    for result in preview {
+        println!("File: {}", result.file_path.display());
+        for i in 0..result.original_lines.len() {
+            println!("  - {}", result.original_lines[i]);
+            println!("  + {}", result.new_lines[i]);
+        }
+        println!();
     }
 }
