@@ -3,13 +3,16 @@ use colored::Colorize;
 use rustscout::{
     cache::ChangeDetectionStrategy,
     config::{EncodingMode, SearchConfig},
-    replace::{ReplacementConfig, ReplacementSet, UndoInfo},
+    replace::{
+        FileReplacementPlan, ReplacementConfig, ReplacementPattern, ReplacementSet,
+        ReplacementTask, UndoInfo,
+    },
     results::SearchResult,
     search,
     search::matcher::{HyphenHandling, PatternDefinition, WordBoundaryMode},
     SearchError,
 };
-use std::{num::NonZeroUsize, path::PathBuf};
+use std::{fs, num::NonZeroUsize, path::PathBuf};
 
 type Result<T> = std::result::Result<T, SearchError>;
 
@@ -98,9 +101,29 @@ enum Commands {
 
     /// Replace patterns in files
     Replace {
+        /// Pattern to search for
+        #[arg(short = 'p', long)]
+        pattern: Option<String>,
+
+        /// Text to replace matches with
+        #[arg(short = 'r', long)]
+        replacement: Option<String>,
+
+        /// Treat pattern as a regular expression
+        #[arg(long)]
+        regex: bool,
+
+        /// Match whole words only
+        #[arg(short = 'w', long)]
+        word_boundary: bool,
+
+        /// How to handle hyphens in word boundaries (boundary|joining)
+        #[arg(long, default_value = "joining")]
+        hyphen_handling: String,
+
         /// Configuration file for replacements
         #[arg(short, long)]
-        config: PathBuf,
+        config: Option<PathBuf>,
 
         /// Dry run - show what would be changed without making changes
         #[arg(short = 'n', long)]
@@ -194,12 +217,117 @@ fn run() -> Result<()> {
             Ok(())
         }
         Commands::Replace {
+            pattern,
+            replacement,
+            regex,
+            word_boundary,
+            hyphen_handling,
             config,
             dry_run,
             threads: _,
         } => {
-            let config = ReplacementConfig::load_from(&config)?;
-            let set = ReplacementSet::new(config.clone());
+            // Load config from file if provided, otherwise create default
+            let mut repl_config = if let Some(path) = config {
+                ReplacementConfig::load_from(&path)?
+            } else {
+                // Create default config with undo directory
+                let undo_dir = PathBuf::from(".rustscout").join("undo");
+                fs::create_dir_all(&undo_dir)?;
+                ReplacementConfig {
+                    patterns: Vec::new(),
+                    backup_enabled: true,
+                    dry_run,
+                    backup_dir: None,
+                    preserve_metadata: true,
+                    undo_dir,
+                }
+            };
+
+            // Override pattern and replacement if provided via CLI
+            if let Some(ptn) = pattern {
+                let mut pattern_text = ptn;
+                if word_boundary && regex {
+                    pattern_text = format!(r"\b{}\b", pattern_text);
+                }
+
+                let def = PatternDefinition {
+                    text: pattern_text,
+                    is_regex: regex,
+                    boundary_mode: if word_boundary {
+                        WordBoundaryMode::WholeWords
+                    } else {
+                        WordBoundaryMode::None
+                    },
+                    hyphen_handling: match hyphen_handling.as_str() {
+                        "boundary" => HyphenHandling::Boundary,
+                        _ => HyphenHandling::Joining,
+                    },
+                };
+
+                if let Some(repl) = replacement {
+                    repl_config.patterns = vec![ReplacementPattern {
+                        definition: def,
+                        replacement_text: repl,
+                    }];
+                } else {
+                    return Err(SearchError::config_error(
+                        "Replacement text (-r) is required when pattern (-p) is specified",
+                    ));
+                }
+            } else if replacement.is_some() {
+                return Err(SearchError::config_error(
+                    "Pattern (-p) is required when replacement (-r) is specified",
+                ));
+            }
+
+            // Update dry run from CLI
+            repl_config.dry_run = dry_run;
+
+            // Create search config to find files to process
+            let search_config = SearchConfig {
+                pattern_definitions: repl_config
+                    .patterns
+                    .iter()
+                    .map(|p| p.definition.clone())
+                    .collect(),
+                root_path: PathBuf::from("."),
+                file_extensions: None,
+                ignore_patterns: vec![],
+                stats_only: false,
+                thread_count: NonZeroUsize::new(4).unwrap(),
+                log_level: "info".to_string(),
+                context_before: 0,
+                context_after: 0,
+                incremental: false,
+                cache_path: None,
+                cache_strategy: ChangeDetectionStrategy::Auto,
+                max_cache_size: None,
+                use_compression: false,
+                encoding_mode: EncodingMode::FailFast,
+            };
+
+            // Find matches
+            let search_result = search(&search_config)?;
+
+            // Create replacement set
+            let mut set = ReplacementSet::new(repl_config.clone());
+
+            // Create plans for each file with matches
+            for file_result in &search_result.file_results {
+                let mut plan = FileReplacementPlan::new(file_result.path.clone())?;
+                for m in &file_result.matches {
+                    plan.add_replacement(ReplacementTask::new(
+                        file_result.path.clone(),
+                        (m.start, m.end),
+                        repl_config.patterns[0].replacement_text.clone(),
+                        0,
+                        repl_config.clone(),
+                    ))?;
+                }
+                set.add_plan(plan);
+            }
+
+            // Apply changes
             set.apply()?;
             print_replacement_results(&set, dry_run);
             Ok(())
@@ -260,6 +388,27 @@ fn print_replacement_results(set: &ReplacementSet, dry_run: bool) {
         println!("Dry run - no changes will be made");
     }
 
+    // Get preview of changes
+    if let Ok(preview) = set.preview() {
+        for result in preview {
+            println!(
+                "\nIn file: {}",
+                result.file_path.display().to_string().blue()
+            );
+            for (i, (orig, new)) in result
+                .original_lines
+                .iter()
+                .zip(result.new_lines.iter())
+                .enumerate()
+            {
+                println!("Line {}: ", result.line_numbers[i]);
+                println!("  - {}", orig.red());
+                println!("  + {}", new.green());
+            }
+        }
+    }
+
+    // Print plan summary
     for plan in &set.plans {
         println!("\nIn file: {}", plan.file_path.display().to_string().blue());
         for replacement in &plan.replacements {

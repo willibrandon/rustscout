@@ -1,11 +1,17 @@
-use anyhow::Result;
-use rustscout::replace::{
-    FileReplacementPlan, ReplacementConfig, ReplacementPattern, ReplacementSet, ReplacementTask,
+use rustscout::{
+    cache::ChangeDetectionStrategy,
+    config::{EncodingMode, SearchConfig},
+    replace::{
+        FileReplacementPlan, ReplacementConfig, ReplacementPattern, ReplacementSet, ReplacementTask,
+    },
+    search,
+    search::matcher::{HyphenHandling, PatternDefinition, WordBoundaryMode},
+    SearchError,
 };
-use rustscout::search::matcher::{HyphenHandling, PatternDefinition, WordBoundaryMode};
-use std::fs;
-use std::path::Path;
+use std::{fs, num::NonZeroUsize, path::Path};
 use tempfile::tempdir;
+
+type Result<T> = std::result::Result<T, SearchError>;
 
 // Helper function to create test files
 fn create_test_files(dir: impl AsRef<Path>, files: &[(&str, &str)]) -> Result<()> {
@@ -317,5 +323,91 @@ fn test_replace_undo_restore() -> Result<()> {
 
     // Verify the file was restored
     assert_eq!(fs::read_to_string(&test_file)?, original_content);
+    Ok(())
+}
+
+#[test]
+fn test_replace_cli_args() -> Result<()> {
+    let dir = tempdir()?;
+    let test_file = dir.path().join("test.txt");
+    fs::write(&test_file, "foo test foo-bar")?;
+
+    let undo_dir = dir.path().join(".rustscout").join("undo");
+    fs::create_dir_all(&undo_dir)?;
+
+    // Simulate CLI args: replace -p "foo" -r "bar" --regex -w --hyphen-handling boundary --dry-run
+    let config = ReplacementConfig {
+        patterns: vec![ReplacementPattern {
+            definition: PatternDefinition {
+                text: r"\bfoo\b".to_string(),
+                is_regex: true,
+                boundary_mode: WordBoundaryMode::WholeWords,
+                hyphen_handling: HyphenHandling::Boundary,
+            },
+            replacement_text: "bar".to_string(),
+        }],
+        backup_enabled: true,
+        dry_run: true,
+        backup_dir: None,
+        preserve_metadata: true,
+        undo_dir: undo_dir.clone(),
+    };
+
+    // Create search config to find matches
+    let search_config = SearchConfig {
+        pattern_definitions: config
+            .patterns
+            .iter()
+            .map(|p| p.definition.clone())
+            .collect(),
+        root_path: dir.path().to_path_buf(),
+        file_extensions: None,
+        ignore_patterns: vec![],
+        stats_only: false,
+        thread_count: NonZeroUsize::new(1).unwrap(),
+        log_level: "info".to_string(),
+        context_before: 0,
+        context_after: 0,
+        incremental: false,
+        cache_path: None,
+        cache_strategy: ChangeDetectionStrategy::Auto,
+        max_cache_size: None,
+        use_compression: false,
+        encoding_mode: EncodingMode::FailFast,
+    };
+
+    // Find matches
+    let search_result = search(&search_config)?;
+
+    // Create replacement set
+    let mut replacement_set = ReplacementSet::new(config.clone());
+
+    // Create plans for each file with matches
+    for file_result in &search_result.file_results {
+        let mut plan = FileReplacementPlan::new(file_result.path.clone())?;
+        for m in &file_result.matches {
+            plan.add_replacement(ReplacementTask::new(
+                file_result.path.clone(),
+                (m.start, m.end),
+                config.patterns[0].replacement_text.clone(),
+                0,
+                config.clone(),
+            ))?;
+        }
+        replacement_set.add_plan(plan);
+    }
+
+    // Apply in dry-run mode
+    replacement_set.apply()?;
+
+    // Verify file wasn't changed (dry run)
+    assert_eq!(fs::read_to_string(&test_file)?, "foo test foo-bar");
+
+    // Verify preview shows correct changes
+    let preview = replacement_set.preview()?;
+    assert_eq!(preview.len(), 1);
+    assert_eq!(preview[0].original_lines[0], "foo test foo-bar");
+    assert_eq!(preview[0].new_lines[0], "bar test bar-bar");
+
     Ok(())
 }
