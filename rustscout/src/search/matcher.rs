@@ -218,8 +218,7 @@ impl PatternMatcher {
         let before_char = text[..underscore_index].chars().next_back().unwrap();
         let after_char = text[underscore_index + 1..].chars().next().unwrap();
 
-        // If bridging math symbol and normal word-char => unify → skip → return false
-        // e.g. "∑_total" → skip match for "∑"
+        // If bridging math symbol and normal word-char => unify → skip match for "∑"
         let bridging_math = (Self::is_math_symbol(before_char) && Self::is_word_char(after_char))
             || (Self::is_math_symbol(after_char) && Self::is_word_char(before_char));
         if bridging_math {
@@ -239,8 +238,8 @@ impl PatternMatcher {
         hyphen_mode: HyphenMode,
         boundary_mode: WordBoundaryMode,
     ) -> bool {
-        // First check if this match is part of a repeated sequence
-        if boundary_mode == WordBoundaryMode::WholeWords
+        // For partial boundary, skip repeated tokens:
+        if boundary_mode == WordBoundaryMode::Partial
             && Self::is_part_of_repeated_sequence(text, start, end, pattern)
         {
             return false;
@@ -250,8 +249,7 @@ impl PatternMatcher {
         let before_char = if start == 0 {
             None
         } else {
-            text.get(..start)
-                .and_then(|slice| slice.chars().next_back())
+            text.get(..start).and_then(|slice| slice.chars().next_back())
         };
 
         // Get the character after the match, if any
@@ -259,34 +257,44 @@ impl PatternMatcher {
 
         match boundary_mode {
             WordBoundaryMode::None => true,
-            WordBoundaryMode::Partial => {
-                if hyphen_mode == HyphenMode::Joining {
-                    // If hyphen (ASCII or Unicode) is before/after => unify => skip
-                    if matches!(before_char, Some('-') | Some('\u{2011}'))
-                        || matches!(after_char, Some('-') | Some('\u{2011}'))
-                    {
-                        return false;
-                    }
 
-                    // If underscore is before/after => call bridging logic
+            WordBoundaryMode::Partial => {
+                // 1) skip if fully enclosed by letters
+                let left_is_letter = before_char.map_or(false, |ch| Self::is_word_char(ch));
+                let right_is_letter = after_char.map_or(false, |ch| Self::is_word_char(ch));
+                if left_is_letter && right_is_letter {
+                    return false;
+                }
+
+                // 2) bridging logic for underscores/hyphens if hyphen_mode == Joining
+                // If there's a hyphen on either side in joining mode => skip
+                let has_hyphen = matches!(before_char, Some('-') | Some('\u{2011}'))
+                    || matches!(after_char, Some('-') | Some('\u{2011}'));
+                if has_hyphen && hyphen_mode == HyphenMode::Joining {
+                    return false;
+                }
+
+                // underscores bridging?
+                if hyphen_mode == HyphenMode::Joining {
                     if before_char == Some('_') {
                         let underscore_index = start.saturating_sub(1);
-                        // If bridging logic returns false → unify => skip match
                         if !Self::underscore_partial_joining_allows_match(text, underscore_index) {
                             return false;
                         }
                     }
                     if after_char == Some('_') {
                         let underscore_index = end;
-                        // If bridging logic returns false → unify => skip match
                         if !Self::underscore_partial_joining_allows_match(text, underscore_index) {
                             return false;
                         }
                     }
                 }
+                // If none of these conditions caused a skip => accept the match
                 true
             }
+
             WordBoundaryMode::WholeWords => {
+                // Original whole-word logic, including skip repeated tokens if is_part_of_repeated_sequence
                 let before_continues = if start == 0 {
                     false
                 } else {
@@ -462,7 +470,8 @@ impl PatternMatcher {
         // Check if pattern appears immediately after this match
         let has_pattern_after = text.get(end..end + pat_len) == Some(pattern);
 
-        has_pattern_before || has_pattern_after
+        // Return true ONLY if there's pattern on BOTH sides
+        has_pattern_before && has_pattern_after
     }
 
     /// Finds all matches in the given text
@@ -512,11 +521,29 @@ impl PatternMatcher {
                 }
                 MatchStrategy::Regex {
                     regex,
-                    boundary_mode: _,
-                    hyphen_mode: _,
+                    boundary_mode,
+                    hyphen_mode,
                 } => {
-                    // For regex, word boundaries are handled in the pattern itself
-                    matches.extend(regex.find_iter(text).map(|m| (m.start(), m.end())));
+                    // For WholeWords mode, boundaries are handled in the pattern itself
+                    // For Partial mode, we need to post-filter the matches
+                    let raw_matches = regex.find_iter(text).map(|m| (m.start(), m.end()));
+
+                    match boundary_mode {
+                        WordBoundaryMode::None => matches.extend(raw_matches),
+                        WordBoundaryMode::WholeWords => matches.extend(raw_matches), // Already has \b in pattern
+                        WordBoundaryMode::Partial => {
+                            matches.extend(raw_matches.filter(|&(start, end)| {
+                                Self::is_word_boundary(
+                                    text,
+                                    start,
+                                    end,
+                                    &text[start..end],
+                                    *hyphen_mode,
+                                    *boundary_mode,
+                                )
+                            }));
+                        }
+                    }
                 }
             }
         }
