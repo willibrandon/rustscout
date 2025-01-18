@@ -465,15 +465,19 @@ impl FileReplacementPlan {
     pub fn preview(&self) -> SearchResult<Vec<PreviewResult>> {
         let mut results = Vec::new();
 
-        // Get the content and apply all replacements
+        // Get the content
         let content = fs::read_to_string(&self.file_path).map_err(SearchError::IoError)?;
         let mut new_content = content.clone();
 
-        for task in &self.replacements {
-            new_content = task.apply(&new_content)?;
+        // Apply replacements in reverse order to maintain correct offsets
+        for task in self.replacements.iter().rev() {
+            new_content.replace_range(
+                task.original_range.0..task.original_range.1,
+                &task.replacement_text,
+            );
         }
 
-        // Split into lines and compare
+        // Compare line by line
         let original_lines: Vec<&str> = content.lines().collect();
         let new_lines: Vec<&str> = new_content.lines().collect();
 
@@ -481,7 +485,6 @@ impl FileReplacementPlan {
         let mut changed_new = Vec::new();
         let mut line_numbers = Vec::new();
 
-        // Compare lines and collect changes
         for (i, (orig, new)) in original_lines.iter().zip(&new_lines).enumerate() {
             if orig != new {
                 changed_original.push(orig.to_string());
@@ -710,40 +713,8 @@ impl ReplacementSet {
         let mut results = Vec::new();
 
         for plan in &self.plans {
-            // Read the file content
-            let content = fs::read_to_string(&plan.file_path).map_err(SearchError::IoError)?;
-
-            // Apply all replacements in memory first
-            let mut new_content = content.clone();
-            for task in &plan.replacements {
-                new_content = task.apply(&new_content)?;
-            }
-
-            // Split into lines and compare
-            let original_lines: Vec<&str> = content.lines().collect();
-            let new_lines: Vec<&str> = new_content.lines().collect();
-
-            let mut changed_original = Vec::new();
-            let mut changed_new = Vec::new();
-            let mut line_numbers = Vec::new();
-
-            // Compare lines and collect changes
-            for (i, (orig, new)) in original_lines.iter().zip(&new_lines).enumerate() {
-                if orig != new {
-                    changed_original.push(orig.to_string());
-                    changed_new.push(new.to_string());
-                    line_numbers.push(i + 1); // 1-based line numbers
-                }
-            }
-
-            if !changed_original.is_empty() {
-                results.push(PreviewResult {
-                    file_path: plan.file_path.clone(),
-                    original_lines: changed_original,
-                    new_lines: changed_new,
-                    line_numbers,
-                });
-            }
+            let mut plan_results = plan.preview()?;
+            results.append(&mut plan_results);
         }
 
         Ok(results)
