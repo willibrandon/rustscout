@@ -9,6 +9,7 @@ use rustscout::{
     },
     search,
     search::matcher::{HyphenMode, PatternDefinition, WordBoundaryMode},
+    Match,
 };
 use std::{num::NonZeroUsize, path::PathBuf};
 
@@ -275,8 +276,18 @@ fn run() -> Result<()> {
                 // Track which lines we've printed to avoid duplicates when showing context
                 let mut printed_lines = std::collections::HashSet::new();
 
+                // Group matches by their line number
+                let mut line_to_matches: std::collections::HashMap<usize, Vec<&Match>> = std::collections::HashMap::new();
                 for m in &file_result.matches {
-                    let line_num = m.line_number;
+                    line_to_matches.entry(m.line_number).or_default().push(m);
+                }
+
+                // Get sorted line numbers
+                let mut line_numbers: Vec<_> = line_to_matches.keys().copied().collect();
+                line_numbers.sort();
+
+                // Process lines in order
+                for line_num in line_numbers {
                     if line_num == 0 || line_num > all_lines.len() {
                         continue;
                     }
@@ -292,46 +303,34 @@ fn run() -> Result<()> {
                         }
                     }
 
-                    // Print the matching line with highlighted matches
+                    // Print the matching line with all matches highlighted
                     if printed_lines.insert(line_num) {
                         let line = all_lines[line_num - 1];
+                        let matches_in_line = &line_to_matches[&line_num];
+
+                        // Sort matches by their start position
+                        let mut sorted = matches_in_line.clone();
+                        sorted.sort_by_key(|m| m.start);
+
                         let mut highlighted_line = String::new();
+                        let mut last_offset = 0;
 
-                        // Add the non-highlighted prefix
-                        highlighted_line.push_str(&line[..m.start]);
+                        for m in sorted {
+                            // Add non-highlighted prefix
+                            highlighted_line.push_str(&line[last_offset..m.start]);
 
-                        // Add the highlighted match
-                        let matched_text = &line[m.start..m.end];
-                        if config.no_color {
-                            highlighted_line.push_str(matched_text);
-                        } else {
-                            // For word boundaries, highlight the entire word
-                            let (start, end) = if config.word_boundary || config.boundary_mode == "strict" || config.boundary_mode == "partial" {
-                                // Find word boundaries around the match
-                                let mut word_start = m.start;
-                                let mut word_end = m.end;
-                                
-                                // Look backwards for word boundary
-                                while word_start > 0 && !line[..word_start].chars().last().unwrap().is_whitespace() {
-                                    word_start -= 1;
-                                }
-                                
-                                // Look forwards for word boundary
-                                while word_end < line.len() && !line[word_end..].chars().next().unwrap().is_whitespace() {
-                                    word_end += 1;
-                                }
-                                
-                                (word_start, word_end)
+                            // Add the highlighted match
+                            if config.no_color {
+                                highlighted_line.push_str(&line[m.start..m.end]);
                             } else {
-                                (m.start, m.end)
-                            };
+                                highlighted_line.push_str(&format!("\x1b[1;31m{}\x1b[0m", &line[m.start..m.end]));
+                            }
 
-                            let highlight_text = &line[start..end];
-                            highlighted_line.push_str(&format!("\x1b[1;31m{}\x1b[0m", highlight_text));
+                            last_offset = m.end;
                         }
 
-                        // Add the non-highlighted suffix
-                        highlighted_line.push_str(&line[m.end..]);
+                        // Add any remaining non-highlighted suffix
+                        highlighted_line.push_str(&line[last_offset..]);
 
                         println!("{}:{}:{}", 
                             file_result.path.display(),
