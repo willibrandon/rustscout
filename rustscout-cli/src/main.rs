@@ -1,16 +1,19 @@
+use std::io::Write;
+use std::num::NonZeroUsize;
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 use rustscout::{
     cache::ChangeDetectionStrategy,
     config::{EncodingMode, SearchConfig},
     errors::SearchError,
     replace::{
-        FileReplacementPlan, ReplacementConfig, ReplacementPattern, ReplacementSet, ReplacementTask,
+        FileDiff, FileReplacementPlan, ReplacementConfig, ReplacementPattern, ReplacementSet,
+        ReplacementTask, UndoInfo,
     },
-    search,
     search::matcher::{HyphenMode, PatternDefinition, WordBoundaryMode},
     Match,
 };
-use std::{num::NonZeroUsize, path::PathBuf};
 
 type Result<T> = std::result::Result<T, SearchError>;
 
@@ -19,6 +22,27 @@ type Result<T> = std::result::Result<T, SearchError>;
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Search for patterns in files
+    Search(Box<CliSearchConfig>),
+
+    /// Replace patterns in files
+    Replace {
+        #[command(subcommand)]
+        command: ReplaceCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum ReplaceCommands {
+    /// Perform a search/replace operation
+    Do(ReplaceDo),
+
+    /// Undo a previous replacement operation
+    Undo(ReplaceUndo),
 }
 
 #[derive(Parser)]
@@ -104,27 +128,6 @@ struct CliSearchConfig {
     no_color: bool,
 }
 
-#[derive(Subcommand)]
-enum Commands {
-    /// Search for patterns in files
-    Search(Box<CliSearchConfig>),
-
-    /// Replace patterns in files
-    Replace {
-        #[command(subcommand)]
-        command: ReplaceCommands,
-    },
-}
-
-#[derive(Subcommand)]
-enum ReplaceCommands {
-    /// Perform a search/replace operation
-    Do(ReplaceDo),
-
-    /// Undo a previous replacement operation
-    Undo(ReplaceUndo),
-}
-
 #[derive(Parser)]
 struct ReplaceDo {
     /// Pattern to search for
@@ -177,6 +180,26 @@ struct ReplaceUndo {
     /// ID of the replacement to undo
     #[arg()]
     id: String,
+
+    /// List all hunks available for partial revert in a given undo operation, but do not revert anything
+    #[arg(short = 'l', long = "list-hunks")]
+    list_hunks: bool,
+
+    /// A comma-separated list of zero-based hunk indices to revert. If omitted, all hunks are reverted. Example: --hunks 1,3,5
+    #[arg(short = 'u', long = "hunks")]
+    hunks: Option<String>,
+
+    /// Preview the result of reverting the specified hunks without modifying any files
+    #[arg(short = 'p', long = "preview")]
+    preview: bool,
+
+    /// Launch an interactive wizard or TUI to select hunks for partial revert
+    #[arg(short = 'i', long = "interactive")]
+    interactive: bool,
+
+    /// Skip confirmation prompts; proceed without user input
+    #[arg(short = 'f', long = "force", alias = "yes")]
+    force: bool,
 }
 
 mod diff_utils;
@@ -269,7 +292,7 @@ fn run() -> Result<()> {
                 encoding_mode,
             };
 
-            let result = search(&search_config)?;
+            let result = rustscout::search::search(&search_config)?;
 
             if config.stats {
                 println!(
@@ -469,7 +492,7 @@ fn run() -> Result<()> {
                         if path.is_file() {
                             let mut plan = FileReplacementPlan::new(path.clone())?;
                             // Search for matches in this file
-                            let search_result = search(&SearchConfig {
+                            let search_result = rustscout::search::search(&SearchConfig {
                                 root_path: path.clone(),
                                 ..search_config.clone()
                             })?;
@@ -506,7 +529,7 @@ fn run() -> Result<()> {
                             }
                         } else if path.is_dir() {
                             // Search for matches in all files in the directory
-                            let search_result = search(&SearchConfig {
+                            let search_result = rustscout::search::search(&SearchConfig {
                                 root_path: path.clone(),
                                 ..search_config.clone()
                             })?;
@@ -556,17 +579,147 @@ fn run() -> Result<()> {
 
                     Ok(())
                 }
-                ReplaceCommands::Undo(undo_command) => {
-                    let config =
-                        ReplacementConfig::load_from(&PathBuf::from(".rustscout/config.json"))?;
-                    let id = undo_command.id.parse::<u64>().map_err(|e| {
-                        SearchError::config_error(format!("Invalid undo ID: {}", e))
-                    })?;
-                    ReplacementSet::undo_by_id(id, &config)?;
-                    println!("Successfully restored files from backup {}", id);
-                    Ok(())
-                }
+                ReplaceCommands::Undo(undo_command) => handle_undo(&undo_command),
             }
         }
     }
+}
+
+fn handle_undo(undo_command: &ReplaceUndo) -> Result<()> {
+    // Check for conflicting flags
+    if undo_command.interactive && undo_command.hunks.is_some() {
+        return Err(SearchError::config_error(
+            "Cannot use --interactive and --hunks together. Please use one or the other.",
+        ));
+    }
+
+    let config = ReplacementConfig::load_from(&PathBuf::from(".rustscout/config.json"))?;
+    let id = undo_command
+        .id
+        .parse::<u64>()
+        .map_err(|e| SearchError::config_error(format!("Invalid undo ID: {}", e)))?;
+
+    // Load the undo info first to check if it exists and has diffs
+    let info_path = config.undo_dir.join(format!("{}.json", id));
+    let content = std::fs::read_to_string(&info_path)
+        .map_err(|e| SearchError::config_error(format!("Failed to read undo info: {}", e)))?;
+    let info: UndoInfo = serde_json::from_str(&content)
+        .map_err(|e| SearchError::config_error(format!("Failed to parse undo info: {}", e)))?;
+
+    // If there are no diffs, we can only do a full revert
+    if info.file_diffs.is_empty() {
+        if undo_command.hunks.is_some() || undo_command.list_hunks || undo_command.interactive {
+            return Err(SearchError::config_error(
+                "This undo operation only supports full-file backups; partial revert is not possible.",
+            ));
+        }
+        if undo_command.preview {
+            println!("Preview of full file revert for operation {}:", id);
+            for (original, backup) in &info.backups {
+                let backup_content = std::fs::read_to_string(backup)?;
+                let current_content = std::fs::read_to_string(original)?;
+                print_unified_diff(original, &current_content, &backup_content);
+            }
+            return Ok(());
+        }
+        ReplacementSet::undo_by_id(id, &config)?;
+        println!("Successfully restored files from backup {}", id);
+        return Ok(());
+    }
+
+    // Handle --list-hunks
+    if undo_command.list_hunks {
+        println!("Operation {} ({})", id, info.description);
+        for file_diff in &info.file_diffs {
+            println!("\nFile: {}", file_diff.file_path.display());
+            for (i, hunk) in file_diff.hunks.iter().enumerate() {
+                println!(
+                    "  [Hunk {}] lines {}-{} replaced with lines {}-{}",
+                    i,
+                    hunk.original_start_line,
+                    hunk.original_start_line + hunk.original_line_count,
+                    hunk.new_start_line,
+                    hunk.new_start_line + hunk.new_line_count
+                );
+                // Show a preview of the hunk content if --preview is also used
+                if undo_command.preview {
+                    println!("    Original:");
+                    for line in &hunk.original_lines {
+                        println!("      {}", line);
+                    }
+                    println!("    Current:");
+                    for line in &hunk.new_lines {
+                        println!("      {}", line);
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    // Handle --interactive
+    if undo_command.interactive {
+        println!("Interactive mode not yet implemented");
+        return Ok(());
+    }
+
+    // Parse hunk indices if provided
+    let hunk_indices = if let Some(hunks_str) = &undo_command.hunks {
+        hunks_str
+            .split(',')
+            .map(|s| {
+                s.trim().parse::<usize>().map_err(|_| {
+                    SearchError::config_error(format!("Invalid hunk index: {}", s.trim()))
+                })
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        // If no hunks specified, use all hunks
+        (0..info.file_diffs.iter().map(|d| d.hunks.len()).sum()).collect()
+    };
+
+    // Handle --preview
+    if undo_command.preview {
+        println!("Preview of changes to be reverted:");
+        for file_diff in &info.file_diffs {
+            let mut preview_diff = FileDiff {
+                file_path: file_diff.file_path.clone(),
+                hunks: Vec::new(),
+            };
+            for (i, hunk) in file_diff.hunks.iter().enumerate() {
+                if hunk_indices.contains(&i) {
+                    preview_diff.hunks.push(hunk.clone());
+                }
+            }
+            if !preview_diff.hunks.is_empty() {
+                let current_content = std::fs::read_to_string(&file_diff.file_path)?;
+                let preview_content = current_content.clone();
+                FileReplacementPlan::revert_file_with_hunks(&preview_diff)?;
+                print_unified_diff(&file_diff.file_path, &current_content, &preview_content);
+            }
+        }
+        return Ok(());
+    }
+
+    // Confirm unless --force is used
+    if !undo_command.force {
+        print!("Are you sure you want to revert these changes? [y/N] ");
+        std::io::stdout().flush()?;
+        let mut response = String::new();
+        std::io::stdin().read_line(&mut response)?;
+        if !response.trim().eq_ignore_ascii_case("y") {
+            println!("Operation cancelled.");
+            return Ok(());
+        }
+    }
+
+    // Perform the actual revert
+    if hunk_indices.is_empty() {
+        ReplacementSet::undo_by_id(id, &config)?;
+    } else {
+        ReplacementSet::undo_partial_by_id(id, &config, &hunk_indices)?;
+    }
+
+    println!("Successfully reverted changes.");
+    Ok(())
 }
