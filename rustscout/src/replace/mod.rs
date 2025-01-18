@@ -53,10 +53,10 @@ impl Default for ReplacementConfig {
     fn default() -> Self {
         Self {
             patterns: Vec::new(),
-            backup_enabled: false,
+            backup_enabled: true,
             dry_run: false,
             backup_dir: None,
-            preserve_metadata: false,
+            preserve_metadata: true,
             undo_dir: PathBuf::from(".rustscout/undo"),
         }
     }
@@ -673,10 +673,10 @@ impl ReplacementSet {
     /// Lists available undo operations with detailed information about each change
     pub fn list_undo_operations_verbose(config: &ReplacementConfig) -> SearchResult<Vec<UndoInfo>> {
         let operations = Self::list_undo_operations(config)?;
-        
-        for (info, path) in &operations {
+
+        for (info, _path) in &operations {
             println!("ID: {}  =>  {}", info.timestamp, info.description);
-            
+
             if !info.file_diffs.is_empty() {
                 for (file_idx, fd) in info.file_diffs.iter().enumerate() {
                     println!("  File #{}: {}", file_idx + 1, fd.file_path.display());
@@ -701,7 +701,7 @@ impl ReplacementSet {
                 }
             } else if !info.backups.is_empty() {
                 println!("  Using full file backups ({} files):", info.backups.len());
-                for (idx, (original, backup)) in info.backups.iter().enumerate() {
+                for (idx, (original, _backup)) in info.backups.iter().enumerate() {
                     println!("    File #{}: {}", idx + 1, original.display());
                 }
             } else {
@@ -1053,9 +1053,7 @@ pub fn generate_file_diff(old_content: &str, new_content: &str, file_path: &Path
 mod tests {
     use super::*;
     use std::fs;
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
-    use tempfile::{tempdir, TempDir};
+    use tempfile::TempDir;
 
     // Helper function to create a basic pattern definition
     fn create_pattern_def(text: &str, is_regex: bool) -> PatternDefinition {

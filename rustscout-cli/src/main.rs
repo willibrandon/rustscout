@@ -200,10 +200,114 @@ struct ReplaceUndo {
     /// Skip confirmation prompts; proceed without user input
     #[arg(short = 'f', long = "force", alias = "yes")]
     force: bool,
+
+    /// Directory containing undo information
+    #[arg(long = "undo-dir", default_value = ".rustscout/undo")]
+    undo_dir: PathBuf,
 }
 
 mod diff_utils;
 use diff_utils::{print_side_by_side_diff, print_unified_diff};
+
+/// Runs an interactive wizard in the terminal to pick hunks. Returns the set of chosen hunk indices.
+fn interactive_select_hunks(info: &UndoInfo) -> Result<Vec<usize>> {
+    let mut global_idx = 0;
+    let mut mapping = Vec::new(); // (global_idx, file_idx, hunk_idx)
+    let mut choices = Vec::new();
+
+    // First pass: show hunks and build mapping
+    println!("\nOperation {} ({})", info.timestamp, info.description);
+    for (f_idx, file_diff) in info.file_diffs.iter().enumerate() {
+        println!("\nFile: {}", file_diff.file_path.display());
+        for (h_idx, hunk) in file_diff.hunks.iter().enumerate() {
+            mapping.push((global_idx, f_idx, h_idx));
+            println!(
+                "  [{}] Hunk {} (Global index {}): lines {}-{} replaced with lines {}-{}",
+                if choices.contains(&global_idx) {
+                    "*"
+                } else {
+                    " "
+                },
+                h_idx,
+                global_idx,
+                hunk.original_start_line,
+                hunk.original_start_line + hunk.original_line_count,
+                hunk.new_start_line,
+                hunk.new_start_line + hunk.new_line_count
+            );
+            // Show hunk content
+            println!("    Original:");
+            for line in &hunk.original_lines {
+                println!("      {}", line);
+            }
+            println!("    Current:");
+            for line in &hunk.new_lines {
+                println!("      {}", line);
+            }
+            global_idx += 1;
+        }
+    }
+
+    println!("\nEnter hunk indexes to revert (comma-separated), or press Enter to revert all. Type 'q' to cancel.\n> ");
+    std::io::stdout().flush()?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    let input = input.trim();
+
+    if input.eq_ignore_ascii_case("q") {
+        return Err(SearchError::config_error("User canceled"));
+    }
+
+    if input.is_empty() {
+        // Revert all hunks
+        choices.extend(0..global_idx);
+    } else {
+        // Parse user input
+        for part in input.split(',') {
+            match part.trim().parse::<usize>() {
+                Ok(idx) if idx < global_idx => {
+                    choices.push(idx);
+                }
+                _ => {
+                    println!("Warning: invalid hunk index '{}' ignored", part.trim());
+                }
+            }
+        }
+    }
+
+    // Sort and deduplicate
+    choices.sort_unstable();
+    choices.dedup();
+
+    // Preview selected hunks
+    if !choices.is_empty() {
+        println!("\nSelected hunks to revert:");
+        for &idx in &choices {
+            if let Some(&(_, f_idx, h_idx)) = mapping.iter().find(|&&(g, _, _)| g == idx) {
+                let file_diff = &info.file_diffs[f_idx];
+                let hunk = &file_diff.hunks[h_idx];
+                println!(
+                    "  File: {}, Hunk {} (lines {}-{})",
+                    file_diff.file_path.display(),
+                    h_idx,
+                    hunk.original_start_line,
+                    hunk.original_start_line + hunk.original_line_count
+                );
+            }
+        }
+
+        // Final confirmation
+        print!("\nProceed with reverting these hunks? [y/N] ");
+        std::io::stdout().flush()?;
+        let mut confirm = String::new();
+        std::io::stdin().read_line(&mut confirm)?;
+        if !confirm.trim().eq_ignore_ascii_case("y") {
+            return Err(SearchError::config_error("User canceled"));
+        }
+    }
+
+    Ok(choices)
+}
 
 fn main() -> Result<()> {
     run()
@@ -593,7 +697,11 @@ fn handle_undo(undo_command: &ReplaceUndo) -> Result<()> {
         ));
     }
 
-    let config = ReplacementConfig::load_from(&PathBuf::from(".rustscout/config.json"))?;
+    let config = ReplacementConfig {
+        undo_dir: undo_command.undo_dir.clone(),
+        ..Default::default()
+    };
+
     let id = undo_command
         .id
         .parse::<u64>()
@@ -659,8 +767,21 @@ fn handle_undo(undo_command: &ReplaceUndo) -> Result<()> {
 
     // Handle --interactive
     if undo_command.interactive {
-        println!("Interactive mode not yet implemented");
-        return Ok(());
+        match interactive_select_hunks(&info) {
+            Ok(hunk_indices) => {
+                if hunk_indices.is_empty() {
+                    println!("No hunks selected. Operation cancelled.");
+                    return Ok(());
+                }
+                ReplacementSet::undo_partial_by_id(id, &config, &hunk_indices)?;
+                println!("Successfully reverted selected hunks.");
+                return Ok(());
+            }
+            Err(e) => {
+                println!("Interactive selection cancelled: {}", e);
+                return Ok(());
+            }
+        }
     }
 
     // Parse hunk indices if provided
