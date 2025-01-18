@@ -100,6 +100,10 @@ struct CliSearchConfig {
     /// How to handle invalid UTF-8 sequences (failfast|lossy)
     #[arg(long, default_value = "failfast")]
     encoding: String,
+
+    /// Disable colored output
+    #[arg(long = "no-color")]
+    no_color: bool,
 }
 
 #[derive(Subcommand)]
@@ -249,7 +253,7 @@ fn run() -> Result<()> {
             };
 
             let result = search(&search_config)?;
-            print_search_results(&result, config.stats);
+            print_search_results(&result, config.stats, config.no_color);
             Ok(())
         }
         Commands::Replace {
@@ -440,35 +444,71 @@ fn run() -> Result<()> {
     }
 }
 
-fn print_search_results(result: &SearchResult, stats_only: bool) {
+fn print_search_results(result: &SearchResult, stats_only: bool, no_color: bool) {
     if stats_only {
         println!(
-            "Found {} matches in {} files",
+            "{} matches across {} files",
             result.total_matches, result.files_with_matches
         );
         return;
     }
 
     for file_result in &result.file_results {
-        println!("\n{}", file_result.path.display().to_string().blue());
+        let file_path = file_result.path.display().to_string();
+        
+        // Group matches by line number
+        let mut line_numbers_seen = std::collections::HashSet::new();
+        
         for m in &file_result.matches {
-            // Print context before
-            for (line_num, line) in &m.context_before {
-                println!("{}: {}", line_num.to_string().green(), line);
-            }
-
-            // Print match
-            println!("{}: {}", m.line_number.to_string().green(), m.line_content);
-
-            // Print context after
-            for (line_num, line) in &m.context_after {
-                println!("{}: {}", line_num.to_string().green(), line);
+            // Only print each line once
+            if line_numbers_seen.insert(m.line_number) {
+                // Print context before if this is the first time seeing this line
+                for (line_num, line) in &m.context_before {
+                    if !line_numbers_seen.contains(line_num) {
+                        println!("{}:{}: {}", file_path, line_num, line);
+                        line_numbers_seen.insert(*line_num);
+                    }
+                }
+                
+                // Print the matching line with highlighted matches
+                let mut line = m.line_content.clone();
+                let mut offset = 0;
+                
+                // Sort matches by start position to handle overlapping matches correctly
+                let mut line_matches: Vec<_> = file_result.matches
+                    .iter()
+                    .filter(|other| other.line_number == m.line_number)
+                    .collect();
+                line_matches.sort_by_key(|m| m.start);
+                
+                // Apply highlighting to each match
+                for other_match in line_matches {
+                    let start = other_match.start + offset;
+                    let end = other_match.end + offset;
+                    let matched_text = line[start..end].to_string();
+                    let highlighted = if no_color {
+                        matched_text
+                    } else {
+                        format!("\x1b[1;31m{}\x1b[0m", matched_text)
+                    };
+                    line.replace_range(start..end, &highlighted);
+                    offset += highlighted.len() - (end - start);
+                }
+                println!("{}:{}: {}", file_path, m.line_number, line);
+                
+                // Print context after
+                for (line_num, line) in &m.context_after {
+                    if !line_numbers_seen.contains(line_num) {
+                        println!("{}:{}: {}", file_path, line_num, line);
+                        line_numbers_seen.insert(*line_num);
+                    }
+                }
             }
         }
     }
 
     println!(
-        "\nFound {} matches in {} files",
+        "\n{} matches across {} files",
         result.total_matches, result.files_with_matches
     );
 }
