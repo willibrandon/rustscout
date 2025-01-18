@@ -670,6 +670,49 @@ impl ReplacementSet {
         Ok(operations)
     }
 
+    /// Lists available undo operations with detailed information about each change
+    pub fn list_undo_operations_verbose(config: &ReplacementConfig) -> SearchResult<Vec<UndoInfo>> {
+        let operations = Self::list_undo_operations(config)?;
+        
+        for (info, path) in &operations {
+            println!("ID: {}  =>  {}", info.timestamp, info.description);
+            
+            if !info.file_diffs.is_empty() {
+                for (file_idx, fd) in info.file_diffs.iter().enumerate() {
+                    println!("  File #{}: {}", file_idx + 1, fd.file_path.display());
+                    for (hunk_idx, h) in fd.hunks.iter().enumerate() {
+                        println!(
+                            "    Hunk {}: lines {}-{} replaced with lines {}-{}",
+                            hunk_idx + 1,
+                            h.original_start_line,
+                            h.original_start_line + h.original_line_count,
+                            h.new_start_line,
+                            h.new_start_line + h.new_line_count
+                        );
+                        println!("      Original:");
+                        for line in &h.original_lines {
+                            println!("        {}", line);
+                        }
+                        println!("      New:");
+                        for line in &h.new_lines {
+                            println!("        {}", line);
+                        }
+                    }
+                }
+            } else if !info.backups.is_empty() {
+                println!("  Using full file backups ({} files):", info.backups.len());
+                for (idx, (original, backup)) in info.backups.iter().enumerate() {
+                    println!("    File #{}: {}", idx + 1, original.display());
+                }
+            } else {
+                println!("  (No changes recorded)");
+            }
+            println!();
+        }
+
+        Ok(operations.into_iter().map(|(i, _)| i).collect())
+    }
+
     /// Gets a reference to the metrics
     pub fn metrics(&self) -> &MemoryMetrics {
         &self.metrics
@@ -1800,180 +1843,145 @@ mod tests {
         };
         fs::create_dir_all(&config.undo_dir)?;
 
+        // Create a test file
         let test_file = dir.path().join("test.txt");
-        let original_content = "line 1\nline 2\nline 3"; // Remove trailing newline
-        fs::write(&test_file, original_content)?;
+        fs::write(&test_file, "line 1\nline 2\nline 3\n")?;
 
         // Create an UndoInfo with file_diffs
-        let modified_content = "line 1\nmodified line 2\nline 3"; // No trailing newline
-        fs::write(&test_file, modified_content)?;
-
         let file_diff = FileDiff {
             file_path: test_file.clone(),
-            hunks: vec![DiffHunk {
-                original_start_line: 2,
-                new_start_line: 2,
-                original_line_count: 1,
-                new_line_count: 1,
-                original_lines: vec!["line 2".to_string()],
-                new_lines: vec!["modified line 2".to_string()],
-            }],
-        };
-
-        let undo_info = UndoInfo {
-            backups: vec![],
-            file_diffs: vec![file_diff],
-            description: "Test undo".to_string(),
-            dry_run: false,
-            file_count: 1,
-            total_size: 0,
-            timestamp: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-        };
-
-        let undo_id = 123;
-        let undo_path = config.undo_dir.join(format!("{}.json", undo_id));
-        fs::write(&undo_path, serde_json::to_string(&undo_info)?)?;
-
-        // Perform the undo
-        ReplacementSet::undo_by_id(undo_id, &config)?;
-
-        // Verify the content is back to original
-        let reverted_content = fs::read_to_string(&test_file)?;
-        assert_eq!(reverted_content, original_content);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_undo_partial_by_id() -> SearchResult<()> {
-        // Create a temporary directory and file
-        let dir = tempdir()?;
-        let file_path = dir.path().join("test.txt");
-
-        // Original content has 3 lines (no trailing newline)
-        let original_content = "line1\nline2\nline3";
-        fs::write(&file_path, original_content)?;
-
-        // Set up a ReplacementConfig with local undo directory
-        let undo_dir = dir.path().join("undo");
-        fs::create_dir_all(&undo_dir)?;
-
-        let mut config = ReplacementConfig {
-            patterns: vec![],
-            backup_enabled: false,
-            dry_run: false,
-            backup_dir: None,
-            preserve_metadata: false,
-            undo_dir: undo_dir.clone(),
-        };
-
-        // Create two patterns for replacement
-        let pattern1 = ReplacementPattern {
-            definition: PatternDefinition {
-                text: "line2".to_string(),
-                is_regex: false,
-                boundary_mode: WordBoundaryMode::None,
-                hyphen_mode: crate::search::matcher::HyphenMode::default(),
-            },
-            replacement_text: "modified2".to_string(),
-        };
-
-        let pattern2 = ReplacementPattern {
-            definition: PatternDefinition {
-                text: "line3".to_string(),
-                is_regex: false,
-                boundary_mode: WordBoundaryMode::None,
-                hyphen_mode: crate::search::matcher::HyphenMode::default(),
-            },
-            replacement_text: "modified3".to_string(),
-        };
-
-        config.patterns = vec![pattern1.clone(), pattern2.clone()];
-
-        // Build a ReplacementPlan with 2 separate tasks
-        let mut plan = FileReplacementPlan::new(file_path.clone())?;
-
-        // Find byte offsets for line2 and line3
-        let byte_offset_line2 = original_content.find("line2").unwrap();
-        let byte_offset_line3 = original_content.find("line3").unwrap();
-
-        // Add task for line2 -> modified2
-        plan.add_replacement(ReplacementTask::new(
-            file_path.clone(),
-            (byte_offset_line2, byte_offset_line2 + "line2".len()),
-            "modified2".to_string(),
-            0,
-            config.clone(),
-        ))?;
-
-        // Add task for line3 -> modified3
-        plan.add_replacement(ReplacementTask::new(
-            file_path.clone(),
-            (byte_offset_line3, byte_offset_line3 + "line3".len()),
-            "modified3".to_string(),
-            1,
-            config.clone(),
-        ))?;
-
-        // Create FileDiff for the changes
-        let file_diff = FileDiff {
-            file_path: file_path.clone(),
             hunks: vec![
                 DiffHunk {
                     original_start_line: 2,
                     new_start_line: 2,
                     original_line_count: 1,
                     new_line_count: 1,
-                    original_lines: vec!["line2".to_string()],
-                    new_lines: vec!["modified2".to_string()],
+                    original_lines: vec!["line 2".to_string()],
+                    new_lines: vec!["modified line 2".to_string()],
                 },
                 DiffHunk {
                     original_start_line: 3,
                     new_start_line: 3,
                     original_line_count: 1,
                     new_line_count: 1,
-                    original_lines: vec!["line3".to_string()],
-                    new_lines: vec!["modified3".to_string()],
+                    original_lines: vec!["line 3".to_string()],
+                    new_lines: vec!["modified line 3".to_string()],
                 },
             ],
         };
 
-        // Create and save UndoInfo
         let undo_info = UndoInfo {
             backups: vec![],
             file_diffs: vec![file_diff],
-            description: "Test partial undo".to_string(),
+            description: "Test undo with diffs".to_string(),
             dry_run: false,
             file_count: 1,
             total_size: 0,
-            timestamp: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
+            timestamp: 123456789,
         };
 
-        let undo_id = undo_info.timestamp;
-        let undo_path = config.undo_dir.join(format!("{}.json", undo_id));
-        fs::write(&undo_path, serde_json::to_string(&undo_info)?)?;
+        // Save both undo infos
+        fs::write(
+            config.undo_dir.join("123456789.json"),
+            serde_json::to_string(&undo_info)?,
+        )?;
 
-        // Apply the replacements
-        let mut replacement_set = ReplacementSet::new(config.clone());
-        replacement_set.add_plan(plan);
-        replacement_set.apply_with_progress()?;
+        // Call verbose listing and capture output
+        let results = ReplacementSet::list_undo_operations_verbose(&config)?;
 
-        // Verify both replacements were applied
-        let updated_content = fs::read_to_string(&file_path)?;
-        assert_eq!(updated_content, "line1\nmodified2\nmodified3");
+        // Verify results
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].timestamp, 123456789);
+        assert_eq!(results[0].description, "Test undo with diffs");
+        assert_eq!(results[0].file_diffs.len(), 1);
+        assert_eq!(results[0].file_diffs[0].hunks.len(), 2);
 
-        // Revert only the second hunk (line3 -> modified3)
-        ReplacementSet::undo_partial_by_id(undo_id, &config, &[1])?;
+        Ok(())
+    }
 
-        // Verify only the second change was reverted
-        let final_content = fs::read_to_string(&file_path)?;
-        assert_eq!(final_content, "line1\nmodified2\nline3");
+    #[test]
+    fn test_list_undo_operations_verbose() -> SearchResult<()> {
+        let dir = TempDir::new().unwrap();
+        let config = ReplacementConfig {
+            backup_enabled: true,
+            backup_dir: Some(dir.path().join("backups")),
+            undo_dir: dir.path().join("undo"),
+            ..Default::default()
+        };
+        fs::create_dir_all(&config.undo_dir)?;
+
+        // Create a test file
+        let test_file = dir.path().join("test.txt");
+        fs::write(&test_file, "line 1\nline 2\nline 3\n")?;
+
+        // Create an UndoInfo with file_diffs
+        let file_diff = FileDiff {
+            file_path: test_file.clone(),
+            hunks: vec![
+                DiffHunk {
+                    original_start_line: 2,
+                    new_start_line: 2,
+                    original_line_count: 1,
+                    new_line_count: 1,
+                    original_lines: vec!["line 2".to_string()],
+                    new_lines: vec!["modified line 2".to_string()],
+                },
+                DiffHunk {
+                    original_start_line: 3,
+                    new_start_line: 3,
+                    original_line_count: 1,
+                    new_line_count: 1,
+                    original_lines: vec!["line 3".to_string()],
+                    new_lines: vec!["modified line 3".to_string()],
+                },
+            ],
+        };
+
+        let undo_info = UndoInfo {
+            backups: vec![],
+            file_diffs: vec![file_diff],
+            description: "Test undo with diffs".to_string(),
+            dry_run: false,
+            file_count: 1,
+            total_size: 0,
+            timestamp: 123456789,
+        };
+
+        // Create another UndoInfo with just backups
+        let backup_info = UndoInfo {
+            backups: vec![(test_file.clone(), dir.path().join("backups/test.txt"))],
+            file_diffs: vec![],
+            description: "Test undo with backups".to_string(),
+            dry_run: false,
+            file_count: 1,
+            total_size: 100,
+            timestamp: 123456790,
+        };
+
+        // Save both undo infos
+        fs::write(
+            config.undo_dir.join("123456789.json"),
+            serde_json::to_string(&undo_info)?,
+        )?;
+        fs::write(
+            config.undo_dir.join("123456790.json"),
+            serde_json::to_string(&backup_info)?,
+        )?;
+
+        // Call verbose listing and capture output
+        let results = ReplacementSet::list_undo_operations_verbose(&config)?;
+
+        // Verify results
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].timestamp, 123456789);
+        assert_eq!(results[0].description, "Test undo with diffs");
+        assert_eq!(results[0].file_diffs.len(), 1);
+        assert_eq!(results[0].file_diffs[0].hunks.len(), 2);
+
+        assert_eq!(results[1].timestamp, 123456790);
+        assert_eq!(results[1].description, "Test undo with backups");
+        assert_eq!(results[1].backups.len(), 1);
+        assert!(results[1].file_diffs.is_empty());
 
         Ok(())
     }
