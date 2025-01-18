@@ -1313,24 +1313,30 @@ mod tests {
 
         let mut plan = FileReplacementPlan::new(file_path.clone())?;
 
-        // Add multiple replacements
+        // Calculate proper UTF-8 character boundaries
+        let content = fs::read_to_string(&file_path)?;
+        let first_test = content.find("test").unwrap();
+        let second_test = content[first_test + 4..].find("test").unwrap() + first_test + 4;
+        let third_test = content[second_test + 4..].find("test").unwrap() + second_test + 4;
+
+        // Add multiple replacements with proper character boundaries
         plan.add_replacement(ReplacementTask::new(
             file_path.clone(),
-            (0, 4),
+            (first_test, first_test + 4),
             "replaced".to_string(),
             0,
             config.clone(),
         ))?;
         plan.add_replacement(ReplacementTask::new(
             file_path.clone(),
-            (5, 9),
+            (second_test, second_test + 4),
             "replaced".to_string(),
             0,
             config.clone(),
         ))?;
         plan.add_replacement(ReplacementTask::new(
             file_path.clone(),
-            (20, 24),
+            (third_test, third_test + 4),
             "replaced".to_string(),
             0,
             config.clone(),
