@@ -5,6 +5,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use memmap2::MmapOptions;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use similar::{ChangeTag, TextDiff};
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
@@ -46,6 +47,19 @@ pub struct ReplacementConfig {
 
     /// Directory for storing undo information
     pub undo_dir: PathBuf,
+}
+
+impl Default for ReplacementConfig {
+    fn default() -> Self {
+        Self {
+            patterns: Vec::new(),
+            backup_enabled: false,
+            dry_run: false,
+            backup_dir: None,
+            preserve_metadata: false,
+            undo_dir: PathBuf::from(".rustscout/undo"),
+        }
+    }
 }
 
 impl ReplacementConfig {
@@ -541,21 +555,17 @@ impl FileReplacementPlan {
         Ok(results)
     }
 
-    /// Generates a preview of the changes as complete old and new content strings
+    /// Returns the old and new content for this file
     pub fn preview_old_new(&self) -> SearchResult<(String, String)> {
-        // Read the old file content from disk
-        let old_content = fs::read_to_string(&self.file_path)?;
+        let content = fs::read_to_string(&self.file_path)?;
+        let mut new_content = content.clone();
 
-        // Apply replacements in reverse order to get new_content
-        let mut new_content = old_content.clone();
-        for task in self.replacements.iter().rev() {
-            new_content.replace_range(
-                task.original_range.0..task.original_range.1,
-                &task.replacement_text,
-            );
+        // Apply all replacements
+        for task in &self.replacements {
+            new_content = task.apply(&new_content)?;
         }
 
-        Ok((old_content, new_content))
+        Ok((content, new_content))
     }
 }
 
@@ -713,50 +723,7 @@ impl ReplacementSet {
 
         // Record undo information if any backups were created
         if !backup_paths.is_empty() && !self.config.dry_run {
-            let timestamp = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(|_| SearchError::config_error("System clock set before UNIX EPOCH"))?
-                .as_secs();
-
-            let description = format!(
-                "Replace '{}' with '{}'",
-                if !self.config.patterns.is_empty() {
-                    &self.config.patterns[0].definition.text
-                } else {
-                    "empty pattern"
-                },
-                self.config.patterns[0].replacement_text
-            );
-
-            let total_size: u64 = backup_paths
-                .iter()
-                .filter_map(|(_, backup)| fs::metadata(backup).ok())
-                .map(|m| m.len())
-                .sum();
-
-            let undo_info = UndoInfo {
-                timestamp,
-                description,
-                backups: backup_paths,
-                total_size,
-                file_count: self.plans.len(),
-                dry_run: self.config.dry_run,
-                file_diffs: Vec::new(),
-            };
-
-            // Save undo information
-            fs::create_dir_all(&self.config.undo_dir).map_err(|e| {
-                SearchError::config_error(format!("Failed to create undo directory: {}", e))
-            })?;
-
-            let undo_file = self.config.undo_dir.join(format!("{}.json", timestamp));
-            let undo_json = serde_json::to_string_pretty(&undo_info).map_err(|e| {
-                SearchError::config_error(format!("Failed to serialize undo info: {}", e))
-            })?;
-
-            fs::write(&undo_file, undo_json).map_err(|e| {
-                SearchError::config_error(format!("Failed to write undo file: {}", e))
-            })?;
+            self.save_undo_info(&backup_paths)?;
         }
 
         Ok(())
@@ -791,6 +758,17 @@ impl ReplacementSet {
             "empty pattern"
         };
 
+        // Generate diffs for each file by reading from backup files
+        let mut file_diffs = Vec::new();
+        for (original_path, backup_path) in backups {
+            let old_content = fs::read_to_string(backup_path)?;
+            let new_content = fs::read_to_string(original_path)?;
+            let diff = generate_file_diff(&old_content, &new_content, original_path);
+            if !diff.hunks.is_empty() {
+                file_diffs.push(diff);
+            }
+        }
+
         let info = UndoInfo {
             timestamp,
             description: format!(
@@ -804,7 +782,7 @@ impl ReplacementSet {
                 .sum(),
             file_count: backups.len(),
             dry_run: self.config.dry_run,
-            file_diffs: Vec::new(),
+            file_diffs,
         };
 
         let info_path = self.config.undo_dir.join(format!("{}.json", timestamp));
@@ -846,12 +824,111 @@ fn validate_word_boundaries(regex: &regex::Regex) -> SearchResult<()> {
     Ok(())
 }
 
+/// Generate a line-based diff between old and new content
+pub fn generate_file_diff(old_content: &str, new_content: &str, file_path: &Path) -> FileDiff {
+    // Normalize line endings to LF
+    let old_content = old_content.replace("\r\n", "\n");
+    let new_content = new_content.replace("\r\n", "\n");
+
+    let diff = TextDiff::from_lines(&old_content, &new_content);
+    let mut hunks = Vec::new();
+
+    for group in diff.grouped_ops(3) {
+        for op in group {
+            match op {
+                similar::DiffOp::Equal { .. } => {
+                    // no changes; skip
+                }
+                similar::DiffOp::Insert {
+                    new_index,
+                    new_len,
+                    old_index: _,
+                } => {
+                    // lines added
+                    let mut new_lines = Vec::new();
+                    for change in diff.iter_changes(&op) {
+                        if change.tag() == ChangeTag::Insert {
+                            new_lines.push(change.value().trim_end().to_string());
+                        }
+                    }
+
+                    hunks.push(DiffHunk {
+                        original_start_line: new_index + 1, // anchor at insertion point
+                        new_start_line: new_index + 1,
+                        original_line_count: 0,
+                        new_line_count: new_len,
+                        original_lines: vec![],
+                        new_lines,
+                    });
+                }
+                similar::DiffOp::Delete {
+                    old_index,
+                    old_len,
+                    new_index: _,
+                } => {
+                    // lines removed
+                    let mut original_lines = Vec::new();
+                    for change in diff.iter_changes(&op) {
+                        if change.tag() == ChangeTag::Delete {
+                            original_lines.push(change.value().trim_end().to_string());
+                        }
+                    }
+
+                    hunks.push(DiffHunk {
+                        original_start_line: old_index + 1,
+                        new_start_line: old_index + 1, // anchor at deletion point
+                        original_line_count: old_len,
+                        new_line_count: 0,
+                        original_lines,
+                        new_lines: vec![],
+                    });
+                }
+                similar::DiffOp::Replace {
+                    old_index,
+                    old_len,
+                    new_index,
+                    new_len,
+                } => {
+                    let mut orig_lines = Vec::new();
+                    let mut new_lines = Vec::new();
+
+                    for change in diff.iter_changes(&op) {
+                        match change.tag() {
+                            ChangeTag::Delete => {
+                                orig_lines.push(change.value().trim_end().to_string());
+                            }
+                            ChangeTag::Insert => {
+                                new_lines.push(change.value().trim_end().to_string());
+                            }
+                            ChangeTag::Equal => {}
+                        }
+                    }
+
+                    hunks.push(DiffHunk {
+                        original_start_line: old_index + 1,
+                        new_start_line: new_index + 1,
+                        original_line_count: old_len,
+                        new_line_count: new_len,
+                        original_lines: orig_lines,
+                        new_lines,
+                    });
+                }
+            }
+        }
+    }
+
+    FileDiff {
+        file_path: file_path.to_path_buf(),
+        hunks,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::search::matcher::{HyphenMode, PatternDefinition, WordBoundaryMode};
-    use tempfile::tempdir;
     use serde_json;
+    use tempfile::tempdir;
 
     // Helper function to create a basic pattern definition
     fn create_pattern_def(text: &str, is_regex: bool) -> PatternDefinition {
@@ -1598,6 +1675,125 @@ mod tests {
         assert!(info.file_diffs.is_empty());
         assert_eq!(info.timestamp, 123456789);
         assert_eq!(info.description, "test operation");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_generate_file_diff() -> SearchResult<()> {
+        let old_content = "line 1\nline 2\nline 3\nline 4\n";
+        let new_content = "line 1\nmodified line 2\nline 3\nnew line\nline 4\n";
+        let file_path = PathBuf::from("test.txt");
+
+        let diff = generate_file_diff(old_content, new_content, &file_path);
+
+        assert_eq!(diff.hunks.len(), 2); // One for modification, one for insertion
+
+        // Check modification
+        let modify_hunk = &diff.hunks[0];
+        assert_eq!(modify_hunk.original_start_line, 2);
+        assert_eq!(modify_hunk.new_start_line, 2);
+        assert_eq!(modify_hunk.original_line_count, 1);
+        assert_eq!(modify_hunk.new_line_count, 1);
+        assert_eq!(modify_hunk.original_lines, vec!["line 2"]);
+        assert_eq!(modify_hunk.new_lines, vec!["modified line 2"]);
+
+        // Check insertion
+        let insert_hunk = &diff.hunks[1];
+        assert_eq!(insert_hunk.original_start_line, 4);
+        assert_eq!(insert_hunk.new_start_line, 4);
+        assert_eq!(insert_hunk.original_line_count, 0);
+        assert_eq!(insert_hunk.new_line_count, 1);
+        assert!(insert_hunk.original_lines.is_empty());
+        assert_eq!(insert_hunk.new_lines, vec!["new line"]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_undo_info_with_diffs() -> SearchResult<()> {
+        let dir = tempdir()?;
+        let file_path = dir.path().join("test.txt");
+        fs::write(&file_path, "line 1\nline 2\nline 3\n")?;
+
+        let mut config = ReplacementConfig::default();
+        config.patterns.push(ReplacementPattern {
+            definition: PatternDefinition {
+                text: "line 2".to_string(),
+                is_regex: false,
+                boundary_mode: WordBoundaryMode::None,
+                hyphen_mode: HyphenMode::default(),
+            },
+            replacement_text: "modified line 2".to_string(),
+        });
+        config.undo_dir = dir.path().to_path_buf();
+        config.backup_enabled = true;
+        config.backup_dir = Some(dir.path().join("backups"));
+
+        let mut plan = FileReplacementPlan::new(file_path.clone())?;
+        let task = ReplacementTask::new(
+            file_path.clone(),
+            (7, 13), // "line 2"
+            "modified line 2".to_string(),
+            0,
+            config.clone(),
+        );
+        plan.add_replacement(task)?;
+
+        // Verify the preview works
+        let (old_content, new_content) = plan.preview_old_new()?;
+        println!("Old content: {}", old_content);
+        println!("New content: {}", new_content);
+
+        // Generate a test diff
+        let test_diff = generate_file_diff(&old_content, &new_content, &file_path);
+        println!("Test diff hunks: {}", test_diff.hunks.len());
+        if !test_diff.hunks.is_empty() {
+            let hunk = &test_diff.hunks[0];
+            println!(
+                "Test hunk - original: {:?}, new: {:?}",
+                hunk.original_lines, hunk.new_lines
+            );
+        }
+
+        let mut set = ReplacementSet::new(config);
+        set.add_plan(plan);
+
+        // Apply changes and save undo info
+        set.apply()?;
+
+        // Find the undo info file
+        let undo_files: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
+            .collect();
+
+        assert_eq!(undo_files.len(), 1);
+
+        // Read and verify the undo info
+        let content = fs::read_to_string(undo_files[0].path())?;
+        println!("Undo info content: {}", content);
+        let info: UndoInfo = serde_json::from_str(&content)?;
+
+        println!("File diffs count: {}", info.file_diffs.len());
+        if !info.file_diffs.is_empty() {
+            let file_diff = &info.file_diffs[0];
+            println!("Hunks count: {}", file_diff.hunks.len());
+            if !file_diff.hunks.is_empty() {
+                let hunk = &file_diff.hunks[0];
+                println!("Original lines: {:?}", hunk.original_lines);
+                println!("New lines: {:?}", hunk.new_lines);
+            }
+        }
+
+        assert_eq!(info.file_diffs.len(), 1);
+        let file_diff = &info.file_diffs[0];
+        assert_eq!(file_diff.hunks.len(), 1);
+
+        let hunk = &file_diff.hunks[0];
+        assert_eq!(hunk.original_lines, vec!["line 2"]);
+        assert_eq!(hunk.new_lines, vec!["modified line 2"]);
 
         Ok(())
     }

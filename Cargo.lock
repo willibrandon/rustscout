@@ -1057,6 +1057,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "similar",
  "tempfile",
  "thiserror 1.0.69",
  "tracing",
