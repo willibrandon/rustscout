@@ -504,6 +504,23 @@ impl FileReplacementPlan {
 
         Ok(results)
     }
+
+    /// Generates a preview of the changes as complete old and new content strings
+    pub fn preview_old_new(&self) -> SearchResult<(String, String)> {
+        // Read the old file content from disk
+        let old_content = fs::read_to_string(&self.file_path)?;
+
+        // Apply replacements in reverse order to get new_content
+        let mut new_content = old_content.clone();
+        for task in self.replacements.iter().rev() {
+            new_content.replace_range(
+                task.original_range.0..task.original_range.1,
+                &task.replacement_text,
+            );
+        }
+
+        Ok((old_content, new_content))
+    }
 }
 
 /// Represents the complete set of replacements across all files

@@ -1,14 +1,12 @@
 use clap::{Parser, Subcommand};
-use colored::Colorize;
 use rustscout::{
     cache::ChangeDetectionStrategy,
     config::{EncodingMode, SearchConfig},
     errors::SearchError,
     replace::{
-        FileReplacementPlan, PreviewResult, ReplacementConfig, ReplacementPattern, ReplacementSet,
+        FileReplacementPlan, ReplacementConfig, ReplacementPattern, ReplacementSet,
         ReplacementTask, UndoInfo,
     },
-    results::SearchResult,
     search,
     search::matcher::{HyphenMode, PatternDefinition, WordBoundaryMode},
 };
@@ -149,6 +147,10 @@ enum Commands {
         #[arg(short = 'j', long)]
         threads: Option<NonZeroUsize>,
 
+        /// Choose the preview diff format (unified|side-by-side)
+        #[arg(long = "diff-format", default_value = "unified")]
+        diff_format: String,
+
         /// One or more files/directories to process
         #[arg(required = true)]
         paths: Vec<PathBuf>,
@@ -164,6 +166,9 @@ enum Commands {
         id: String,
     },
 }
+
+mod diff_utils;
+use diff_utils::{print_unified_diff, print_side_by_side_diff};
 
 fn main() -> Result<()> {
     run()
@@ -253,7 +258,106 @@ fn run() -> Result<()> {
             };
 
             let result = search(&search_config)?;
-            print_search_results(&result, config.stats, config.no_color);
+            
+            if config.stats {
+                println!(
+                    "{} matches across {} files",
+                    result.total_matches, result.files_with_matches
+                );
+                return Ok(());
+            }
+
+            // Print matches in ripgrep style
+            for file_result in &result.file_results {
+                let file_content = std::fs::read_to_string(&file_result.path)?;
+                let all_lines: Vec<&str> = file_content.lines().collect();
+
+                // Track which lines we've printed to avoid duplicates when showing context
+                let mut printed_lines = std::collections::HashSet::new();
+
+                for m in &file_result.matches {
+                    let line_num = m.line_number;
+                    if line_num == 0 || line_num > all_lines.len() {
+                        continue;
+                    }
+
+                    // Print context before if not already printed
+                    for ctx_line_num in (line_num.saturating_sub(config.context_before))..line_num {
+                        if printed_lines.insert(ctx_line_num) {
+                            println!("{}:{}-{}", 
+                                file_result.path.display(),
+                                ctx_line_num,
+                                all_lines[ctx_line_num - 1]
+                            );
+                        }
+                    }
+
+                    // Print the matching line with highlighted matches
+                    if printed_lines.insert(line_num) {
+                        let line = all_lines[line_num - 1];
+                        let mut highlighted_line = String::new();
+
+                        // Add the non-highlighted prefix
+                        highlighted_line.push_str(&line[..m.start]);
+
+                        // Add the highlighted match
+                        let matched_text = &line[m.start..m.end];
+                        if config.no_color {
+                            highlighted_line.push_str(matched_text);
+                        } else {
+                            // For word boundaries, highlight the entire word
+                            let (start, end) = if config.word_boundary || config.boundary_mode == "strict" || config.boundary_mode == "partial" {
+                                // Find word boundaries around the match
+                                let mut word_start = m.start;
+                                let mut word_end = m.end;
+                                
+                                // Look backwards for word boundary
+                                while word_start > 0 && !line[..word_start].chars().last().unwrap().is_whitespace() {
+                                    word_start -= 1;
+                                }
+                                
+                                // Look forwards for word boundary
+                                while word_end < line.len() && !line[word_end..].chars().next().unwrap().is_whitespace() {
+                                    word_end += 1;
+                                }
+                                
+                                (word_start, word_end)
+                            } else {
+                                (m.start, m.end)
+                            };
+
+                            let highlight_text = &line[start..end];
+                            highlighted_line.push_str(&format!("\x1b[1;31m{}\x1b[0m", highlight_text));
+                        }
+
+                        // Add the non-highlighted suffix
+                        highlighted_line.push_str(&line[m.end..]);
+
+                        println!("{}:{}:{}", 
+                            file_result.path.display(),
+                            line_num,
+                            highlighted_line
+                        );
+                    }
+
+                    // Print context after if not already printed
+                    let end_ctx = (line_num + config.context_after).min(all_lines.len());
+                    for ctx_line_num in (line_num + 1)..=end_ctx {
+                        if printed_lines.insert(ctx_line_num) {
+                            println!("{}:{}-{}", 
+                                file_result.path.display(),
+                                ctx_line_num,
+                                all_lines[ctx_line_num - 1]
+                            );
+                        }
+                    }
+                }
+            }
+
+            println!(
+                "\n{} matches across {} files",
+                result.total_matches, result.files_with_matches
+            );
             Ok(())
         }
         Commands::Replace {
@@ -266,6 +370,7 @@ fn run() -> Result<()> {
             config,
             dry_run,
             threads,
+            diff_format,
             paths,
         } => {
             // Load config file if provided
@@ -417,11 +522,23 @@ fn run() -> Result<()> {
 
             // Execute replacements
             if dry_run {
-                let preview = replacement_set.preview()?;
-                print_preview_results(&preview);
-            } else {
+                println!("Dry run - no changes will be made");
+            }
+
+            // Always show the preview
+            for plan in &replacement_set.plans {
+                let (old_content, new_content) = plan.preview_old_new()?;
+                match diff_format.as_str() {
+                    "unified" => print_unified_diff(&plan.file_path, &old_content, &new_content),
+                    "side-by-side" => print_side_by_side_diff(&plan.file_path, &old_content, &new_content),
+                    _ => print_unified_diff(&plan.file_path, &old_content, &new_content),
+                }
+            }
+
+            // Apply changes if not a dry run
+            if !dry_run {
                 let _backups = replacement_set.apply_with_progress()?;
-                print_replacement_results(&replacement_set, false);
+                println!("Replacements applied successfully.");
             }
 
             Ok(())
@@ -444,113 +561,6 @@ fn run() -> Result<()> {
     }
 }
 
-fn print_search_results(result: &SearchResult, stats_only: bool, no_color: bool) {
-    if stats_only {
-        println!(
-            "{} matches across {} files",
-            result.total_matches, result.files_with_matches
-        );
-        return;
-    }
-
-    for file_result in &result.file_results {
-        let file_path = file_result.path.display().to_string();
-        
-        // Group matches by line number
-        let mut line_numbers_seen = std::collections::HashSet::new();
-        
-        for m in &file_result.matches {
-            // Only print each line once
-            if line_numbers_seen.insert(m.line_number) {
-                // Print context before if this is the first time seeing this line
-                for (line_num, line) in &m.context_before {
-                    if !line_numbers_seen.contains(line_num) {
-                        println!("{}:{}: {}", file_path, line_num, line);
-                        line_numbers_seen.insert(*line_num);
-                    }
-                }
-                
-                // Print the matching line with highlighted matches
-                let mut line = m.line_content.clone();
-                let mut offset = 0;
-                
-                // Sort matches by start position to handle overlapping matches correctly
-                let mut line_matches: Vec<_> = file_result.matches
-                    .iter()
-                    .filter(|other| other.line_number == m.line_number)
-                    .collect();
-                line_matches.sort_by_key(|m| m.start);
-                
-                // Apply highlighting to each match
-                for other_match in line_matches {
-                    let start = other_match.start + offset;
-                    let end = other_match.end + offset;
-                    let matched_text = line[start..end].to_string();
-                    let highlighted = if no_color {
-                        matched_text
-                    } else {
-                        format!("\x1b[1;31m{}\x1b[0m", matched_text)
-                    };
-                    line.replace_range(start..end, &highlighted);
-                    offset += highlighted.len() - (end - start);
-                }
-                println!("{}:{}: {}", file_path, m.line_number, line);
-                
-                // Print context after
-                for (line_num, line) in &m.context_after {
-                    if !line_numbers_seen.contains(line_num) {
-                        println!("{}:{}: {}", file_path, line_num, line);
-                        line_numbers_seen.insert(*line_num);
-                    }
-                }
-            }
-        }
-    }
-
-    println!(
-        "\n{} matches across {} files",
-        result.total_matches, result.files_with_matches
-    );
-}
-
-fn print_replacement_results(set: &ReplacementSet, dry_run: bool) {
-    if dry_run {
-        println!("Dry run - no changes will be made");
-    }
-
-    // Get preview of changes
-    if let Ok(preview) = set.preview() {
-        for result in preview {
-            println!(
-                "\nIn file: {}",
-                result.file_path.display().to_string().blue()
-            );
-            for (i, (orig, new)) in result
-                .original_lines
-                .iter()
-                .zip(result.new_lines.iter())
-                .enumerate()
-            {
-                println!("Line {}: ", result.line_numbers[i]);
-                println!("  - {}", orig.red());
-                println!("  + {}", new.green());
-            }
-        }
-    }
-
-    // Print plan summary
-    for plan in &set.plans {
-        println!("\nIn file: {}", plan.file_path.display().to_string().blue());
-        for replacement in &plan.replacements {
-            println!(
-                "Replace '{}' with '{}'",
-                replacement.original_range.1.to_string().red(),
-                replacement.replacement_text.green()
-            );
-        }
-    }
-}
-
 fn print_undo_operations(operations: &[(UndoInfo, PathBuf)]) {
     if operations.is_empty() {
         println!("No undo operations available");
@@ -560,16 +570,5 @@ fn print_undo_operations(operations: &[(UndoInfo, PathBuf)]) {
     println!("Available undo operations:");
     for (info, path) in operations {
         println!("{}: {}", info.description, path.display());
-    }
-}
-
-fn print_preview_results(preview: &[PreviewResult]) {
-    for result in preview {
-        println!("File: {}", result.file_path.display());
-        for i in 0..result.original_lines.len() {
-            println!("  - {}", result.original_lines[i]);
-            println!("  + {}", result.new_lines[i]);
-        }
-        println!();
     }
 }
