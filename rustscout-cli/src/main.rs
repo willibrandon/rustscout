@@ -5,7 +5,7 @@ use rustscout::{
     errors::SearchError,
     replace::{
         FileReplacementPlan, ReplacementConfig, ReplacementPattern, ReplacementSet,
-        ReplacementTask, UndoInfo,
+        ReplacementTask,
     },
     search,
     search::matcher::{HyphenMode, PatternDefinition, WordBoundaryMode},
@@ -36,8 +36,8 @@ struct CliSearchConfig {
     #[arg(short = 'r', long = "regex", action = clap::ArgAction::Append)]
     is_regex: Vec<bool>,
 
-    /// Word boundary mode for the most recently specified pattern (strict|partial|none)
-    #[arg(long = "boundary-mode", default_value = "none")]
+    /// Word boundary mode (strict|partial|none)
+    #[arg(short = 'b', long = "boundary-mode", default_value = "none")]
     boundary_mode: String,
 
     /// Match whole words only (shorthand for --boundary-mode strict)
@@ -45,63 +45,63 @@ struct CliSearchConfig {
     word_boundary: bool,
 
     /// How to handle hyphens in word boundaries (boundary|joining)
-    #[arg(long = "hyphen-mode", default_value = "joining")]
+    #[arg(short = 'y', long = "hyphen-mode", default_value = "joining")]
     hyphen_mode: String,
 
     /// Root directory to search in
-    #[arg(short = 'd', long, default_value = ".")]
+    #[arg(short = 'd', long = "root", default_value = ".")]
     root: PathBuf,
 
     /// File extensions to include (e.g. rs,go,js)
-    #[arg(short = 'e', long)]
+    #[arg(short = 'x', long = "extensions")]
     extensions: Option<String>,
 
     /// Patterns to ignore (glob format)
-    #[arg(short, long)]
+    #[arg(short = 'g', long = "ignore")]
     ignore: Vec<String>,
 
     /// Number of context lines before match
-    #[arg(short = 'B', long, default_value = "0")]
+    #[arg(short = 'B', long = "context-before", default_value = "0")]
     context_before: usize,
 
     /// Number of context lines after match
-    #[arg(short = 'A', long, default_value = "0")]
+    #[arg(short = 'A', long = "context-after", default_value = "0")]
     context_after: usize,
 
     /// Show only statistics, not matches
-    #[arg(short, long)]
+    #[arg(short = 's', long = "stats")]
     stats: bool,
 
     /// Number of threads to use
-    #[arg(short = 'j', long)]
+    #[arg(short = 'j', long = "threads")]
     threads: Option<NonZeroUsize>,
 
     /// Enable incremental search using cache
-    #[arg(short = 'I', long)]
+    #[arg(short = 'I', long = "incremental")]
     incremental: bool,
 
     /// Path to cache file (default: .rustscout-cache.json)
-    #[arg(long)]
+    #[arg(short = 'C', long = "cache-path")]
     cache_path: Option<PathBuf>,
 
     /// Strategy for detecting file changes (auto|git|signature)
-    #[arg(long, default_value = "auto")]
+    #[arg(short = 'S', long = "cache-strategy", default_value = "auto")]
     cache_strategy: String,
 
     /// Maximum cache size in MB (0 for unlimited)
-    #[arg(long)]
+    #[arg(short = 'M', long = "max-cache-size")]
     max_cache_size: Option<u64>,
 
     /// Enable cache compression
-    #[arg(long)]
+    #[arg(short = 'Z', long = "compress-cache")]
     compress_cache: bool,
 
     /// How to handle invalid UTF-8 sequences (failfast|lossy)
-    #[arg(long, default_value = "failfast")]
+    #[arg(short = 'E', long = "encoding", default_value = "failfast")]
     encoding: String,
 
     /// Disable colored output
-    #[arg(long = "no-color")]
+    #[arg(short = 'N', long = "no-color")]
     no_color: bool,
 }
 
@@ -112,60 +112,72 @@ enum Commands {
 
     /// Replace patterns in files
     Replace {
-        /// Pattern to search for
-        #[arg(short = 'p', long = "pattern", required = true)]
-        pattern: String,
-
-        /// Text to replace matches with
-        #[arg(short = 'r', long = "replacement", required = true)]
-        replacement: String,
-
-        /// Treat patterns as regular expressions
-        #[arg(short = 'R', long = "regex")]
-        is_regex: bool,
-
-        /// Word boundary mode (strict|partial|none)
-        #[arg(long = "boundary-mode", default_value = "none")]
-        boundary_mode: String,
-
-        /// Match whole words only (shorthand for --boundary-mode strict)
-        #[arg(short = 'w', long = "word-boundary", conflicts_with = "boundary_mode")]
-        word_boundary: bool,
-
-        /// How to handle hyphens in word boundaries (boundary|joining)
-        #[arg(long = "hyphen-mode", default_value = "joining")]
-        hyphen_mode: String,
-
-        /// Configuration file for replacements
-        #[arg(short = 'c', long = "config")]
-        config: Option<PathBuf>,
-
-        /// Dry run - show what would be changed without making changes
-        #[arg(short = 'n', long)]
-        dry_run: bool,
-
-        /// Number of threads to use
-        #[arg(short = 'j', long)]
-        threads: Option<NonZeroUsize>,
-
-        /// Choose the preview diff format (unified|side-by-side)
-        #[arg(long = "diff-format", default_value = "unified")]
-        diff_format: String,
-
-        /// One or more files/directories to process
-        #[arg(required = true)]
-        paths: Vec<PathBuf>,
+        #[command(subcommand)]
+        command: ReplaceCommands,
     },
+}
 
-    /// List available undo operations
-    ListUndo,
-
+#[derive(Subcommand)]
+enum ReplaceCommands {
+    /// Perform a search/replace operation
+    Do(ReplaceDo),
+    
     /// Undo a previous replacement operation
-    Undo {
-        /// ID of the replacement to undo
-        #[arg(required = true)]
-        id: String,
-    },
+    Undo(ReplaceUndo),
+}
+
+#[derive(Parser)]
+struct ReplaceDo {
+    /// Pattern to search for
+    #[arg(short = 'p', long = "pattern", required = true)]
+    pattern: String,
+    
+    /// Text to replace matches with
+    #[arg(short = 'r', long = "replacement", required = true)]
+    replacement: String,
+    
+    /// Treat pattern as a regular expression
+    #[arg(short = 'x', long = "regex")]
+    is_regex: bool,
+    
+    /// Word boundary mode (none, partial, strict)
+    #[arg(short = 'b', long = "boundary-mode", default_value = "none")]
+    boundary_mode: String,
+    
+    /// Shorthand for --boundary-mode strict
+    #[arg(short = 'w', long = "word-boundary", conflicts_with = "boundary_mode")]
+    word_boundary: bool,
+    
+    /// How to handle hyphens in boundaries
+    #[arg(short = 'y', long = "hyphen-mode", default_value = "joining")]
+    hyphen_mode: String,
+    
+    /// Configuration file for replacements
+    #[arg(short = 'c', long = "config")]
+    config: Option<PathBuf>,
+    
+    /// Dry run - show what would be changed without making changes
+    #[arg(short = 'n', long = "dry-run")]
+    dry_run: bool,
+    
+    /// Number of threads to use
+    #[arg(short = 'j', long = "threads")]
+    threads: Option<NonZeroUsize>,
+    
+    /// Preview diff format (unified|side-by-side)
+    #[arg(short = 'd', long = "diff-format", default_value = "unified")]
+    diff_format: String,
+    
+    /// Paths to process
+    #[arg(required = true)]
+    paths: Vec<PathBuf>,
+}
+
+#[derive(Parser)]
+struct ReplaceUndo {
+    /// ID of the replacement to undo
+    #[arg()]
+    id: String,
 }
 
 mod diff_utils;
@@ -295,7 +307,7 @@ fn run() -> Result<()> {
 
                     // Print context before if not already printed
                     for ctx_line_num in (line_num.saturating_sub(config.context_before))..line_num {
-                        if printed_lines.insert(ctx_line_num) {
+                        if ctx_line_num > 0 && printed_lines.insert(ctx_line_num) {
                             println!(
                                 "{}:{}-{}",
                                 file_result.path.display(),
@@ -367,216 +379,195 @@ fn run() -> Result<()> {
             Ok(())
         }
         Commands::Replace {
-            pattern,
-            replacement,
-            is_regex,
-            boundary_mode,
-            word_boundary,
-            hyphen_mode,
-            config,
-            dry_run,
-            threads,
-            diff_format,
-            paths,
+            command,
         } => {
-            // Load config file if provided
-            let mut repl_config = if let Some(config_path) = config {
-                ReplacementConfig::load_from(&config_path)?
-            } else {
-                ReplacementConfig {
-                    patterns: vec![],
-                    backup_enabled: true,
-                    dry_run,
-                    backup_dir: None,
-                    preserve_metadata: true,
-                    undo_dir: PathBuf::from(".rustscout").join("undo"),
-                }
-            };
+            match command {
+                ReplaceCommands::Do(do_command) => {
+                    // Load config file if provided
+                    let mut repl_config = if let Some(config_path) = do_command.config {
+                        ReplacementConfig::load_from(&config_path)?
+                    } else {
+                        ReplacementConfig {
+                            patterns: vec![],
+                            backup_enabled: true,
+                            dry_run: do_command.dry_run,
+                            backup_dir: None,
+                            preserve_metadata: true,
+                            undo_dir: PathBuf::from(".rustscout").join("undo"),
+                        }
+                    };
 
-            let target_paths = if paths.is_empty() {
-                vec![PathBuf::from(".")] // Default to current directory if no paths provided
-            } else {
-                paths
-            };
+                    let target_paths = if do_command.paths.is_empty() {
+                        vec![PathBuf::from(".")] // Default to current directory if no paths provided
+                    } else {
+                        do_command.paths
+                    };
 
-            // Create pattern definition
-            let boundary_mode = if word_boundary {
-                WordBoundaryMode::WholeWords
-            } else {
-                match boundary_mode.as_str() {
-                    "strict" => WordBoundaryMode::WholeWords,
-                    "partial" => WordBoundaryMode::Partial,
-                    "none" => WordBoundaryMode::None,
-                    _ => {
-                        return Err(SearchError::config_error(format!(
-                            "Invalid boundary mode '{}'. Valid values are: strict, partial, none",
-                            boundary_mode
-                        )))
-                    }
-                }
-            };
-
-            let pattern_def = PatternDefinition {
-                text: pattern.clone(),
-                is_regex,
-                boundary_mode,
-                hyphen_mode: match hyphen_mode.as_str() {
-                    "boundary" => HyphenMode::Boundary,
-                    "joining" => HyphenMode::Joining,
-                    _ => {
-                        return Err(SearchError::config_error(
-                            "Invalid hyphen mode. Valid values are: boundary, joining",
-                        ))
-                    }
-                },
-            };
-
-            let replacement_pattern = ReplacementPattern {
-                definition: pattern_def.clone(),
-                replacement_text: replacement.clone(),
-            };
-
-            // Add pattern to config
-            repl_config.patterns.push(replacement_pattern);
-
-            // Create replacement set
-            let mut replacement_set = ReplacementSet::new(repl_config.clone());
-
-            // First, find all matches using the search functionality
-            let search_config = SearchConfig {
-                pattern_definitions: vec![pattern_def],
-                root_path: PathBuf::from("."),
-                file_extensions: None,
-                ignore_patterns: vec![],
-                stats_only: false,
-                thread_count: threads.unwrap_or_else(|| NonZeroUsize::new(4).unwrap()),
-                log_level: "info".to_string(),
-                context_before: 0,
-                context_after: 0,
-                incremental: false,
-                cache_path: None,
-                cache_strategy: ChangeDetectionStrategy::FileSignature,
-                max_cache_size: None,
-                use_compression: false,
-                encoding_mode: EncodingMode::FailFast,
-            };
-
-            // Process each target path
-            for path in target_paths {
-                if path.is_file() {
-                    let mut plan = FileReplacementPlan::new(path.clone())?;
-                    // Search for matches in this file
-                    let search_result = search(&SearchConfig {
-                        root_path: path.clone(),
-                        ..search_config.clone()
-                    })?;
-
-                    // Create a replacement task for each match
-                    if let Some(file_result) = search_result.file_results.first() {
-                        let content = std::fs::read_to_string(&path)?;
-
-                        // Create a map of line number to byte offset
-                        let mut line_offsets = vec![0];
-                        for (i, c) in content.char_indices() {
-                            if c == '\n' {
-                                line_offsets.push(i + 1);
+                    // Create pattern definition
+                    let boundary_mode = if do_command.word_boundary {
+                        WordBoundaryMode::WholeWords
+                    } else {
+                        match do_command.boundary_mode.as_str() {
+                            "strict" => WordBoundaryMode::WholeWords,
+                            "partial" => WordBoundaryMode::Partial,
+                            "none" => WordBoundaryMode::None,
+                            _ => {
+                                return Err(SearchError::config_error(format!(
+                                    "Invalid boundary mode '{}'. Valid values are: strict, partial, none",
+                                    do_command.boundary_mode
+                                )))
                             }
                         }
-                        line_offsets.push(content.len());
+                    };
 
-                        for m in &file_result.matches {
-                            // Convert line-relative positions to absolute file positions
-                            let line_offset = line_offsets[m.line_number - 1];
-                            let abs_start = line_offset + m.start;
-                            let abs_end = line_offset + m.end;
+                    let pattern_def = PatternDefinition {
+                        text: do_command.pattern.clone(),
+                        is_regex: do_command.is_regex,
+                        boundary_mode,
+                        hyphen_mode: match do_command.hyphen_mode.as_str() {
+                            "boundary" => HyphenMode::Boundary,
+                            "joining" => HyphenMode::Joining,
+                            _ => {
+                                return Err(SearchError::config_error(
+                                    "Invalid hyphen mode. Valid values are: boundary, joining",
+                                ))
+                            }
+                        },
+                    };
 
-                            let task = ReplacementTask::new(
-                                path.clone(),
-                                (abs_start, abs_end),
-                                replacement.clone(),
-                                0,
-                                repl_config.clone(),
-                            );
-                            plan.add_replacement(task)?;
+                    let replacement_pattern = ReplacementPattern {
+                        definition: pattern_def.clone(),
+                        replacement_text: do_command.replacement.clone(),
+                    };
+
+                    // Add pattern to config
+                    repl_config.patterns.push(replacement_pattern);
+
+                    // Create replacement set
+                    let mut replacement_set = ReplacementSet::new(repl_config.clone());
+
+                    // First, find all matches using the search functionality
+                    let search_config = SearchConfig {
+                        pattern_definitions: vec![pattern_def],
+                        root_path: PathBuf::from("."),
+                        file_extensions: None,
+                        ignore_patterns: vec![],
+                        stats_only: false,
+                        thread_count: do_command
+                            .threads
+                            .unwrap_or_else(|| NonZeroUsize::new(4).unwrap()),
+                        log_level: "info".to_string(),
+                        context_before: 0,
+                        context_after: 0,
+                        incremental: false,
+                        cache_path: None,
+                        cache_strategy: ChangeDetectionStrategy::FileSignature,
+                        max_cache_size: None,
+                        use_compression: false,
+                        encoding_mode: EncodingMode::FailFast,
+                    };
+
+                    // Process each target path
+                    for path in target_paths {
+                        if path.is_file() {
+                            let mut plan = FileReplacementPlan::new(path.clone())?;
+                            // Search for matches in this file
+                            let search_result = search(&SearchConfig {
+                                root_path: path.clone(),
+                                ..search_config.clone()
+                            })?;
+
+                            // Create a replacement task for each match
+                            if let Some(file_result) = search_result.file_results.first() {
+                                let content = std::fs::read_to_string(&path)?;
+
+                                // Create a map of line number to byte offset
+                                let mut line_offsets = vec![0];
+                                for (i, c) in content.char_indices() {
+                                    if c == '\n' {
+                                        line_offsets.push(i + 1);
+                                    }
+                                }
+                                line_offsets.push(content.len());
+
+                                for m in &file_result.matches {
+                                    // Convert line-relative positions to absolute file positions
+                                    let line_offset = line_offsets[m.line_number - 1];
+                                    let abs_start = line_offset + m.start;
+                                    let abs_end = line_offset + m.end;
+
+                                    let task = ReplacementTask::new(
+                                        path.clone(),
+                                        (abs_start, abs_end),
+                                        do_command.replacement.clone(),
+                                        0,
+                                        repl_config.clone(),
+                                    );
+                                    plan.add_replacement(task)?;
+                                }
+                                replacement_set.add_plan(plan);
+                            }
+                        } else if path.is_dir() {
+                            // Search for matches in all files in the directory
+                            let search_result = search(&SearchConfig {
+                                root_path: path.clone(),
+                                ..search_config.clone()
+                            })?;
+
+                            // Create plans for each file with matches
+                            for file_result in &search_result.file_results {
+                                let mut plan = FileReplacementPlan::new(file_result.path.clone())?;
+                                for m in &file_result.matches {
+                                    let task = ReplacementTask::new(
+                                        file_result.path.clone(),
+                                        (m.start, m.end),
+                                        do_command.replacement.clone(),
+                                        0,
+                                        repl_config.clone(),
+                                    );
+                                    plan.add_replacement(task)?;
+                                }
+                                replacement_set.add_plan(plan);
+                            }
                         }
-                        replacement_set.add_plan(plan);
                     }
-                } else if path.is_dir() {
-                    // Search for matches in all files in the directory
-                    let search_result = search(&SearchConfig {
-                        root_path: path.clone(),
-                        ..search_config.clone()
-                    })?;
 
-                    // Create plans for each file with matches
-                    for file_result in &search_result.file_results {
-                        let mut plan = FileReplacementPlan::new(file_result.path.clone())?;
-                        for m in &file_result.matches {
-                            let task = ReplacementTask::new(
-                                file_result.path.clone(),
-                                (m.start, m.end),
-                                replacement.clone(),
-                                0,
-                                repl_config.clone(),
-                            );
-                            plan.add_replacement(task)?;
-                        }
-                        replacement_set.add_plan(plan);
+                    // Execute replacements
+                    if do_command.dry_run {
+                        println!("Dry run - no changes will be made");
                     }
+
+                    // Always show the preview
+                    for plan in &replacement_set.plans {
+                        let (old_content, new_content) = plan.preview_old_new()?;
+                        match do_command.diff_format.as_str() {
+                            "unified" => print_unified_diff(&plan.file_path, &old_content, &new_content),
+                            "side-by-side" => {
+                                print_side_by_side_diff(&plan.file_path, &old_content, &new_content)
+                            }
+                            _ => print_unified_diff(&plan.file_path, &old_content, &new_content),
+                        }
+                    }
+
+                    // Apply changes if not a dry run
+                    if !do_command.dry_run {
+                        let _backups = replacement_set.apply_with_progress()?;
+                        println!("Replacements applied successfully.");
+                    }
+
+                    Ok(())
+                }
+                ReplaceCommands::Undo(undo_command) => {
+                    let config = ReplacementConfig::load_from(&PathBuf::from(".rustscout/config.json"))?;
+                    let id = undo_command
+                        .id
+                        .parse::<u64>()
+                        .map_err(|e| SearchError::config_error(format!("Invalid undo ID: {}", e)))?;
+                    ReplacementSet::undo_by_id(id, &config)?;
+                    println!("Successfully restored files from backup {}", id);
+                    Ok(())
                 }
             }
-
-            // Execute replacements
-            if dry_run {
-                println!("Dry run - no changes will be made");
-            }
-
-            // Always show the preview
-            for plan in &replacement_set.plans {
-                let (old_content, new_content) = plan.preview_old_new()?;
-                match diff_format.as_str() {
-                    "unified" => print_unified_diff(&plan.file_path, &old_content, &new_content),
-                    "side-by-side" => {
-                        print_side_by_side_diff(&plan.file_path, &old_content, &new_content)
-                    }
-                    _ => print_unified_diff(&plan.file_path, &old_content, &new_content),
-                }
-            }
-
-            // Apply changes if not a dry run
-            if !dry_run {
-                let _backups = replacement_set.apply_with_progress()?;
-                println!("Replacements applied successfully.");
-            }
-
-            Ok(())
         }
-        Commands::ListUndo => {
-            let config = ReplacementConfig::load_from(&PathBuf::from(".rustscout/config.json"))?;
-            let operations = ReplacementSet::list_undo_operations(&config)?;
-            print_undo_operations(&operations);
-            Ok(())
-        }
-        Commands::Undo { id } => {
-            let config = ReplacementConfig::load_from(&PathBuf::from(".rustscout/config.json"))?;
-            let id = id
-                .parse::<u64>()
-                .map_err(|e| SearchError::config_error(format!("Invalid undo ID: {}", e)))?;
-            ReplacementSet::undo_by_id(id, &config)?;
-            println!("Successfully restored files from backup {}", id);
-            Ok(())
-        }
-    }
-}
-
-fn print_undo_operations(operations: &[(UndoInfo, PathBuf)]) {
-    if operations.is_empty() {
-        println!("No undo operations available");
-        return;
-    }
-
-    println!("Available undo operations:");
-    for (info, path) in operations {
-        println!("{}: {}", info.description, path.display());
     }
 }
