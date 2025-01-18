@@ -184,6 +184,39 @@ pub struct FileReplacementPlan {
     pub original_metadata: Option<std::fs::Metadata>,
 }
 
+/// Represents a single diff 'hunk' – i.e., a consecutive set of changes.
+/// This can be used to perform partial reverts or display line-level diffs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffHunk {
+    /// The 1-based starting line in the original file
+    pub original_start_line: usize,
+    /// The 1-based starting line in the new file
+    pub new_start_line: usize,
+    /// Number of lines in the original hunk
+    pub original_line_count: usize,
+    /// Number of lines in the new hunk
+    pub new_line_count: usize,
+    /// The actual lines removed from the original
+    pub original_lines: Vec<String>,
+    /// The actual lines that replaced them
+    pub new_lines: Vec<String>,
+}
+
+impl DiffHunk {
+    pub fn is_empty(&self) -> bool {
+        self.original_lines.is_empty() && self.new_lines.is_empty()
+    }
+}
+
+/// Represents all changes made to a single file
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileDiff {
+    /// The path to the modified file
+    pub file_path: PathBuf,
+    /// The hunks of changes made to this file
+    pub hunks: Vec<DiffHunk>,
+}
+
 /// Information about a backup for undo operations
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UndoInfo {
@@ -191,7 +224,7 @@ pub struct UndoInfo {
     pub timestamp: u64,
     /// Description of the operation
     pub description: String,
-    /// Map of original files to their backup paths
+    /// Map of original files to their backup paths (for full-file backups)
     pub backups: Vec<(PathBuf, PathBuf)>,
     /// Size of the operation in bytes
     pub total_size: u64,
@@ -199,6 +232,9 @@ pub struct UndoInfo {
     pub file_count: usize,
     /// Whether the operation was a dry run
     pub dry_run: bool,
+    /// Detailed patch-based diffs for each modified file (new field)
+    #[serde(default)]
+    pub file_diffs: Vec<FileDiff>,
 }
 
 impl fmt::Display for UndoInfo {
@@ -705,6 +741,7 @@ impl ReplacementSet {
                 total_size,
                 file_count: self.plans.len(),
                 dry_run: self.config.dry_run,
+                file_diffs: Vec::new(),
             };
 
             // Save undo information
@@ -767,6 +804,7 @@ impl ReplacementSet {
                 .sum(),
             file_count: backups.len(),
             dry_run: self.config.dry_run,
+            file_diffs: Vec::new(),
         };
 
         let info_path = self.config.undo_dir.join(format!("{}.json", timestamp));
@@ -813,6 +851,7 @@ mod tests {
     use super::*;
     use crate::search::matcher::{HyphenMode, PatternDefinition, WordBoundaryMode};
     use tempfile::tempdir;
+    use serde_json;
 
     // Helper function to create a basic pattern definition
     fn create_pattern_def(text: &str, is_regex: bool) -> PatternDefinition {
@@ -1481,6 +1520,84 @@ mod tests {
 
         let new_content = fs::read_to_string(&file_path).map_err(SearchError::IoError)?;
         assert_eq!(new_content, "pass testing tested");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_diff_hunk_serialization() -> SearchResult<()> {
+        let hunk = DiffHunk {
+            original_start_line: 1,
+            new_start_line: 1,
+            original_line_count: 2,
+            new_line_count: 1,
+            original_lines: vec!["old line 1".to_string(), "old line 2".to_string()],
+            new_lines: vec!["new line".to_string()],
+        };
+
+        let json = serde_json::to_string_pretty(&hunk)?;
+        let deserialized: DiffHunk = serde_json::from_str(&json)?;
+
+        assert_eq!(deserialized.original_start_line, 1);
+        assert_eq!(deserialized.new_start_line, 1);
+        assert_eq!(deserialized.original_line_count, 2);
+        assert_eq!(deserialized.new_line_count, 1);
+        assert_eq!(deserialized.original_lines.len(), 2);
+        assert_eq!(deserialized.new_lines.len(), 1);
+        assert_eq!(deserialized.original_lines[0], "old line 1");
+        assert_eq!(deserialized.new_lines[0], "new line");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_file_diff_creation() -> SearchResult<()> {
+        let hunk1 = DiffHunk {
+            original_start_line: 1,
+            new_start_line: 1,
+            original_line_count: 1,
+            new_line_count: 1,
+            original_lines: vec!["old line".to_string()],
+            new_lines: vec!["new line".to_string()],
+        };
+
+        let hunk2 = DiffHunk {
+            original_start_line: 5,
+            new_start_line: 5,
+            original_line_count: 2,
+            new_line_count: 1,
+            original_lines: vec!["old line 1".to_string(), "old line 2".to_string()],
+            new_lines: vec!["new line".to_string()],
+        };
+
+        let file_diff = FileDiff {
+            file_path: PathBuf::from("test.txt"),
+            hunks: vec![hunk1, hunk2],
+        };
+
+        assert_eq!(file_diff.hunks.len(), 2);
+        assert_eq!(file_diff.hunks[0].original_line_count, 1);
+        assert_eq!(file_diff.hunks[1].original_line_count, 2);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_undo_info_backwards_compatibility() -> SearchResult<()> {
+        // Create an UndoInfo without file_diffs (old format)
+        let old_json = r#"{
+            "timestamp": 123456789,
+            "description": "test operation",
+            "backups": [],
+            "total_size": 0,
+            "file_count": 0,
+            "dry_run": false
+        }"#;
+
+        let info: UndoInfo = serde_json::from_str(old_json)?;
+        assert!(info.file_diffs.is_empty());
+        assert_eq!(info.timestamp, 123456789);
+        assert_eq!(info.description, "test operation");
 
         Ok(())
     }

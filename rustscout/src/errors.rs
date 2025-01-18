@@ -71,6 +71,8 @@ pub enum SearchError {
         path: PathBuf,
         source: std::string::FromUtf8Error,
     },
+    #[error("JSON error: {0}")]
+    JsonError(#[from] serde_json::Error),
 }
 
 /// Canonicalize the path and strip UNC prefixes so that
