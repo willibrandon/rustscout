@@ -4,8 +4,7 @@ use rustscout::{
     config::{EncodingMode, SearchConfig},
     errors::SearchError,
     replace::{
-        FileReplacementPlan, ReplacementConfig, ReplacementPattern, ReplacementSet,
-        ReplacementTask,
+        FileReplacementPlan, ReplacementConfig, ReplacementPattern, ReplacementSet, ReplacementTask,
     },
     search,
     search::matcher::{HyphenMode, PatternDefinition, WordBoundaryMode},
@@ -121,7 +120,7 @@ enum Commands {
 enum ReplaceCommands {
     /// Perform a search/replace operation
     Do(ReplaceDo),
-    
+
     /// Undo a previous replacement operation
     Undo(ReplaceUndo),
 }
@@ -131,43 +130,43 @@ struct ReplaceDo {
     /// Pattern to search for
     #[arg(short = 'p', long = "pattern", required = true)]
     pattern: String,
-    
+
     /// Text to replace matches with
     #[arg(short = 'r', long = "replacement", required = true)]
     replacement: String,
-    
+
     /// Treat pattern as a regular expression
     #[arg(short = 'x', long = "regex")]
     is_regex: bool,
-    
+
     /// Word boundary mode (none, partial, strict)
     #[arg(short = 'b', long = "boundary-mode", default_value = "none")]
     boundary_mode: String,
-    
+
     /// Shorthand for --boundary-mode strict
     #[arg(short = 'w', long = "word-boundary", conflicts_with = "boundary_mode")]
     word_boundary: bool,
-    
+
     /// How to handle hyphens in boundaries
     #[arg(short = 'y', long = "hyphen-mode", default_value = "joining")]
     hyphen_mode: String,
-    
+
     /// Configuration file for replacements
     #[arg(short = 'c', long = "config")]
     config: Option<PathBuf>,
-    
+
     /// Dry run - show what would be changed without making changes
     #[arg(short = 'n', long = "dry-run")]
     dry_run: bool,
-    
+
     /// Number of threads to use
     #[arg(short = 'j', long = "threads")]
     threads: Option<NonZeroUsize>,
-    
+
     /// Preview diff format (unified|side-by-side)
     #[arg(short = 'd', long = "diff-format", default_value = "unified")]
     diff_format: String,
-    
+
     /// Paths to process
     #[arg(required = true)]
     paths: Vec<PathBuf>,
@@ -378,9 +377,7 @@ fn run() -> Result<()> {
             );
             Ok(())
         }
-        Commands::Replace {
-            command,
-        } => {
+        Commands::Replace { command } => {
             match command {
                 ReplaceCommands::Do(do_command) => {
                     // Load config file if provided
@@ -541,7 +538,9 @@ fn run() -> Result<()> {
                     for plan in &replacement_set.plans {
                         let (old_content, new_content) = plan.preview_old_new()?;
                         match do_command.diff_format.as_str() {
-                            "unified" => print_unified_diff(&plan.file_path, &old_content, &new_content),
+                            "unified" => {
+                                print_unified_diff(&plan.file_path, &old_content, &new_content)
+                            }
                             "side-by-side" => {
                                 print_side_by_side_diff(&plan.file_path, &old_content, &new_content)
                             }
@@ -558,11 +557,11 @@ fn run() -> Result<()> {
                     Ok(())
                 }
                 ReplaceCommands::Undo(undo_command) => {
-                    let config = ReplacementConfig::load_from(&PathBuf::from(".rustscout/config.json"))?;
-                    let id = undo_command
-                        .id
-                        .parse::<u64>()
-                        .map_err(|e| SearchError::config_error(format!("Invalid undo ID: {}", e)))?;
+                    let config =
+                        ReplacementConfig::load_from(&PathBuf::from(".rustscout/config.json"))?;
+                    let id = undo_command.id.parse::<u64>().map_err(|e| {
+                        SearchError::config_error(format!("Invalid undo ID: {}", e))
+                    })?;
                     ReplacementSet::undo_by_id(id, &config)?;
                     println!("Successfully restored files from backup {}", id);
                     Ok(())
