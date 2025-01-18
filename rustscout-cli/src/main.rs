@@ -37,9 +37,13 @@ struct CliSearchConfig {
     #[arg(short = 'r', long = "regex", action = clap::ArgAction::Append)]
     is_regex: Vec<bool>,
 
-    /// Match whole words only for the most recently specified pattern
-    #[arg(short = 'w', long = "word-boundary", action = clap::ArgAction::Append)]
-    word_boundary: Vec<bool>,
+    /// Word boundary mode for the most recently specified pattern (strict|partial|none)
+    #[arg(long = "boundary-mode", default_value = "none")]
+    boundary_mode: String,
+
+    /// Match whole words only (shorthand for --boundary-mode strict)
+    #[arg(short = 'w', long = "word-boundary", conflicts_with = "boundary_mode")]
+    word_boundary: bool,
 
     /// How to handle hyphens in word boundaries (boundary|joining)
     #[arg(long = "hyphen-mode", default_value = "joining")]
@@ -117,8 +121,12 @@ enum Commands {
         #[arg(short = 'R', long = "regex")]
         is_regex: bool,
 
-        /// Match whole words only
-        #[arg(short = 'w', long = "word-boundary")]
+        /// Word boundary mode (strict|partial|none)
+        #[arg(long = "boundary-mode", default_value = "none")]
+        boundary_mode: String,
+
+        /// Match whole words only (shorthand for --boundary-mode strict)
+        #[arg(short = 'w', long = "word-boundary", conflicts_with = "boundary_mode")]
         word_boundary: bool,
 
         /// How to handle hyphens in word boundaries (boundary|joining)
@@ -171,18 +179,34 @@ fn run() -> Result<()> {
                 .chain(config.legacy_patterns.iter())
                 .enumerate()
             {
+                let boundary_mode = if config.word_boundary {
+                    WordBoundaryMode::WholeWords
+                } else {
+                    match config.boundary_mode.as_str() {
+                        "strict" => WordBoundaryMode::WholeWords,
+                        "partial" => WordBoundaryMode::Partial,
+                        "none" => WordBoundaryMode::None,
+                        _ => {
+                            return Err(SearchError::config_error(format!(
+                            "Invalid boundary mode '{}'. Valid values are: strict, partial, none",
+                            config.boundary_mode
+                        )))
+                        }
+                    }
+                };
+
                 pattern_defs.push(PatternDefinition {
                     text: pattern.clone(),
                     is_regex: i < config.is_regex.len() && config.is_regex[i],
-                    boundary_mode: if i < config.word_boundary.len() && config.word_boundary[i] {
-                        WordBoundaryMode::WholeWords
-                    } else {
-                        WordBoundaryMode::None
-                    },
+                    boundary_mode,
                     hyphen_mode: match config.hyphen_mode.as_str() {
                         "boundary" => HyphenMode::Boundary,
                         "joining" => HyphenMode::Joining,
-                        _ => return Err(SearchError::config_error("Invalid hyphen mode")),
+                        _ => {
+                            return Err(SearchError::config_error(
+                                "Invalid hyphen mode. Valid values are: boundary, joining",
+                            ))
+                        }
                     },
                 });
             }
@@ -232,6 +256,7 @@ fn run() -> Result<()> {
             pattern,
             replacement,
             is_regex,
+            boundary_mode,
             word_boundary,
             hyphen_mode,
             config,
@@ -260,40 +285,51 @@ fn run() -> Result<()> {
             };
 
             // Create pattern definition
-            let pattern_def = ReplacementPattern {
-                definition: PatternDefinition {
-                    text: pattern,
-                    is_regex,
-                    boundary_mode: if word_boundary {
-                        WordBoundaryMode::WholeWords
-                    } else {
-                        WordBoundaryMode::None
-                    },
-                    hyphen_mode: match hyphen_mode.as_str() {
-                        "boundary" => HyphenMode::Boundary,
-                        _ => HyphenMode::Joining,
-                    },
+            let boundary_mode = if word_boundary {
+                WordBoundaryMode::WholeWords
+            } else {
+                match boundary_mode.as_str() {
+                    "strict" => WordBoundaryMode::WholeWords,
+                    "partial" => WordBoundaryMode::Partial,
+                    "none" => WordBoundaryMode::None,
+                    _ => {
+                        return Err(SearchError::config_error(format!(
+                            "Invalid boundary mode '{}'. Valid values are: strict, partial, none",
+                            boundary_mode
+                        )))
+                    }
+                }
+            };
+
+            let pattern_def = PatternDefinition {
+                text: pattern.clone(),
+                is_regex,
+                boundary_mode,
+                hyphen_mode: match hyphen_mode.as_str() {
+                    "boundary" => HyphenMode::Boundary,
+                    "joining" => HyphenMode::Joining,
+                    _ => {
+                        return Err(SearchError::config_error(
+                            "Invalid hyphen mode. Valid values are: boundary, joining",
+                        ))
+                    }
                 },
+            };
+
+            let replacement_pattern = ReplacementPattern {
+                definition: pattern_def.clone(),
                 replacement_text: replacement.clone(),
             };
 
-            // Set the pattern in the config
-            repl_config.patterns = vec![pattern_def.clone()];
-
-            // Set thread count if specified
-            if let Some(thread_count) = threads {
-                rayon::ThreadPoolBuilder::new()
-                    .num_threads(thread_count.get())
-                    .build_global()
-                    .map_err(|e| SearchError::config_error(e.to_string()))?;
-            }
+            // Add pattern to config
+            repl_config.patterns.push(replacement_pattern);
 
             // Create replacement set
             let mut replacement_set = ReplacementSet::new(repl_config.clone());
 
             // First, find all matches using the search functionality
             let search_config = SearchConfig {
-                pattern_definitions: vec![pattern_def.definition],
+                pattern_definitions: vec![pattern_def],
                 root_path: PathBuf::from("."),
                 file_extensions: None,
                 ignore_patterns: vec![],

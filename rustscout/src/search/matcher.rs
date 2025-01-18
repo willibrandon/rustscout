@@ -112,8 +112,12 @@ impl PatternMatcher {
 
     /// Checks if a regex pattern already contains boundary tokens
     fn contains_boundary_tokens(pattern: &str) -> bool {
-        pattern.contains("\\b") || pattern.contains("^") || pattern.contains("$") || 
-        pattern.contains(r"\B") || pattern.contains(r"\<") || pattern.contains(r"\>")
+        pattern.contains("\\b")
+            || pattern.contains("^")
+            || pattern.contains("$")
+            || pattern.contains(r"\B")
+            || pattern.contains(r"\<")
+            || pattern.contains(r"\>")
     }
 
     /// Creates a new PatternMatcher with the specified metrics
@@ -151,9 +155,9 @@ impl PatternMatcher {
                             // 1. WholeWords mode is requested
                             // 2. Pattern doesn't already have boundary tokens
                             // 3. Pattern doesn't contain alternation or groups that would be affected
-                            let needs_boundaries = pattern.boundary_mode == WordBoundaryMode::WholeWords 
+                            let needs_boundaries = pattern.boundary_mode == WordBoundaryMode::WholeWords
                                 && !Self::contains_boundary_tokens(&pattern.text)
-                                && !pattern.text.contains('|')  // No alternation
+                                && !pattern.text.contains('|') // No alternation
                                 && !pattern.text.contains("(?:") // No non-capturing groups
                                 && !pattern.text.contains('('); // No capturing groups
 
@@ -166,7 +170,9 @@ impl PatternMatcher {
                     } else {
                         match pattern.boundary_mode {
                             WordBoundaryMode::WholeWords => format!(r"(?u)\b{}\b", pattern.text),
-                            WordBoundaryMode::Partial | WordBoundaryMode::None => format!(r"(?u){}", pattern.text),
+                            WordBoundaryMode::Partial | WordBoundaryMode::None => {
+                                format!(r"(?u){}", pattern.text)
+                            }
                         }
                     };
                     MatchStrategy::Regex {
@@ -200,224 +206,263 @@ impl PatternMatcher {
             && !pattern.contains(|c: char| c.is_ascii_punctuation() && c != '_' && c != '-')
     }
 
-    /// Checks if a position represents a word boundary
-    fn is_word_boundary(text: &str, start: usize, end: usize, hyphen_mode: HyphenMode, boundary_mode: WordBoundaryMode) -> bool {
-        // Get the last character of the matched text by going from start to end
-        let last_char = text[..end].chars().last();
+    /// Decide if underscore in Partial + Joining should unify (skip) or allow a match.
+    /// Return false means "unify → skip the match",
+    /// Return true means "no unify → allow partial match".
+    fn underscore_partial_joining_allows_match(text: &str, underscore_index: usize) -> bool {
+        // Edge cases: if underscore is at start or end, no bridging → allow partial match
+        if underscore_index == 0 || underscore_index + 1 >= text.len() {
+            return true;
+        }
 
-        // Get the character after the match
-        let after_char = text[end..].chars().next();
+        let before_char = text[..underscore_index].chars().next_back().unwrap();
+        let after_char = text[underscore_index + 1..].chars().next().unwrap();
 
-        // Get the character before the start (if any)
-        let before_char = if start > 0 {
-            text[..start].chars().last()
-        } else {
+        // If bridging math symbol and normal word-char => unify → skip → return false
+        // e.g. "∑_total" → skip match for "∑"
+        let bridging_math = (Self::is_math_symbol(before_char) && Self::is_word_char(after_char))
+            || (Self::is_math_symbol(after_char) && Self::is_word_char(before_char));
+        if bridging_math {
+            return false; // unify → skip
+        }
+
+        // Otherwise e.g. "hello_世界" → allow partial match
+        true
+    }
+
+    /// Determines whether a match at the given position has valid word boundaries
+    fn is_word_boundary(
+        text: &str,
+        start: usize,
+        end: usize,
+        pattern: &str,
+        hyphen_mode: HyphenMode,
+        boundary_mode: WordBoundaryMode,
+    ) -> bool {
+        // First check if this match is part of a repeated sequence
+        if boundary_mode == WordBoundaryMode::WholeWords
+            && Self::is_part_of_repeated_sequence(text, start, end, pattern)
+        {
+            return false;
+        }
+
+        // Get the character before the match, if any
+        let before_char = if start == 0 {
             None
+        } else {
+            text.get(..start)
+                .and_then(|slice| slice.chars().next_back())
         };
 
-        #[cfg(test)]
-        eprintln!(
-            "DEBUG: Checking boundary for text='{}' [{},{}] before={:?} after={:?} hyphen_mode={:?}",
-            text, start, end, before_char, after_char, hyphen_mode
-        );
+        // Get the character after the match, if any
+        let after_char = text.get(end..).and_then(|slice| slice.chars().next());
 
-        // Helper to check if a character is word-like (letter, digit, or underscore)
-        let is_word_like = |c: char| c.is_alphanumeric() || c == '_';
+        match boundary_mode {
+            WordBoundaryMode::None => true,
+            WordBoundaryMode::Partial => {
+                if hyphen_mode == HyphenMode::Joining {
+                    // If hyphen (ASCII or Unicode) is before/after => unify => skip
+                    if matches!(before_char, Some('-') | Some('\u{2011}'))
+                        || matches!(after_char, Some('-') | Some('\u{2011}'))
+                    {
+                        return false;
+                    }
 
-        // Check if two characters are from different scripts (simple ASCII vs non-ASCII check)
-        let is_different_script =
-            |a: char, b: char| (a.is_ascii() && !b.is_ascii()) || (!a.is_ascii() && b.is_ascii());
-
-        // Check if a character is a mathematical symbol that can join with underscores
-        let is_joinable_symbol = |c: char| {
-            matches!(
-                c,
-                '∑' | '∏'
-                    | '±'
-                    | '∞'
-                    | '∫'
-                    | '∂'
-                    | '∇'
-                    | '∈'
-                    | '∉'
-                    | '∋'
-                    | '∌'
-                    | '∩'
-                    | '∪'
-                    | '⊂'
-                    | '⊃'
-                    | '⊆'
-                    | '⊇'
-                    | '≈'
-                    | '≠'
-                    | '≡'
-                    | '≤'
-                    | '≥'
-                    | '⟨'
-                    | '⟩'
-                    | '→'
-                    | '←'
-                    | '↔'
-                    | '⇒'
-                    | '⇐'
-                    | '⇔'
-            )
-        };
-
-        // Check if an underscore is bridging different scripts with word-like characters
-        if let Some('_') = after_char {
-            // Look ahead past the underscore safely
-            let underscore_slice = &text[end..];
-            let underscore_len = '_'.len_utf8();
-            if underscore_len <= underscore_slice.len() {
-                let after_underscore = &underscore_slice[underscore_len..];
-                if let Some(next_c) = after_underscore.chars().next() {
-                    if let Some(last_c) = last_char {
-                        // In partial mode, respect hyphen mode for mathematical symbols
-                        if boundary_mode == WordBoundaryMode::Partial {
-                            if hyphen_mode == HyphenMode::Joining && is_joinable_symbol(last_c) {
-                                return false;
-                            }
-                            return true;
+                    // If underscore is before/after => call bridging logic
+                    if before_char == Some('_') {
+                        let underscore_index = start.saturating_sub(1);
+                        // If bridging logic returns false → unify => skip match
+                        if !Self::underscore_partial_joining_allows_match(text, underscore_index) {
+                            return false;
                         }
-                        // Only apply bridging if BOTH characters are word-like
-                        if is_word_like(last_c)
-                            && is_word_like(next_c)
-                            && is_different_script(last_c, next_c)
-                        {
+                    }
+                    if after_char == Some('_') {
+                        let underscore_index = end;
+                        // If bridging logic returns false → unify => skip match
+                        if !Self::underscore_partial_joining_allows_match(text, underscore_index) {
                             return false;
                         }
                     }
                 }
+                true
+            }
+            WordBoundaryMode::WholeWords => {
+                let before_continues = if start == 0 {
+                    false
+                } else {
+                    Self::continues_word(
+                        text,
+                        (start - 1) as isize,
+                        before_char,
+                        hyphen_mode,
+                        boundary_mode,
+                    )
+                };
+                let after_continues = Self::continues_word(
+                    text,
+                    end as isize,
+                    after_char,
+                    hyphen_mode,
+                    boundary_mode,
+                );
+                !before_continues && !after_continues
+            }
+        }
+    }
+
+    /// Helper to check if a character continues a word
+    fn continues_word(
+        text: &str,
+        char_index: isize,
+        ch_opt: Option<char>,
+        hyphen_mode: HyphenMode,
+        boundary_mode: WordBoundaryMode,
+    ) -> bool {
+        if char_index < 0 || ch_opt.is_none() {
+            return false;
+        }
+        let ch = ch_opt.unwrap();
+
+        // Whitespace never continues a word
+        if ch.is_whitespace() {
+            return false;
+        }
+
+        // Word characters always continue
+        if Self::is_word_char(ch) {
+            return true;
+        }
+
+        // Handle both ASCII hyphen and Unicode hyphen (U+2011)
+        if ch == '-' || ch == '\u{2011}' {
+            return hyphen_mode == HyphenMode::Joining;
+        }
+
+        // Special underscore handling
+        if ch == '_' {
+            match boundary_mode {
+                WordBoundaryMode::WholeWords => {
+                    return Self::underscore_acts_as_joiner(text, char_index as usize, hyphen_mode);
+                }
+                WordBoundaryMode::Partial | WordBoundaryMode::None => {
+                    return true;
+                }
             }
         }
 
-        // Characters that are part of a word
-        let is_word_char = |c: char| {
-            c.is_alphanumeric() ||    // Covers letters and numbers
-            c.is_alphabetic() ||      // Additional Unicode letters
-            c.is_mark_nonspacing() ||
-            c.is_mark_spacing_combining() ||
-            c.is_mark_enclosing()
-        };
+        // Handle other joining characters
+        if Self::is_always_joiner(ch) {
+            return true;
+        }
 
-        // Characters that join words (prevent word boundaries)
-        let is_joining_char = |c: char| {
-            // Characters that are always joiners
-            let is_always_joiner = matches!(
-                c,
-                '_' |     // Underscore always joins (code identifiers)
-                '@' |      // Common in identifiers
-                '\'' | '`' |     // String/char literals
-                '#' | '$' |      // Special identifiers
-                '\\' |           // Escape sequences
-                '→' | '←' | '↔' | // Arrow operators
-                '・' | '·' |      // Interpuncts
-                '々' | 'ー' // Japanese/Chinese repeaters
-            );
+        // Math symbols join in Joining mode
+        if hyphen_mode == HyphenMode::Joining && Self::is_math_symbol(ch) {
+            return true;
+        }
 
-            let is_mode_joiner = match c {
-                // ASCII hyphen and Unicode hyphens/dashes
-                '-' |
-                '\u{2010}' | // HYPHEN
-                '\u{2011}' | // NON-BREAKING HYPHEN
-                '\u{2012}' | // FIGURE DASH
-                '\u{2013}' | // EN DASH
-                '\u{2014}' | // EM DASH
-                '\u{2015}' | // HORIZONTAL BAR
-                '\u{2212}' | // MINUS SIGN
-                '\u{FE58}' | // SMALL EM DASH
-                '\u{FE63}' | // SMALL HYPHEN-MINUS
-                '\u{FF0D}'   // FULLWIDTH HYPHEN-MINUS
-                    => hyphen_mode == HyphenMode::Joining,
-                _ => false,
-            };
+        false
+    }
 
-            is_always_joiner || is_mode_joiner
-        };
+    /// Helper to determine if an underscore acts as a joiner based on surrounding characters
+    fn underscore_acts_as_joiner(
+        text: &str,
+        underscore_index: usize,
+        hyphen_mode: HyphenMode,
+    ) -> bool {
+        // If hyphen_mode == Joining => unify
+        if hyphen_mode == HyphenMode::Joining {
+            return true;
+        }
 
-        // Check if a character continues a word (opposite of allowing a boundary)
-        let continues_word = |c: Option<char>| {
-            match c {
-                None => false,                           // Start/end of text does not continue a word
-                Some(ch) if ch.is_whitespace() => false, // Whitespace does not continue a word
-                Some(ch) => {
-                    // In Joining mode, math symbols can join with underscores
-                    if hyphen_mode == HyphenMode::Joining && is_joinable_symbol(ch) {
-                        true
-                    } else {
-                        is_word_char(ch) || is_joining_char(ch) // Word chars and joiners continue words
-                    }
-                }
-            }
-        };
+        // If we're at edges, treat underscore as boundary
+        if underscore_index == 0 || underscore_index >= text.len() - 1 {
+            return false;
+        }
 
-        // Check for repeated pattern by looking at characters before and after
-        let is_repeated_pattern = if let (Some(before), Some(after)) = (before_char, after_char) {
-            // For mathematical symbols, we want to be more lenient with word boundaries
-            if is_joinable_symbol(text[start..end].chars().next().unwrap_or(' ')) {
-                // Math symbols should only be considered repeated if they're directly connected
-                // to another math symbol or if in joining mode with an underscore
-                match (hyphen_mode, after) {
-                    (HyphenMode::Joining, '_') => true,
-                    _ => is_joinable_symbol(before) || is_joinable_symbol(after),
-                }
-            } else {
-                // For normal text, use standard word-like character rules
-                (is_word_char(before) || is_joining_char(before))
-                    && (is_word_char(after) || is_joining_char(after))
-            }
-        } else if let Some(before) = before_char {
-            // At the end of text, check if previous char is word-like
-            if is_joinable_symbol(text[start..end].chars().next().unwrap_or(' ')) {
-                is_joinable_symbol(before)
-            } else {
-                is_word_char(before) || is_joining_char(before)
-            }
-        } else if let Some(after) = after_char {
-            // At the start of text, check if next char is word-like
-            if is_joinable_symbol(text[start..end].chars().next().unwrap_or(' ')) {
-                match (hyphen_mode, after) {
-                    (HyphenMode::Joining, '_') => true,
-                    _ => is_joinable_symbol(after),
-                }
-            } else {
-                is_word_char(after) || is_joining_char(after)
-            }
+        let before_char = text[..underscore_index].chars().next_back().unwrap();
+        let after_char = text[underscore_index + 1..].chars().next().unwrap();
+
+        // If either side is a math symbol bridging with normal letters => boundary
+        if (Self::is_math_symbol(before_char) && Self::is_word_char(after_char))
+            || (Self::is_math_symbol(after_char) && Self::is_word_char(before_char))
+        {
+            // E.g. "∑" bridging with "t" => boundary => return false
+            return false;
+        }
+
+        // Otherwise (including bridging different scripts that are not math/letter combos),
+        // treat underscore as a joiner => return true
+        true
+    }
+
+    /// Helper to check if a character is a word character
+    fn is_word_char(c: char) -> bool {
+        c.is_alphanumeric()
+            || c.is_alphabetic()
+            || c.is_mark_nonspacing()
+            || c.is_mark_spacing_combining()
+            || c.is_mark_enclosing()
+    }
+
+    /// Helper to check if a character is a math symbol
+    fn is_math_symbol(c: char) -> bool {
+        matches!(
+            c,
+            '∑' | '∏'
+                | '±'
+                | '∞'
+                | '∫'
+                | '∂'
+                | '∇'
+                | '∈'
+                | '∉'
+                | '∋'
+                | '∌'
+                | '∩'
+                | '∪'
+                | '⊂'
+                | '⊃'
+                | '⊆'
+                | '⊇'
+                | '≈'
+                | '≠'
+                | '≡'
+                | '≤'
+                | '≥'
+                | '⟨'
+                | '⟩'
+                | '→'
+                | '←'
+                | '↔'
+                | '⇒'
+                | '⇐'
+                | '⇔'
+        )
+    }
+
+    /// Helper to check if a character is an always-joining character
+    fn is_always_joiner(c: char) -> bool {
+        matches!(
+            c,
+            '@' | '\'' | '`' | '#' | '$' | '\\' | '→' | '←' | '↔' | '・' | '·' | '々' | 'ー'
+        )
+    }
+
+    /// Check if a match is part of a repeated sequence (e.g. "YOLOYOLO")
+    fn is_part_of_repeated_sequence(text: &str, start: usize, end: usize, pattern: &str) -> bool {
+        let pat_len = pattern.len();
+
+        // Check if pattern appears immediately before this match
+        let has_pattern_before = if start >= pat_len {
+            text.get(start - pat_len..start) == Some(pattern)
         } else {
             false
         };
 
-        // We have a boundary if:
-        // 1. EITHER side does NOT continue the word
-        // 2. AND we're not in a repeated pattern context (only for WholeWords mode)
-        let boundary = match boundary_mode {
-            WordBoundaryMode::WholeWords => {
-                (!continues_word(last_char) || !continues_word(after_char)) && !is_repeated_pattern
-            }
-            WordBoundaryMode::Partial => {
-                // In partial mode, we allow matches in repeated patterns
-                // but still respect hyphen mode for joining characters
-                match (hyphen_mode, after_char) {
-                    // In joining mode, respect joining characters
-                    (HyphenMode::Joining, Some(c)) if is_joining_char(c) => false,
-                    // Otherwise, allow boundaries even in repeated patterns
-                    _ => true
-                }
-            }
-            WordBoundaryMode::None => true,
-        };
+        // Check if pattern appears immediately after this match
+        let has_pattern_after = text.get(end..end + pat_len) == Some(pattern);
 
-        #[cfg(test)]
-        eprintln!(
-            "DEBUG: before_boundary={} after_boundary={} is_repeated={} result={}",
-            !continues_word(last_char),
-            !continues_word(after_char),
-            is_repeated_pattern,
-            boundary
-        );
-
-        boundary
+        has_pattern_before || has_pattern_after
     }
 
     /// Finds all matches in the given text
@@ -447,8 +492,14 @@ impl PatternMatcher {
                         .filter(|&(start, end)| match boundary_mode {
                             WordBoundaryMode::None => true,
                             WordBoundaryMode::WholeWords | WordBoundaryMode::Partial => {
-                                let is_boundary =
-                                    Self::is_word_boundary(text, start, end, *hyphen_mode, *boundary_mode);
+                                let is_boundary = Self::is_word_boundary(
+                                    text,
+                                    start,
+                                    end,
+                                    pattern,
+                                    *hyphen_mode,
+                                    *boundary_mode,
+                                );
                                 #[cfg(test)]
                                 eprintln!(
                                     "DEBUG: Checking boundary for match at [{},{}] => {}",
@@ -491,7 +542,7 @@ mod tests {
 
         // Create first pattern with word boundaries
         let pattern1 = PatternDefinition {
-            text: "test".to_string(),
+            text: "test_cache_boundary_unique123".to_string(),
             is_regex: false,
             boundary_mode: WordBoundaryMode::WholeWords,
             hyphen_mode: HyphenMode::default(),
@@ -513,7 +564,7 @@ mod tests {
 
         // Create same pattern without word boundaries - should miss cache
         let pattern2 = PatternDefinition {
-            text: "test".to_string(),
+            text: "test_cache_boundary_unique123".to_string(),
             is_regex: false,
             boundary_mode: WordBoundaryMode::None,
             hyphen_mode: HyphenMode::default(),
@@ -548,171 +599,266 @@ mod tests {
             (
                 "I love café food",
                 "café",
-                1, 1, 1, 1, 1, 1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
                 "Basic Latin with diacritics - standalone word",
             ),
             (
                 "I love café-bar food",
                 "café",
-                1, 0, 1, 1, 1, 0,
+                1,
+                0,
+                1,
+                1,
+                1,
+                0,
                 "Latin with hyphen - matches depend on hyphen mode",
             ),
             (
                 "I love cafébar food",
                 "café",
-                0, 0, 1, 1, 1, 1,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1,
                 "Latin without boundary - only matches in None/Partial mode",
             ),
             // 2. Cyrillic script
             (
                 "Привет мир",
                 "Привет",
-                1, 1, 1, 1, 1, 1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
                 "Cyrillic standalone word",
             ),
             (
                 "приветствие мир",
                 "привет",
-                0, 0, 1, 1, 1, 1,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1,
                 "Cyrillic as substring - only matches in None/Partial mode",
             ),
             (
                 "привет-мир",
                 "привет",
-                1, 0, 1, 1, 1, 0,
+                1,
+                0,
+                1,
+                1,
+                1,
+                0,
                 "Cyrillic with hyphen - matches depend on hyphen mode",
             ),
             // 3. CJK characters
-            (
-                "你好 世界",
-                "你好",
-                1, 1, 1, 1, 1, 1,
-                "CJK standalone word",
-            ),
+            ("你好 世界", "你好", 1, 1, 1, 1, 1, 1, "CJK standalone word"),
             (
                 "你好吗 世界",
                 "你好",
-                0, 0, 1, 1, 1, 1,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1,
                 "CJK as part of longer word - only matches in None/Partial mode",
             ),
             (
                 "你好-世界",
                 "你好",
-                1, 0, 1, 1, 1, 0,
+                1,
+                0,
+                1,
+                1,
+                1,
+                0,
                 "CJK with hyphen - matches depend on hyphen mode",
             ),
             // 4. Korean Hangul
             (
                 "안녕 세상",
                 "안녕",
-                1, 1, 1, 1, 1, 1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
                 "Korean standalone word",
             ),
             (
                 "안녕하세요 세상",
                 "안녕",
-                0, 0, 1, 1, 1, 1,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1,
                 "Korean as part of longer word - only matches in None/Partial mode",
             ),
             (
                 "안녕-세상",
                 "안녕",
-                1, 0, 1, 1, 1, 0,
+                1,
+                0,
+                1,
+                1,
+                1,
+                0,
                 "Korean with hyphen - matches depend on hyphen mode",
             ),
             // 5. Mixed scripts and identifiers
             (
                 "hello_世界 test",
                 "hello_世界",
-                1, 1, 1, 1, 1, 1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
                 "Mixed script identifier - full match",
             ),
             (
                 "hello_世界 test",
                 "hello",
-                0, 0, 1, 1, 1, 1,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1,
                 "Mixed script identifier - partial match only in None/Partial mode",
             ),
             (
                 "test_café_안녕 example",
                 "test_café_안녕",
-                1, 1, 1, 1, 1, 1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
                 "Complex mixed script identifier",
             ),
             // 6. Right-to-left scripts
             (
                 "שלום עולם",
                 "שלום",
-                1, 1, 1, 1, 1, 1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
                 "Hebrew standalone word",
             ),
             (
                 "שלוםעולם",
                 "שלום",
-                0, 0, 1, 1, 1, 1,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1,
                 "Hebrew as part of word - only matches in None/Partial mode",
             ),
             (
                 "مرحبا بالعالم",
                 "مرحبا",
-                1, 1, 1, 1, 1, 1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
                 "Arabic standalone word",
             ),
             // 7. Technical symbols and mathematical notation
-            (
-                "x + β = γ",
-                "β",
-                1, 1, 1, 1, 1, 1,
-                "Greek letter as symbol",
-            ),
+            ("x + β = γ", "β", 1, 1, 1, 1, 1, 1, "Greek letter as symbol"),
             (
                 "f(x) = ∑(i=0)",
                 "∑",
-                1, 1, 1, 1, 1, 1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
                 "Mathematical symbol",
             ),
             (
                 "∑_total",
                 "∑",
-                1, 0, 1, 1, 1, 0,
+                1,
+                0,
+                1,
+                1,
+                1,
+                0,
                 "Symbol with underscore - matches depend on hyphen mode",
             ),
             // 8. Emoji and combined sequences
-            (
-                "Hello 👋 World",
-                "👋",
-                1, 1, 1, 1, 1, 1,
-                "Single emoji",
-            ),
+            ("Hello 👋 World", "👋", 1, 1, 1, 1, 1, 1, "Single emoji"),
             (
                 "Family: 👨‍👩‍👧‍👦 here",
                 "👨‍👩‍👧‍👦",
-                1, 1, 1, 1, 1, 1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
                 "Combined emoji sequence",
             ),
             (
                 "Nice 👍🏽 job",
                 "👍🏽",
-                1, 1, 1, 1, 1, 1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
                 "Emoji with skin tone modifier",
             ),
             // 9. Special cases and edge scenarios
             (
                 "hello‑world",
                 "hello",
-                1, 0, 1, 1, 1, 0,
+                1,
+                0,
+                1,
+                1,
+                1,
+                0,
                 "Unicode hyphen (U+2011)",
             ),
-            (
-                "test_case",
-                "test",
-                0, 0, 1, 1, 1, 1,
-                "Underscore joining",
-            ),
+            ("test_case", "test", 0, 0, 1, 1, 1, 1, "Underscore joining"),
             (
                 "αβγ test",
                 "αβγ",
-                1, 1, 1, 1, 1, 1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
                 "Multiple Greek letters as one word",
             ),
         ];
@@ -825,6 +971,62 @@ mod tests {
             ("YOLO YOLO", "YOLO", 2, "Space separated - matches both"),
             ("YOLO\nYOLO", "YOLO", 2, "Newline separated - matches both"),
             ("YOLO,YOLO", "YOLO", 2, "Comma separated - matches both"),
+            // Edge cases for repeated sequences
+            (
+                "YOLOYOLOYOLO YOLO",
+                "YOLO",
+                1,
+                "Last YOLO in repeated sequence should not match even with space after",
+            ),
+            (
+                "YOLO YOLOYOLOYOLO",
+                "YOLO",
+                1,
+                "First standalone YOLO should match, none in repeated sequence",
+            ),
+            (
+                "YOLOYOLO YOLOYOLO",
+                "YOLO",
+                0,
+                "No matches when all YOLOs are part of repeated sequences",
+            ),
+            (
+                "YOLOYOLOYOLO YOLO YOLOYOLOYOLO",
+                "YOLO",
+                1,
+                "Only standalone YOLO should match",
+            ),
+            (
+                "YOLOYOLO YOLO YOLOYOLO",
+                "YOLO",
+                1,
+                "Middle standalone YOLO should match",
+            ),
+            // Complex edge cases
+            (
+                "YOLOYOLOYOLO,YOLO",
+                "YOLO",
+                1,
+                "Comma after repeated sequence - last YOLO should match",
+            ),
+            (
+                "YOLOYOLOYOLO\nYOLO",
+                "YOLO",
+                1,
+                "Newline after repeated sequence - last YOLO should match",
+            ),
+            (
+                "YOLOYOLOYOLO YOLO!",
+                "YOLO",
+                1,
+                "Punctuation after standalone YOLO",
+            ),
+            (
+                "(YOLOYOLOYOLO) YOLO",
+                "YOLO",
+                1,
+                "Parentheses around repeated sequence",
+            ),
         ];
 
         for (text, pattern, expected_matches, comment) in test_cases {
@@ -861,16 +1063,36 @@ mod tests {
             ("YOLOYOLO", "YOLO", 2, "Repeated pattern - matches both"),
             ("YOLOYOLOYOLO", "YOLO", 3, "Multiple repeats - matches all"),
             ("YOLO-YOLO", "YOLO", 2, "Hyphenated repeats - matches both"),
-            ("YOLO_YOLO", "YOLO", 2, "Underscore joined - matches both in partial mode"),
+            (
+                "YOLO_YOLO",
+                "YOLO",
+                2,
+                "Underscore joined - matches both in partial mode",
+            ),
             ("YOLODONE", "YOLO", 1, "Partial word - matches"),
             ("DONEYOLO", "YOLO", 1, "Partial word at end - matches"),
             ("YOLO YOLO", "YOLO", 2, "Space separated - matches both"),
             ("YOLO\nYOLO", "YOLO", 2, "Newline separated - matches both"),
             ("YOLO,YOLO", "YOLO", 2, "Comma separated - matches both"),
             // Complex cases
-            ("YOLOinYOLO", "YOLO", 2, "Camel case separation - matches both"),
-            ("YOLOYOLODONE", "YOLO", 2, "Multiple matches with trailing text"),
-            ("PREFIXYOLOinYOLOSUFFIX", "YOLO", 2, "Embedded in larger word"),
+            (
+                "YOLOinYOLO",
+                "YOLO",
+                2,
+                "Camel case separation - matches both",
+            ),
+            (
+                "YOLOYOLODONE",
+                "YOLO",
+                2,
+                "Multiple matches with trailing text",
+            ),
+            (
+                "PREFIXYOLOinYOLOSUFFIX",
+                "YOLO",
+                2,
+                "Embedded in larger word",
+            ),
         ];
 
         for (text, pattern, expected_matches, comment) in test_cases {
@@ -903,15 +1125,57 @@ mod tests {
         // Test cases: (text, pattern, expected_whole_words, expected_partial)
         let test_cases = vec![
             // Basic cases
-            ("YOLO YOLOYOLO", "YOLO", 1, 3, "One whole word and two partial matches"),
-            ("YOLOYOLO", "YOLO", 0, 2, "No whole words but two partial matches"),
-            ("YOLO-YOLO-YOLOYOLO", "YOLO", 2, 4, "Two hyphenated whole words plus two partial matches"),
-            ("YOLOinYOLO", "YOLO", 0, 2, "Camel case - no whole words but two partial matches"),
-            ("YOLO_YOLO_YOLOYOLO", "YOLO", 0, 4, "Underscore separated - no whole words but four partial matches"),
+            (
+                "YOLO YOLOYOLO",
+                "YOLO",
+                1,
+                3,
+                "One whole word and two partial matches",
+            ),
+            (
+                "YOLOYOLO",
+                "YOLO",
+                0,
+                2,
+                "No whole words but two partial matches",
+            ),
+            (
+                "YOLO-YOLO-YOLOYOLO",
+                "YOLO",
+                2,
+                4,
+                "Two hyphenated whole words plus two partial matches",
+            ),
+            (
+                "YOLOinYOLO",
+                "YOLO",
+                0,
+                2,
+                "Camel case - no whole words but two partial matches",
+            ),
+            (
+                "YOLO_YOLO_YOLOYOLO",
+                "YOLO",
+                0,
+                4,
+                "Underscore separated - no whole words but four partial matches",
+            ),
             // Edge cases
             ("YOLO", "YOLO", 1, 1, "Single word matches both modes"),
-            ("YOLO YOLO", "YOLO", 2, 2, "Space separated matches both modes"),
-            ("PRE_YOLO_POST", "YOLO", 0, 1, "Embedded in identifier - only partial mode matches"),
+            (
+                "YOLO YOLO",
+                "YOLO",
+                2,
+                2,
+                "Space separated matches both modes",
+            ),
+            (
+                "PRE_YOLO_POST",
+                "YOLO",
+                0,
+                1,
+                "Embedded in identifier - only partial mode matches",
+            ),
         ];
 
         for (text, pattern, expected_whole_words, expected_partial, comment) in test_cases {
@@ -967,21 +1231,81 @@ mod tests {
         // Test cases: (pattern, is_regex, boundary_mode, text, expected_matches, comment)
         let test_cases = vec![
             // User-supplied boundary tokens should be respected
-            (r"\bYOLO\b", true, WordBoundaryMode::WholeWords, "YOLO test", 1, "Explicit boundary tokens respected"),
-            (r"\bYOLO\b", true, WordBoundaryMode::None, "YOLO test", 1, "Boundary tokens respected even in None mode"),
-            
+            (
+                r"\bYOLO\b",
+                true,
+                WordBoundaryMode::WholeWords,
+                "YOLO test",
+                1,
+                "Explicit boundary tokens respected",
+            ),
+            (
+                r"\bYOLO\b",
+                true,
+                WordBoundaryMode::None,
+                "YOLO test",
+                1,
+                "Boundary tokens respected even in None mode",
+            ),
             // Complex regex patterns should not get auto-wrapped
-            (r"(YOLO)+", true, WordBoundaryMode::WholeWords, "YOLOYOLO test", 1, "Group not wrapped with boundaries"),
-            (r"YOLO|FOMO", true, WordBoundaryMode::WholeWords, "YOLO test FOMO", 2, "Alternation not wrapped"),
-            (r"(?:YOLO){2}", true, WordBoundaryMode::WholeWords, "YOLOYOLO test", 1, "Non-capturing group not wrapped"),
-            
+            (
+                r"(YOLO)+",
+                true,
+                WordBoundaryMode::WholeWords,
+                "YOLOYOLO test",
+                1,
+                "Group not wrapped with boundaries",
+            ),
+            (
+                r"YOLO|FOMO",
+                true,
+                WordBoundaryMode::WholeWords,
+                "YOLO test FOMO",
+                2,
+                "Alternation not wrapped",
+            ),
+            (
+                r"(?:YOLO){2}",
+                true,
+                WordBoundaryMode::WholeWords,
+                "YOLOYOLO test",
+                1,
+                "Non-capturing group not wrapped",
+            ),
             // Partial mode should not add boundaries
-            (r"YOLO", true, WordBoundaryMode::Partial, "YOLOYOLO", 2, "Partial mode allows internal matches"),
-            
+            (
+                r"YOLO",
+                true,
+                WordBoundaryMode::Partial,
+                "YOLOYOLO",
+                2,
+                "Partial mode allows internal matches",
+            ),
             // Edge cases
-            (r"\BYOLO", true, WordBoundaryMode::WholeWords, "testYOLO", 1, "Custom boundary token \\B respected"),
-            (r"^\w+YOLO$", true, WordBoundaryMode::WholeWords, "testYOLO", 1, "Start/end anchors respected"),
-            (r"\<YOLO\>", true, WordBoundaryMode::WholeWords, "YOLO test", 1, "Word boundary alternatives respected"),
+            (
+                r"\BYOLO",
+                true,
+                WordBoundaryMode::WholeWords,
+                "testYOLO",
+                1,
+                "Custom boundary token \\B respected",
+            ),
+            (
+                r"^\w+YOLO$",
+                true,
+                WordBoundaryMode::WholeWords,
+                "testYOLO",
+                1,
+                "Start/end anchors respected",
+            ),
+            (
+                r"\<YOLO\>",
+                true,
+                WordBoundaryMode::WholeWords,
+                "YOLO test",
+                1,
+                "Word boundary alternatives respected",
+            ),
         ];
 
         for (pattern, is_regex, boundary_mode, text, expected_matches, comment) in test_cases {
