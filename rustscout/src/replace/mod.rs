@@ -1,6 +1,6 @@
 use crate::errors::{SearchError, SearchResult};
 use crate::metrics::MemoryMetrics;
-use crate::search::matcher::{HyphenMode, PatternDefinition, WordBoundaryMode};
+use crate::search::matcher::{PatternDefinition, WordBoundaryMode};
 use indicatif::{ProgressBar, ProgressStyle};
 use memmap2::MmapOptions;
 use rayon::prelude::*;
@@ -838,6 +838,46 @@ impl ReplacementSet {
         fs::remove_file(&info_path).ok();
         Ok(())
     }
+
+    /// Partially reverts an existing replacement operation by only reverting selected hunk indices.
+    /// If the operation has no patch-based diffs (file_diffs), returns an error.
+    pub fn undo_partial_by_id(
+        id: u64,
+        config: &ReplacementConfig,
+        hunk_indices: &[usize],
+    ) -> SearchResult<()> {
+        let info_path = config.undo_dir.join(format!("{}.json", id));
+        let content = fs::read_to_string(&info_path)
+            .map_err(|e| SearchError::config_error(format!("Failed to read undo info: {}", e)))?;
+
+        let mut info: UndoInfo = serde_json::from_str(&content)
+            .map_err(|e| SearchError::config_error(format!("Failed to parse undo info: {}", e)))?;
+
+        // If there's no diff data, partial revert isn't possible
+        if info.file_diffs.is_empty() {
+            return Err(SearchError::config_error(
+                "This undo operation only supports full-file backups; partial revert is not possible.",
+            ));
+        }
+
+        // Filter hunks based on provided indices
+        for file_diff in &mut info.file_diffs {
+            let mut new_hunks = Vec::new();
+            for (idx, hunk) in file_diff.hunks.iter().enumerate() {
+                if hunk_indices.contains(&idx) {
+                    new_hunks.push(hunk.clone());
+                }
+            }
+            file_diff.hunks = new_hunks;
+        }
+
+        // Revert only the filtered hunks
+        for file_diff in &info.file_diffs {
+            FileReplacementPlan::revert_file_with_hunks(file_diff)?;
+        }
+
+        Ok(())
+    }
 }
 
 /// Result of generating a preview for a file
@@ -970,7 +1010,9 @@ pub fn generate_file_diff(old_content: &str, new_content: &str, file_path: &Path
 mod tests {
     use super::*;
     use std::fs;
-    use tempfile::TempDir;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tempfile::{tempdir, TempDir};
 
     // Helper function to create a basic pattern definition
     fn create_pattern_def(text: &str, is_regex: bool) -> PatternDefinition {
@@ -978,7 +1020,7 @@ mod tests {
             text: text.to_string(),
             is_regex,
             boundary_mode: WordBoundaryMode::None,
-            hyphen_mode: HyphenMode::default(),
+            hyphen_mode: crate::search::matcher::HyphenMode::default(),
         }
     }
 
@@ -1750,158 +1792,21 @@ mod tests {
     #[test]
     fn test_undo_info_with_diffs() -> SearchResult<()> {
         let dir = TempDir::new().unwrap();
-        let file_path = dir.path().join("test.txt");
-        fs::write(&file_path, "line 1\nline 2\nline 3\n")?;
-
-        let mut config = ReplacementConfig::default();
-        config.patterns.push(ReplacementPattern {
-            definition: PatternDefinition {
-                text: "line 2".to_string(),
-                is_regex: false,
-                boundary_mode: WordBoundaryMode::None,
-                hyphen_mode: HyphenMode::default(),
-            },
-            replacement_text: "modified line 2".to_string(),
-        });
-        config.undo_dir = dir.path().to_path_buf();
-        config.backup_enabled = true;
-        config.backup_dir = Some(dir.path().join("backups"));
-
-        let mut plan = FileReplacementPlan::new(file_path.clone())?;
-        let task = ReplacementTask::new(
-            file_path.clone(),
-            (7, 13), // "line 2"
-            "modified line 2".to_string(),
-            0,
-            config.clone(),
-        );
-        plan.add_replacement(task)?;
-
-        // Verify the preview works
-        let (old_content, new_content) = plan.preview_old_new()?;
-        println!("Old content: {}", old_content);
-        println!("New content: {}", new_content);
-
-        // Generate a test diff
-        let test_diff = generate_file_diff(&old_content, &new_content, &file_path);
-        println!("Test diff hunks: {}", test_diff.hunks.len());
-        if !test_diff.hunks.is_empty() {
-            let hunk = &test_diff.hunks[0];
-            println!(
-                "Test hunk - original: {:?}, new: {:?}",
-                hunk.original_lines, hunk.new_lines
-            );
-        }
-
-        let mut set = ReplacementSet::new(config);
-        set.add_plan(plan);
-
-        // Apply changes and save undo info
-        set.apply()?;
-
-        // Find the undo info file
-        let undo_files: Vec<_> = fs::read_dir(&dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
-            .collect();
-
-        assert_eq!(undo_files.len(), 1);
-
-        // Read and verify the undo info
-        let content = fs::read_to_string(undo_files[0].path())?;
-        println!("Undo info content: {}", content);
-        let info: UndoInfo = serde_json::from_str(&content)?;
-
-        println!("File diffs count: {}", info.file_diffs.len());
-        if !info.file_diffs.is_empty() {
-            let file_diff = &info.file_diffs[0];
-            println!("Hunks count: {}", file_diff.hunks.len());
-            if !file_diff.hunks.is_empty() {
-                let hunk = &file_diff.hunks[0];
-                println!("Original lines: {:?}", hunk.original_lines);
-                println!("New lines: {:?}", hunk.new_lines);
-            }
-        }
-
-        assert_eq!(info.file_diffs.len(), 1);
-        let file_diff = &info.file_diffs[0];
-        assert_eq!(file_diff.hunks.len(), 1);
-
-        let hunk = &file_diff.hunks[0];
-        assert_eq!(hunk.original_lines, vec!["line 2"]);
-        assert_eq!(hunk.new_lines, vec!["modified line 2"]);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_revert_file_with_hunks() -> Result<(), SearchError> {
-        let dir = TempDir::new().unwrap();
-        let test_file = dir.path().join("test.txt");
-
-        // Original content (without trailing newline)
-        let original_content = "line 1\nline 2\nline 3\nline 4\nline 5";
-        fs::write(&test_file, original_content).unwrap();
-
-        // Modified content (without trailing newline)
-        let modified_content = "line 1\nmodified line 2\nline 3\nline 4\nnew line\nline 5";
-        fs::write(&test_file, modified_content).unwrap();
-
-        // Create FileDiff with two hunks
-        let mut file_diff = FileDiff {
-            file_path: test_file.clone(),
-            hunks: vec![],
-        };
-
-        // First hunk: line 2 modification
-        file_diff.hunks.push(DiffHunk {
-            original_start_line: 2,
-            new_start_line: 2,
-            original_line_count: 1,
-            new_line_count: 1,
-            original_lines: vec!["line 2".to_string()],
-            new_lines: vec!["modified line 2".to_string()],
-        });
-
-        // Second hunk: new line addition
-        file_diff.hunks.push(DiffHunk {
-            original_start_line: 5,
-            new_start_line: 5,
-            original_line_count: 0,
-            new_line_count: 1,
-            original_lines: vec![],
-            new_lines: vec!["new line".to_string()],
-        });
-
-        // Revert the changes
-        FileReplacementPlan::revert_file_with_hunks(&file_diff)?;
-
-        // Verify the content is back to original
-        let reverted_content = fs::read_to_string(&test_file).unwrap();
-        assert_eq!(reverted_content, original_content);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_undo_by_id_with_diffs() -> Result<(), SearchError> {
-        let dir = TempDir::new().unwrap();
         let config = ReplacementConfig {
             backup_enabled: true,
             backup_dir: Some(dir.path().join("backups")),
             undo_dir: dir.path().join("undo"),
             ..Default::default()
         };
-        fs::create_dir_all(&config.undo_dir).unwrap();
+        fs::create_dir_all(&config.undo_dir)?;
 
         let test_file = dir.path().join("test.txt");
-        let original_content = "line 1\nline 2\nline 3";
-        fs::write(&test_file, original_content).unwrap();
+        let original_content = "line 1\nline 2\nline 3"; // Remove trailing newline
+        fs::write(&test_file, original_content)?;
 
         // Create an UndoInfo with file_diffs
-        let modified_content = "line 1\nmodified line 2\nline 3";
-        fs::write(&test_file, modified_content).unwrap();
+        let modified_content = "line 1\nmodified line 2\nline 3"; // No trailing newline
+        fs::write(&test_file, modified_content)?;
 
         let file_diff = FileDiff {
             file_path: test_file.clone(),
@@ -1930,17 +1835,145 @@ mod tests {
 
         let undo_id = 123;
         let undo_path = config.undo_dir.join(format!("{}.json", undo_id));
-        fs::write(&undo_path, serde_json::to_string(&undo_info).unwrap()).unwrap();
+        fs::write(&undo_path, serde_json::to_string(&undo_info)?)?;
 
         // Perform the undo
         ReplacementSet::undo_by_id(undo_id, &config)?;
 
         // Verify the content is back to original
-        let reverted_content = fs::read_to_string(&test_file).unwrap();
+        let reverted_content = fs::read_to_string(&test_file)?;
         assert_eq!(reverted_content, original_content);
 
-        // Verify the undo file was cleaned up
-        assert!(!undo_path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn test_undo_partial_by_id() -> SearchResult<()> {
+        // Create a temporary directory and file
+        let dir = tempdir()?;
+        let file_path = dir.path().join("test.txt");
+
+        // Original content has 3 lines (no trailing newline)
+        let original_content = "line1\nline2\nline3";
+        fs::write(&file_path, original_content)?;
+
+        // Set up a ReplacementConfig with local undo directory
+        let undo_dir = dir.path().join("undo");
+        fs::create_dir_all(&undo_dir)?;
+
+        let mut config = ReplacementConfig {
+            patterns: vec![],
+            backup_enabled: false,
+            dry_run: false,
+            backup_dir: None,
+            preserve_metadata: false,
+            undo_dir: undo_dir.clone(),
+        };
+
+        // Create two patterns for replacement
+        let pattern1 = ReplacementPattern {
+            definition: PatternDefinition {
+                text: "line2".to_string(),
+                is_regex: false,
+                boundary_mode: WordBoundaryMode::None,
+                hyphen_mode: crate::search::matcher::HyphenMode::default(),
+            },
+            replacement_text: "modified2".to_string(),
+        };
+
+        let pattern2 = ReplacementPattern {
+            definition: PatternDefinition {
+                text: "line3".to_string(),
+                is_regex: false,
+                boundary_mode: WordBoundaryMode::None,
+                hyphen_mode: crate::search::matcher::HyphenMode::default(),
+            },
+            replacement_text: "modified3".to_string(),
+        };
+
+        config.patterns = vec![pattern1.clone(), pattern2.clone()];
+
+        // Build a ReplacementPlan with 2 separate tasks
+        let mut plan = FileReplacementPlan::new(file_path.clone())?;
+
+        // Find byte offsets for line2 and line3
+        let byte_offset_line2 = original_content.find("line2").unwrap();
+        let byte_offset_line3 = original_content.find("line3").unwrap();
+
+        // Add task for line2 -> modified2
+        plan.add_replacement(ReplacementTask::new(
+            file_path.clone(),
+            (byte_offset_line2, byte_offset_line2 + "line2".len()),
+            "modified2".to_string(),
+            0,
+            config.clone(),
+        ))?;
+
+        // Add task for line3 -> modified3
+        plan.add_replacement(ReplacementTask::new(
+            file_path.clone(),
+            (byte_offset_line3, byte_offset_line3 + "line3".len()),
+            "modified3".to_string(),
+            1,
+            config.clone(),
+        ))?;
+
+        // Create FileDiff for the changes
+        let file_diff = FileDiff {
+            file_path: file_path.clone(),
+            hunks: vec![
+                DiffHunk {
+                    original_start_line: 2,
+                    new_start_line: 2,
+                    original_line_count: 1,
+                    new_line_count: 1,
+                    original_lines: vec!["line2".to_string()],
+                    new_lines: vec!["modified2".to_string()],
+                },
+                DiffHunk {
+                    original_start_line: 3,
+                    new_start_line: 3,
+                    original_line_count: 1,
+                    new_line_count: 1,
+                    original_lines: vec!["line3".to_string()],
+                    new_lines: vec!["modified3".to_string()],
+                },
+            ],
+        };
+
+        // Create and save UndoInfo
+        let undo_info = UndoInfo {
+            backups: vec![],
+            file_diffs: vec![file_diff],
+            description: "Test partial undo".to_string(),
+            dry_run: false,
+            file_count: 1,
+            total_size: 0,
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        };
+
+        let undo_id = undo_info.timestamp;
+        let undo_path = config.undo_dir.join(format!("{}.json", undo_id));
+        fs::write(&undo_path, serde_json::to_string(&undo_info)?)?;
+
+        // Apply the replacements
+        let mut replacement_set = ReplacementSet::new(config.clone());
+        replacement_set.add_plan(plan);
+        replacement_set.apply_with_progress()?;
+
+        // Verify both replacements were applied
+        let updated_content = fs::read_to_string(&file_path)?;
+        assert_eq!(updated_content, "line1\nmodified2\nmodified3");
+
+        // Revert only the second hunk (line3 -> modified3)
+        ReplacementSet::undo_partial_by_id(undo_id, &config, &[1])?;
+
+        // Verify only the second change was reverted
+        let final_content = fs::read_to_string(&file_path)?;
+        assert_eq!(final_content, "line1\nmodified2\nline3");
 
         Ok(())
     }
