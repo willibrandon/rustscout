@@ -1,6 +1,6 @@
 use crate::errors::{SearchError, SearchResult};
 use crate::metrics::MemoryMetrics;
-use crate::search::matcher::{PatternDefinition, WordBoundaryMode};
+use crate::search::matcher::{HyphenMode, PatternDefinition, WordBoundaryMode};
 use indicatif::{ProgressBar, ProgressStyle};
 use memmap2::MmapOptions;
 use rayon::prelude::*;
@@ -567,6 +567,47 @@ impl FileReplacementPlan {
 
         Ok((content, new_content))
     }
+
+    /// Reconstruct the original file from the new content by reversing each hunk.
+    pub fn revert_file_with_hunks(file_diff: &FileDiff) -> Result<(), SearchError> {
+        let path = &file_diff.file_path;
+        if !path.exists() {
+            return Err(SearchError::config_error(format!(
+                "Cannot revert. File '{}' no longer exists.",
+                path.display()
+            )));
+        }
+
+        // Read current file content
+        let new_content = std::fs::read_to_string(path).map_err(SearchError::IoError)?;
+
+        let mut lines: Vec<String> = new_content.lines().map(|l| l.to_string()).collect();
+
+        // Sort hunks in descending order of new_start_line so we can safely patch from bottom to top
+        let mut hunks = file_diff.hunks.clone();
+        hunks.sort_by_key(|h| std::cmp::Reverse(h.new_start_line));
+
+        for hunk in hunks {
+            let new_start = hunk.new_start_line.saturating_sub(1);
+            // Remove the lines that were "newly added" in that region
+            if hunk.new_line_count > 0 {
+                let end = new_start + hunk.new_line_count.min(lines.len() - new_start);
+                lines.drain(new_start..end);
+            }
+            // Then re-insert the old lines
+            if !hunk.original_lines.is_empty() {
+                for (i, old_line) in hunk.original_lines.iter().enumerate() {
+                    lines.insert(new_start + i, old_line.clone());
+                }
+            }
+        }
+
+        // Join lines back and overwrite file
+        let reverted_content = lines.join("\n");
+        std::fs::write(path, reverted_content).map_err(SearchError::IoError)?;
+
+        Ok(())
+    }
 }
 
 /// Represents the complete set of replacements across all files
@@ -627,40 +668,6 @@ impl ReplacementSet {
 
         operations.sort_by_key(|(info, _)| info.timestamp);
         Ok(operations)
-    }
-
-    /// Undoes a specific replacement operation by ID with progress reporting
-    pub fn undo_by_id(id: u64, config: &ReplacementConfig) -> SearchResult<()> {
-        let info_path = config.undo_dir.join(format!("{}.json", id));
-        let content = fs::read_to_string(&info_path)
-            .map_err(|e| SearchError::config_error(format!("Failed to read undo info: {}", e)))?;
-
-        let info: UndoInfo = serde_json::from_str(&content)
-            .map_err(|e| SearchError::config_error(format!("Failed to parse undo info: {}", e)))?;
-
-        for (original, backup) in info.backups {
-            let orig_abs = original.canonicalize().map_err(|e| {
-                SearchError::config_error(format!(
-                    "Failed to get absolute path for original: {}",
-                    e
-                ))
-            })?;
-
-            if !backup.exists() {
-                return Err(SearchError::config_error(format!(
-                    "Backup file not found: {}",
-                    backup.display()
-                )));
-            }
-
-            fs::copy(&backup, &orig_abs).map_err(|e| {
-                SearchError::config_error(format!("Failed to restore backup: {}", e))
-            })?;
-            fs::remove_file(&backup).ok();
-        }
-
-        fs::remove_file(&info_path).ok();
-        Ok(())
     }
 
     /// Gets a reference to the metrics
@@ -795,6 +802,42 @@ impl ReplacementSet {
 
         Ok(())
     }
+
+    /// Undoes a specific replacement operation by ID with progress reporting
+    pub fn undo_by_id(id: u64, config: &ReplacementConfig) -> SearchResult<()> {
+        let info_path = config.undo_dir.join(format!("{}.json", id));
+        let content = fs::read_to_string(&info_path)
+            .map_err(|e| SearchError::config_error(format!("Failed to read undo info: {}", e)))?;
+
+        let info: UndoInfo = serde_json::from_str(&content)
+            .map_err(|e| SearchError::config_error(format!("Failed to parse undo info: {}", e)))?;
+
+        // If new patch-based diffs are present, we revert via patches:
+        if !info.file_diffs.is_empty() {
+            for file_diff in &info.file_diffs {
+                FileReplacementPlan::revert_file_with_hunks(file_diff)?;
+            }
+            // Cleanup .json
+            fs::remove_file(&info_path).ok();
+            return Ok(());
+        }
+
+        // Otherwise, fallback to old backup-based approach
+        for (original, backup) in info.backups {
+            if !backup.exists() {
+                return Err(SearchError::config_error(format!(
+                    "Backup file '{}' no longer exists.",
+                    backup.display()
+                )));
+            }
+            if original.exists() {
+                fs::remove_file(&original).map_err(SearchError::IoError)?;
+            }
+            fs::rename(&backup, &original).map_err(SearchError::IoError)?;
+        }
+        fs::remove_file(&info_path).ok();
+        Ok(())
+    }
 }
 
 /// Result of generating a preview for a file
@@ -926,9 +969,8 @@ pub fn generate_file_diff(old_content: &str, new_content: &str, file_path: &Path
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::matcher::{HyphenMode, PatternDefinition, WordBoundaryMode};
-    use serde_json;
-    use tempfile::tempdir;
+    use std::fs;
+    use tempfile::TempDir;
 
     // Helper function to create a basic pattern definition
     fn create_pattern_def(text: &str, is_regex: bool) -> PatternDefinition {
@@ -943,12 +985,7 @@ mod tests {
     #[test]
     fn test_processing_strategies() -> SearchResult<()> {
         // Create test files with known sizes
-        let dir = tempdir().map_err(|e| {
-            SearchError::IoError(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            ))
-        })?;
+        let dir = TempDir::new().unwrap();
 
         // Small file (< 32KB)
         let small_path = dir.path().join("small.txt");
@@ -1026,7 +1063,7 @@ mod tests {
 
     #[test]
     fn test_replacement_with_backup() -> SearchResult<()> {
-        let dir = tempdir()?;
+        let dir = TempDir::new().unwrap();
         let file_path = dir.path().join("test.txt");
         fs::write(&file_path, "test content")?;
 
@@ -1067,7 +1104,7 @@ mod tests {
 
     #[test]
     fn test_dry_run() -> SearchResult<()> {
-        let dir = tempdir()?;
+        let dir = TempDir::new().unwrap();
         let file_path = dir.path().join("test.txt");
         let original_content = "test content";
         fs::write(&file_path, original_content)?;
@@ -1104,7 +1141,7 @@ mod tests {
 
     #[test]
     fn test_regex_replacement() -> SearchResult<()> {
-        let dir = tempdir()?;
+        let dir = TempDir::new().unwrap();
         let file_path = dir.path().join("test.txt");
         fs::write(&file_path, "fn test_func() {}")?;
 
@@ -1139,7 +1176,7 @@ mod tests {
 
     #[test]
     fn test_invalid_regex_pattern() -> SearchResult<()> {
-        let dir = tempdir()?;
+        let dir = TempDir::new().unwrap();
         let file_path = dir.path().join("test.txt");
         fs::write(&file_path, "test content")?;
 
@@ -1173,7 +1210,7 @@ mod tests {
 
     #[test]
     fn test_invalid_capture_group() -> SearchResult<()> {
-        let dir = tempdir()?;
+        let dir = TempDir::new().unwrap();
         let file_path = dir.path().join("test.txt");
         fs::write(&file_path, "test content")?;
 
@@ -1202,7 +1239,7 @@ mod tests {
 
     #[test]
     fn test_preserve_metadata() -> SearchResult<()> {
-        let dir = tempdir()?;
+        let dir = TempDir::new().unwrap();
         let file_path = dir.path().join("test.txt");
         fs::write(&file_path, "test content")?;
 
@@ -1250,7 +1287,7 @@ mod tests {
 
     #[test]
     fn test_multiple_replacements() -> SearchResult<()> {
-        let dir = tempdir()?;
+        let dir = TempDir::new().unwrap();
         let file_path = dir.path().join("test.txt");
         fs::write(&file_path, "test test test")?;
 
@@ -1301,7 +1338,7 @@ mod tests {
 
     #[test]
     fn test_empty_pattern() -> SearchResult<()> {
-        let dir = tempdir()?;
+        let dir = TempDir::new().unwrap();
         let file_path = dir.path().join("test.txt");
         fs::write(&file_path, "test content")?;
 
@@ -1329,7 +1366,7 @@ mod tests {
 
     #[test]
     fn test_overlapping_replacements() -> SearchResult<()> {
-        let dir = tempdir()?;
+        let dir = TempDir::new().unwrap();
         let file_path = dir.path().join("test.txt");
         fs::write(&file_path, "test content")?;
 
@@ -1375,7 +1412,7 @@ mod tests {
 
     #[test]
     fn test_undo_operations() -> SearchResult<()> {
-        let dir = tempdir()?;
+        let dir = TempDir::new().unwrap();
         let file_path = dir.path().join("test.txt");
         let original_content = "test\ntest\nno match\ntest";
         fs::write(&file_path, original_content)?;
@@ -1427,7 +1464,7 @@ mod tests {
 
     #[test]
     fn test_preview_replacements() -> SearchResult<()> {
-        let dir = tempdir()?;
+        let dir = TempDir::new().unwrap();
         let file_path = dir.path().join("test.txt");
         let original_content = "test\ntest\nno match\ntest";
         fs::write(&file_path, original_content)?;
@@ -1492,7 +1529,7 @@ mod tests {
 
     #[test]
     fn test_backup_directory_creation() -> SearchResult<()> {
-        let dir = tempdir()?;
+        let dir = TempDir::new().unwrap();
         let file_path = dir.path().join("test.txt");
         fs::write(&file_path, "test content")?;
 
@@ -1528,7 +1565,7 @@ mod tests {
 
     #[test]
     fn test_metrics_tracking() -> SearchResult<()> {
-        let dir = tempdir()?;
+        let dir = TempDir::new().unwrap();
         let file_path = dir.path().join("test.txt");
         let content = "test content".repeat(1000);
         fs::write(&file_path, &content)?;
@@ -1565,7 +1602,7 @@ mod tests {
 
     #[test]
     fn test_word_boundary_replacement() -> SearchResult<()> {
-        let dir = tempdir()?;
+        let dir = TempDir::new().unwrap();
         let file_path = dir.path().join("test.txt");
         fs::write(&file_path, "test testing tested")?;
 
@@ -1634,7 +1671,7 @@ mod tests {
             new_start_line: 1,
             original_line_count: 1,
             new_line_count: 1,
-            original_lines: vec!["old line".to_string()],
+            original_lines: vec!["old line 1".to_string()],
             new_lines: vec!["new line".to_string()],
         };
 
@@ -1712,7 +1749,7 @@ mod tests {
 
     #[test]
     fn test_undo_info_with_diffs() -> SearchResult<()> {
-        let dir = tempdir()?;
+        let dir = TempDir::new().unwrap();
         let file_path = dir.path().join("test.txt");
         fs::write(&file_path, "line 1\nline 2\nline 3\n")?;
 
@@ -1794,6 +1831,116 @@ mod tests {
         let hunk = &file_diff.hunks[0];
         assert_eq!(hunk.original_lines, vec!["line 2"]);
         assert_eq!(hunk.new_lines, vec!["modified line 2"]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_revert_file_with_hunks() -> Result<(), SearchError> {
+        let dir = TempDir::new().unwrap();
+        let test_file = dir.path().join("test.txt");
+
+        // Original content (without trailing newline)
+        let original_content = "line 1\nline 2\nline 3\nline 4\nline 5";
+        fs::write(&test_file, original_content).unwrap();
+
+        // Modified content (without trailing newline)
+        let modified_content = "line 1\nmodified line 2\nline 3\nline 4\nnew line\nline 5";
+        fs::write(&test_file, modified_content).unwrap();
+
+        // Create FileDiff with two hunks
+        let mut file_diff = FileDiff {
+            file_path: test_file.clone(),
+            hunks: vec![],
+        };
+
+        // First hunk: line 2 modification
+        file_diff.hunks.push(DiffHunk {
+            original_start_line: 2,
+            new_start_line: 2,
+            original_line_count: 1,
+            new_line_count: 1,
+            original_lines: vec!["line 2".to_string()],
+            new_lines: vec!["modified line 2".to_string()],
+        });
+
+        // Second hunk: new line addition
+        file_diff.hunks.push(DiffHunk {
+            original_start_line: 5,
+            new_start_line: 5,
+            original_line_count: 0,
+            new_line_count: 1,
+            original_lines: vec![],
+            new_lines: vec!["new line".to_string()],
+        });
+
+        // Revert the changes
+        FileReplacementPlan::revert_file_with_hunks(&file_diff)?;
+
+        // Verify the content is back to original
+        let reverted_content = fs::read_to_string(&test_file).unwrap();
+        assert_eq!(reverted_content, original_content);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_undo_by_id_with_diffs() -> Result<(), SearchError> {
+        let dir = TempDir::new().unwrap();
+        let config = ReplacementConfig {
+            backup_enabled: true,
+            backup_dir: Some(dir.path().join("backups")),
+            undo_dir: dir.path().join("undo"),
+            ..Default::default()
+        };
+        fs::create_dir_all(&config.undo_dir).unwrap();
+
+        let test_file = dir.path().join("test.txt");
+        let original_content = "line 1\nline 2\nline 3";
+        fs::write(&test_file, original_content).unwrap();
+
+        // Create an UndoInfo with file_diffs
+        let modified_content = "line 1\nmodified line 2\nline 3";
+        fs::write(&test_file, modified_content).unwrap();
+
+        let file_diff = FileDiff {
+            file_path: test_file.clone(),
+            hunks: vec![DiffHunk {
+                original_start_line: 2,
+                new_start_line: 2,
+                original_line_count: 1,
+                new_line_count: 1,
+                original_lines: vec!["line 2".to_string()],
+                new_lines: vec!["modified line 2".to_string()],
+            }],
+        };
+
+        let undo_info = UndoInfo {
+            backups: vec![],
+            file_diffs: vec![file_diff],
+            description: "Test undo".to_string(),
+            dry_run: false,
+            file_count: 1,
+            total_size: 0,
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        };
+
+        let undo_id = 123;
+        let undo_path = config.undo_dir.join(format!("{}.json", undo_id));
+        fs::write(&undo_path, serde_json::to_string(&undo_info).unwrap()).unwrap();
+
+        // Perform the undo
+        ReplacementSet::undo_by_id(undo_id, &config)?;
+
+        // Verify the content is back to original
+        let reverted_content = fs::read_to_string(&test_file).unwrap();
+        assert_eq!(reverted_content, original_content);
+
+        // Verify the undo file was cleaned up
+        assert!(!undo_path.exists());
 
         Ok(())
     }
