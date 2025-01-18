@@ -221,22 +221,21 @@ fn interactive_select_hunks(info: &UndoInfo) -> Result<Vec<usize>> {
         println!("\nFile: {}", file_diff.file_path.display());
         for (h_idx, hunk) in file_diff.hunks.iter().enumerate() {
             mapping.push((global_idx, f_idx, h_idx));
-            
+
             // Show hunk header with clearer line range format
             let range_text = if hunk.original_line_count == 1 {
                 format!("line {}", hunk.original_start_line)
             } else {
-                format!("lines {}–{}", 
+                format!(
+                    "lines {}–{}",
                     hunk.original_start_line,
                     hunk.original_start_line + hunk.original_line_count - 1
                 )
             };
-            
+
             println!(
                 "  [ ] Hunk {} (Global index {}): {}",
-                h_idx,
-                global_idx,
-                range_text
+                h_idx, global_idx, range_text
             );
 
             // Show hunk content with line numbers
@@ -295,7 +294,8 @@ fn interactive_select_hunks(info: &UndoInfo) -> Result<Vec<usize>> {
                 let range_text = if hunk.original_line_count == 1 {
                     format!("line {}", hunk.original_start_line)
                 } else {
-                    format!("lines {}–{}", 
+                    format!(
+                        "lines {}–{}",
                         hunk.original_start_line,
                         hunk.original_start_line + hunk.original_line_count - 1
                     )
@@ -757,13 +757,14 @@ fn handle_undo(undo_command: &ReplaceUndo) -> Result<()> {
                 let range_text = if hunk.original_line_count == 1 {
                     format!("line {}", hunk.original_start_line)
                 } else {
-                    format!("lines {}–{}", 
+                    format!(
+                        "lines {}–{}",
                         hunk.original_start_line,
                         hunk.original_start_line + hunk.original_line_count - 1
                     )
                 };
                 println!("  [Hunk {}] {}", i, range_text);
-                
+
                 // Show a preview of the hunk content if --preview is also used
                 if undo_command.preview {
                     println!("    Original:");
