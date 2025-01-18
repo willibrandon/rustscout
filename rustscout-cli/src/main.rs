@@ -221,28 +221,34 @@ fn interactive_select_hunks(info: &UndoInfo) -> Result<Vec<usize>> {
         println!("\nFile: {}", file_diff.file_path.display());
         for (h_idx, hunk) in file_diff.hunks.iter().enumerate() {
             mapping.push((global_idx, f_idx, h_idx));
+            
+            // Show hunk header with clearer line range format
+            let range_text = if hunk.original_line_count == 1 {
+                format!("line {}", hunk.original_start_line)
+            } else {
+                format!("lines {}–{}", 
+                    hunk.original_start_line,
+                    hunk.original_start_line + hunk.original_line_count - 1
+                )
+            };
+            
             println!(
-                "  [{}] Hunk {} (Global index {}): lines {}-{} replaced with lines {}-{}",
-                if choices.contains(&global_idx) {
-                    "*"
-                } else {
-                    " "
-                },
+                "  [ ] Hunk {} (Global index {}): {}",
                 h_idx,
                 global_idx,
-                hunk.original_start_line,
-                hunk.original_start_line + hunk.original_line_count,
-                hunk.new_start_line,
-                hunk.new_start_line + hunk.new_line_count
+                range_text
             );
-            // Show hunk content
+
+            // Show hunk content with line numbers
             println!("    Original:");
-            for line in &hunk.original_lines {
-                println!("      {}", line);
+            for (i, line) in hunk.original_lines.iter().enumerate() {
+                let line_num = hunk.original_start_line + i;
+                println!("      {: >4}: {}", line_num, line);
             }
             println!("    Current:");
-            for line in &hunk.new_lines {
-                println!("      {}", line);
+            for (i, line) in hunk.new_lines.iter().enumerate() {
+                let line_num = hunk.new_start_line + i;
+                println!("      {: >4}: {}", line_num, line);
             }
             global_idx += 1;
         }
@@ -286,12 +292,19 @@ fn interactive_select_hunks(info: &UndoInfo) -> Result<Vec<usize>> {
             if let Some(&(_, f_idx, h_idx)) = mapping.iter().find(|&&(g, _, _)| g == idx) {
                 let file_diff = &info.file_diffs[f_idx];
                 let hunk = &file_diff.hunks[h_idx];
+                let range_text = if hunk.original_line_count == 1 {
+                    format!("line {}", hunk.original_start_line)
+                } else {
+                    format!("lines {}–{}", 
+                        hunk.original_start_line,
+                        hunk.original_start_line + hunk.original_line_count - 1
+                    )
+                };
                 println!(
-                    "  File: {}, Hunk {} (lines {}-{})",
+                    "  File: {}, Hunk {} ({})",
                     file_diff.file_path.display(),
                     h_idx,
-                    hunk.original_start_line,
-                    hunk.original_start_line + hunk.original_line_count
+                    range_text
                 );
             }
         }
@@ -741,23 +754,27 @@ fn handle_undo(undo_command: &ReplaceUndo) -> Result<()> {
         for file_diff in &info.file_diffs {
             println!("\nFile: {}", file_diff.file_path.display());
             for (i, hunk) in file_diff.hunks.iter().enumerate() {
-                println!(
-                    "  [Hunk {}] lines {}-{} replaced with lines {}-{}",
-                    i,
-                    hunk.original_start_line,
-                    hunk.original_start_line + hunk.original_line_count,
-                    hunk.new_start_line,
-                    hunk.new_start_line + hunk.new_line_count
-                );
+                let range_text = if hunk.original_line_count == 1 {
+                    format!("line {}", hunk.original_start_line)
+                } else {
+                    format!("lines {}–{}", 
+                        hunk.original_start_line,
+                        hunk.original_start_line + hunk.original_line_count - 1
+                    )
+                };
+                println!("  [Hunk {}] {}", i, range_text);
+                
                 // Show a preview of the hunk content if --preview is also used
                 if undo_command.preview {
                     println!("    Original:");
-                    for line in &hunk.original_lines {
-                        println!("      {}", line);
+                    for (idx, line) in hunk.original_lines.iter().enumerate() {
+                        let line_num = hunk.original_start_line + idx;
+                        println!("      {: >4}: {}", line_num, line);
                     }
                     println!("    Current:");
-                    for line in &hunk.new_lines {
-                        println!("      {}", line);
+                    for (idx, line) in hunk.new_lines.iter().enumerate() {
+                        let line_num = hunk.new_start_line + idx;
+                        println!("      {: >4}: {}", line_num, line);
                     }
                 }
             }
