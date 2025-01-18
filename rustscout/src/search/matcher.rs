@@ -238,18 +238,12 @@ impl PatternMatcher {
         hyphen_mode: HyphenMode,
         boundary_mode: WordBoundaryMode,
     ) -> bool {
-        // For partial boundary, skip repeated tokens:
-        if boundary_mode == WordBoundaryMode::Partial
-            && Self::is_part_of_repeated_sequence(text, start, end, pattern)
-        {
-            return false;
-        }
-
         // Get the character before the match, if any
         let before_char = if start == 0 {
             None
         } else {
-            text.get(..start).and_then(|slice| slice.chars().next_back())
+            text.get(..start)
+                .and_then(|slice| slice.chars().next_back())
         };
 
         // Get the character after the match, if any
@@ -260,13 +254,18 @@ impl PatternMatcher {
 
             WordBoundaryMode::Partial => {
                 // 1) skip if fully enclosed by letters
-                let left_is_letter = before_char.map_or(false, |ch| Self::is_word_char(ch));
-                let right_is_letter = after_char.map_or(false, |ch| Self::is_word_char(ch));
+                let left_is_letter = before_char.is_some_and(Self::is_word_char);
+                let right_is_letter = after_char.is_some_and(Self::is_word_char);
                 if left_is_letter && right_is_letter {
                     return false;
                 }
 
-                // 2) bridging logic for underscores/hyphens if hyphen_mode == Joining
+                // 2) skip if part of a repeated sequence (pattern on both sides)
+                if Self::is_part_of_repeated_sequence(text, start, end, pattern) {
+                    return false;
+                }
+
+                // 3) bridging logic for underscores/hyphens if hyphen_mode == Joining
                 // If there's a hyphen on either side in joining mode => skip
                 let has_hyphen = matches!(before_char, Some('-') | Some('\u{2011}'))
                     || matches!(after_char, Some('-') | Some('\u{2011}'));
@@ -888,6 +887,39 @@ mod tests {
                 1,
                 "Multiple Greek letters as one word",
             ),
+            (
+                "YOLOYOLOYOLO",
+                "YOLO",
+                0, // WholeWords + Boundary: no match (not a whole word)
+                0, // WholeWords + Joining: no match (not a whole word)
+                3, // None + Boundary: matches all YOLOs
+                3, // None + Joining: matches all YOLOs
+                2, // Partial + Boundary: matches first and last only
+                2, // Partial + Joining: matches first and last only
+                "Multiple repeats - matches first and last only in partial mode",
+            ),
+            (
+                "YOLOYOLOYOLO",
+                "YOLO",
+                0, // WholeWords + Boundary: no match (not a whole word)
+                0, // WholeWords + Joining: no match (not a whole word)
+                3, // None + Boundary: matches all YOLOs
+                3, // None + Joining: matches all YOLOs
+                2, // Partial + Boundary: matches first and last only
+                2, // Partial + Joining: matches first and last only
+                "Multiple repeats - matches first and last only in partial mode",
+            ),
+            (
+                "YOLOYOLODONE",
+                "YOLO",
+                0, // WholeWords + Boundary: no match (not a whole word)
+                0, // WholeWords + Joining: no match (not a whole word)
+                2, // None + Boundary: matches both YOLOs
+                2, // None + Joining: matches both YOLOs
+                1, // Partial + Boundary: only first YOLO (second is part of repeated sequence)
+                1, // Partial + Joining: only first YOLO (second is part of repeated sequence)
+                "Partial mode skips second YOLO as part of repeated sequence",
+            ),
         ];
 
         for (
@@ -1088,7 +1120,12 @@ mod tests {
             // Basic word boundary cases
             ("YOLO test", "YOLO", 1, "Simple word boundary"),
             ("YOLOYOLO", "YOLO", 2, "Repeated pattern - matches both"),
-            ("YOLOYOLOYOLO", "YOLO", 3, "Multiple repeats - matches all"),
+            (
+                "YOLOYOLOYOLO",
+                "YOLO",
+                2,
+                "Multiple repeats - matches first and last only",
+            ),
             ("YOLO-YOLO", "YOLO", 2, "Hyphenated repeats - matches both"),
             (
                 "YOLO_YOLO",
@@ -1096,7 +1133,7 @@ mod tests {
                 2,
                 "Underscore joined - matches both in partial mode",
             ),
-            ("YOLODONE", "YOLO", 1, "Partial word - matches"),
+            ("YOLODONE", "YOLO", 1, "Partial word - matches at start"),
             ("DONEYOLO", "YOLO", 1, "Partial word at end - matches"),
             ("YOLO YOLO", "YOLO", 2, "Space separated - matches both"),
             ("YOLO\nYOLO", "YOLO", 2, "Newline separated - matches both"),
@@ -1111,14 +1148,26 @@ mod tests {
             (
                 "YOLOYOLODONE",
                 "YOLO",
-                2,
-                "Multiple matches with trailing text",
+                1,
+                "First YOLO matches, second skipped (part of repeated sequence)",
             ),
             (
                 "PREFIXYOLOinYOLOSUFFIX",
                 "YOLO",
+                0,
+                "No matches when fully enclosed by letters",
+            ),
+            (
+                "YOLOYOLOYOLOYOLO",
+                "YOLO",
                 2,
-                "Embedded in larger word",
+                "In a sequence of 4, only first and last match",
+            ),
+            (
+                "YOLOYOLOYOLO YOLOYOLOYOLO",
+                "YOLO",
+                4,
+                "Two groups - first and last YOLO in each group match",
             ),
         ];
 

@@ -169,7 +169,7 @@ enum Commands {
 }
 
 mod diff_utils;
-use diff_utils::{print_unified_diff, print_side_by_side_diff};
+use diff_utils::{print_side_by_side_diff, print_unified_diff};
 
 fn main() -> Result<()> {
     run()
@@ -259,7 +259,7 @@ fn run() -> Result<()> {
             };
 
             let result = search(&search_config)?;
-            
+
             if config.stats {
                 println!(
                     "{} matches across {} files",
@@ -277,7 +277,8 @@ fn run() -> Result<()> {
                 let mut printed_lines = std::collections::HashSet::new();
 
                 // Group matches by their line number
-                let mut line_to_matches: std::collections::HashMap<usize, Vec<&Match>> = std::collections::HashMap::new();
+                let mut line_to_matches: std::collections::HashMap<usize, Vec<&Match>> =
+                    std::collections::HashMap::new();
                 for m in &file_result.matches {
                     line_to_matches.entry(m.line_number).or_default().push(m);
                 }
@@ -295,7 +296,8 @@ fn run() -> Result<()> {
                     // Print context before if not already printed
                     for ctx_line_num in (line_num.saturating_sub(config.context_before))..line_num {
                         if printed_lines.insert(ctx_line_num) {
-                            println!("{}:{}-{}", 
+                            println!(
+                                "{}:{}-{}",
                                 file_result.path.display(),
                                 ctx_line_num,
                                 all_lines[ctx_line_num - 1]
@@ -323,7 +325,10 @@ fn run() -> Result<()> {
                             if config.no_color {
                                 highlighted_line.push_str(&line[m.start..m.end]);
                             } else {
-                                highlighted_line.push_str(&format!("\x1b[1;31m{}\x1b[0m", &line[m.start..m.end]));
+                                highlighted_line.push_str(&format!(
+                                    "\x1b[1;31m{}\x1b[0m",
+                                    &line[m.start..m.end]
+                                ));
                             }
 
                             last_offset = m.end;
@@ -332,7 +337,8 @@ fn run() -> Result<()> {
                         // Add any remaining non-highlighted suffix
                         highlighted_line.push_str(&line[last_offset..]);
 
-                        println!("{}:{}:{}", 
+                        println!(
+                            "{}:{}:{}",
                             file_result.path.display(),
                             line_num,
                             highlighted_line
@@ -343,7 +349,8 @@ fn run() -> Result<()> {
                     let end_ctx = (line_num + config.context_after).min(all_lines.len());
                     for ctx_line_num in (line_num + 1)..=end_ctx {
                         if printed_lines.insert(ctx_line_num) {
-                            println!("{}:{}-{}", 
+                            println!(
+                                "{}:{}-{}",
                                 file_result.path.display(),
                                 ctx_line_num,
                                 all_lines[ctx_line_num - 1]
@@ -529,7 +536,9 @@ fn run() -> Result<()> {
                 let (old_content, new_content) = plan.preview_old_new()?;
                 match diff_format.as_str() {
                     "unified" => print_unified_diff(&plan.file_path, &old_content, &new_content),
-                    "side-by-side" => print_side_by_side_diff(&plan.file_path, &old_content, &new_content),
+                    "side-by-side" => {
+                        print_side_by_side_diff(&plan.file_path, &old_content, &new_content)
+                    }
                     _ => print_unified_diff(&plan.file_path, &old_content, &new_content),
                 }
             }

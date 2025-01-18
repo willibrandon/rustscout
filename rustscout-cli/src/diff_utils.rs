@@ -12,15 +12,15 @@ pub fn print_unified_diff(file_path: &Path, old_content: &str, new_content: &str
         let (mut old_count, mut new_count) = (0, 0);
         let first_op = &group[0];
         let old_start = match first_op {
-            similar::DiffOp::Delete { old_index, .. } |
-            similar::DiffOp::Replace { old_index, .. } |
-            similar::DiffOp::Equal { old_index, .. } => *old_index,
+            similar::DiffOp::Delete { old_index, .. }
+            | similar::DiffOp::Replace { old_index, .. }
+            | similar::DiffOp::Equal { old_index, .. } => *old_index,
             similar::DiffOp::Insert { .. } => 0,
         };
         let new_start = match first_op {
-            similar::DiffOp::Insert { new_index, .. } |
-            similar::DiffOp::Replace { new_index, .. } |
-            similar::DiffOp::Equal { new_index, .. } => *new_index,
+            similar::DiffOp::Insert { new_index, .. }
+            | similar::DiffOp::Replace { new_index, .. }
+            | similar::DiffOp::Equal { new_index, .. } => *new_index,
             similar::DiffOp::Delete { .. } => 0,
         };
 
@@ -28,7 +28,9 @@ pub fn print_unified_diff(file_path: &Path, old_content: &str, new_content: &str
             match op {
                 similar::DiffOp::Delete { old_len, .. } => old_count += old_len,
                 similar::DiffOp::Insert { new_len, .. } => new_count += new_len,
-                similar::DiffOp::Replace { old_len, new_len, .. } => {
+                similar::DiffOp::Replace {
+                    old_len, new_len, ..
+                } => {
                     old_count += old_len;
                     new_count += new_len;
                 }
@@ -82,4 +84,4 @@ pub fn print_side_by_side_diff(file_path: &Path, old_content: &str, new_content:
             println!();
         }
     }
-} 
+}
