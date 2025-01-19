@@ -59,7 +59,6 @@ pub struct InteractiveSearchArgs {
     pub cache_strategy: String,
     pub encoding: String,
     pub no_color: bool,
-    pub verbose: bool,
 }
 
 /// Actions available during interactive search
@@ -514,12 +513,9 @@ fn flush_pending_input() -> Result<(), SearchError> {
 }
 
 /// Run an interactive search session
-pub fn run_interactive_search(args: &InteractiveSearchArgs) -> Result<(), SearchError> {
-    // Convert args to search config
-    let config = convert_args_to_config(args)?;
-
+pub fn run_interactive_search(args: &InteractiveSearchArgs, config: &SearchConfig) -> Result<(), SearchError> {
     // Perform the search
-    let search_result = search(&config)?;
+    let search_result = search(config)?;
 
     // Collect and sort matches
     let mut all_matches: Vec<(PathBuf, ScoutMatch)> = Vec::new();
@@ -570,13 +566,13 @@ pub fn run_interactive_search(args: &InteractiveSearchArgs) -> Result<(), Search
         &mut stats,
         &mut visited_flags,
         use_color,
-        args.verbose,
     )?;
 
     Ok(())
 }
 
-fn convert_args_to_config(args: &InteractiveSearchArgs) -> Result<SearchConfig, SearchError> {
+/// Convert args to search config
+pub fn convert_args_to_config(args: &InteractiveSearchArgs, verbosity: &str) -> Result<SearchConfig, SearchError> {
     let pattern_defs = args
         .patterns
         .iter()
@@ -611,7 +607,7 @@ fn convert_args_to_config(args: &InteractiveSearchArgs) -> Result<SearchConfig, 
         thread_count: args
             .threads
             .unwrap_or_else(|| NonZeroUsize::new(4).unwrap()),
-        log_level: "info".to_string(),
+        log_level: verbosity.to_string(),
         context_before: args.context_before,
         context_after: args.context_after,
         incremental: args.incremental,
@@ -636,7 +632,6 @@ fn interactive_loop(
     stats: &mut InteractiveStats,
     visited_flags: &mut [bool],
     use_color: bool,
-    verbose: bool,
 ) -> Result<(), SearchError> {
     if matches.is_empty() {
         println!("No matches found.");
@@ -655,7 +650,6 @@ fn interactive_loop(
                 file_path,
                 m,
                 use_color,
-                verbose,
             );
         }
         return Ok(());
@@ -677,7 +671,6 @@ fn interactive_loop(
             file_path,
             m,
             use_color,
-            verbose,
         );
 
         match read_key_input()? {
@@ -777,7 +770,6 @@ fn show_match(
     file_path: &PathBuf,
     m: &ScoutMatch,
     use_color: bool,
-    verbose: bool,
 ) {
     // Get workspace root for path display
     let workspace_root = detect_workspace_root(file_path)
@@ -797,7 +789,7 @@ fn show_match(
         "RustScout Interactive Search :: Match {} of {} ({})",
         index + 1,
         matches.len(),
-        short_path(file_path, &workspace_root, verbose)
+        short_path(file_path, &workspace_root, false)
     );
     println!(
         "{}",
@@ -821,7 +813,7 @@ fn show_match(
         }
     );
 
-    print_context(file_path, m, use_color, verbose);
+    print_context(file_path, m, use_color);
 
     println!("\nNavigation (wrap-around enabled):");
     let nav_help = "[n]ext [p]rev [f]skip file [a]ll skip [q]uit [e]dit";
@@ -891,14 +883,14 @@ fn convert_key_event(event: &KeyEvent) -> PromptAction {
 }
 
 /// Print the context around a match
-fn print_context(file_path: &PathBuf, m: &ScoutMatch, use_color: bool, verbose: bool) {
+fn print_context(file_path: &PathBuf, m: &ScoutMatch, use_color: bool) {
     // Get workspace root for path display
     let workspace_root = detect_workspace_root(file_path)
         .unwrap_or_else(|_| file_path.parent().unwrap().to_path_buf());
 
     // Print header with file info
     println!("\n{}", "-".repeat(40));
-    let header = format!("File: {}", short_path(file_path, &workspace_root, verbose));
+    let header = format!("File: {}", short_path(file_path, &workspace_root, false));
     println!(
         "{}",
         if use_color {

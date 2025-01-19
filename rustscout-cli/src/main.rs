@@ -92,17 +92,6 @@ enum Commands {
     },
 }
 
-impl Commands {
-    fn verbosity_level(&self) -> &str {
-        match self {
-            Commands::Search(_) => "info",
-            Commands::Replace { .. } => "info",
-            Commands::InteractiveSearch(_) => "info",
-            Commands::Workspace { .. } => "info",
-        }
-    }
-}
-
 fn setup_logging(level: &str) -> Result<()> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
 
@@ -263,10 +252,6 @@ struct CliSearchConfig {
     /// Disables colored output. Handy for scripts or logs that don't support ANSI colors.
     #[arg(short = 'N', long = "no-color", help_heading = "Miscellaneous")]
     no_color: bool,
-
-    /// Sets the log level (error, warn, info, debug, or trace). More detail as you go up.
-    #[arg(short = 'v', long = "verbosity", default_value = "info", help_heading = "Miscellaneous")]
-    log_level: String,
 }
 
 /// Perform a powerful, configurable search‐and‐replace across multiple files or directories, with optional backups, interactive TUI, and advanced pattern matching.
@@ -359,11 +344,6 @@ struct ReplaceDo {
     #[arg(short = 'f', long = "file-filter", value_name = "PATTERNS")]
     #[arg(help_heading = "Advanced Options")]
     file_filter: Option<String>,
-
-    /// Increases logging detail (may be repeated: -vvv)
-    #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count)]
-    #[arg(help_heading = "Advanced Options")]
-    verbose: u8,
 
     /// One or more files, directories, or globs to process
     #[arg(required = true, value_name = "PATHS")]
@@ -565,14 +545,6 @@ struct InteractiveSearchArgs {
     /// Disables colored output in the TUI. Suitable for terminals that lack color support.
     #[arg(short = 'N', long = "no-color", help_heading = "Misc. & Logging")]
     no_color: bool,
-
-    /// Sets log level (error, warn, info, debug, or trace)
-    #[arg(short = 'v', long = "verbosity", default_value = "info", help_heading = "Misc. & Logging")]
-    log_level: String,
-
-    /// Shorthand for increasing verbosity to debug
-    #[arg(short = 'V', long = "verbose", help_heading = "Misc. & Logging")]
-    verbose: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -776,17 +748,17 @@ fn run() -> Result<()> {
     let cli = Cli::parse();
 
     // Set up logging based on verbosity
-    setup_logging(cli.command.verbosity_level())?;
+    setup_logging(&cli.verbosity)?;
 
     match cli.command {
         Commands::Search(args) => {
-            handle_search(*args)?;
+            handle_search(*args, &cli.verbosity)?;
         }
         Commands::Replace { command } => {
-            handle_replace(command)?;
+            handle_replace(command, &cli.verbosity)?;
         }
         Commands::InteractiveSearch(args) => {
-            handle_interactive_search(*args)?;
+            handle_interactive_search(*args, &cli.verbosity)?;
         }
         Commands::Workspace { command } => {
             handle_workspace(command)?;
@@ -795,33 +767,7 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-fn handle_interactive_search(args: InteractiveSearchArgs) -> Result<()> {
-    let lib_args = rustscout::search::interactive_search::InteractiveSearchArgs {
-        patterns: args.patterns,
-        legacy_patterns: args.legacy_patterns,
-        is_regex: args.is_regex,
-        boundary_mode: args.boundary_mode,
-        word_boundary: args.word_boundary,
-        hyphen_mode: args.hyphen_mode,
-        root: args.root,
-        extensions: args.extensions,
-        ignore: args.ignore,
-        context_before: args.context_before,
-        context_after: args.context_after,
-        threads: args.threads,
-        incremental: args.incremental,
-        cache_path: args.cache_path,
-        cache_strategy: args.cache_strategy,
-        encoding: args.encoding,
-        no_color: args.no_color,
-        verbose: args.verbose,
-    };
-
-    rustscout::search::interactive_search::run_interactive_search(&lib_args)?;
-    Ok(())
-}
-
-fn handle_search(args: CliSearchConfig) -> Result<()> {
+fn handle_search(args: CliSearchConfig, verbosity: &str) -> Result<()> {
     let mut pattern_defs = Vec::new();
 
     // Convert CLI patterns to pattern definitions
@@ -889,7 +835,7 @@ fn handle_search(args: CliSearchConfig) -> Result<()> {
         thread_count: args
             .threads
             .unwrap_or_else(|| NonZeroUsize::new(4).unwrap()),
-        log_level: "info".to_string(),
+        log_level: verbosity.to_string(),
         context_before: args.context_before,
         context_after: args.context_after,
         incremental: args.incremental,
@@ -1007,7 +953,7 @@ fn handle_search(args: CliSearchConfig) -> Result<()> {
     Ok(())
 }
 
-fn handle_replace(command: ReplaceCommands) -> Result<()> {
+fn handle_replace(command: ReplaceCommands, verbosity: &str) -> Result<()> {
     match command {
         ReplaceCommands::Do(do_command) => {
             // Load config file if provided
@@ -1083,7 +1029,7 @@ fn handle_replace(command: ReplaceCommands) -> Result<()> {
                 thread_count: do_command
                     .threads
                     .unwrap_or_else(|| NonZeroUsize::new(4).unwrap()),
-                log_level: "info".to_string(),
+                log_level: verbosity.to_string(),
                 context_before: 0,
                 context_after: 0,
                 incremental: false,
@@ -1485,4 +1431,32 @@ fn handle_workspace(cmd: WorkspaceCommands) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn handle_interactive_search(args: InteractiveSearchArgs, verbosity: &str) -> Result<()> {
+    let lib_args = rustscout::search::interactive_search::InteractiveSearchArgs {
+        patterns: args.patterns,
+        legacy_patterns: args.legacy_patterns,
+        is_regex: args.is_regex,
+        boundary_mode: args.boundary_mode,
+        word_boundary: args.word_boundary,
+        hyphen_mode: args.hyphen_mode,
+        root: args.root,
+        extensions: args.extensions,
+        ignore: args.ignore,
+        context_before: args.context_before,
+        context_after: args.context_after,
+        threads: args.threads,
+        incremental: args.incremental,
+        cache_path: args.cache_path,
+        cache_strategy: args.cache_strategy,
+        encoding: args.encoding,
+        no_color: args.no_color,
+    };
+
+    // Convert args to search config with the global verbosity
+    let config = rustscout::search::interactive_search::convert_args_to_config(&lib_args, verbosity)?;
+
+    rustscout::search::interactive_search::run_interactive_search(&lib_args, &config)?;
+    Ok(())
 }
