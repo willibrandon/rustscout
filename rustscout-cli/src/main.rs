@@ -27,7 +27,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Search for patterns in files
+    /// Powerfully search your codebase for patterns—literal or regex—while leveraging features like boundary modes, incremental caching, context lines, and more
     #[command(visible_alias = "s")]
     Search(Box<CliSearchConfig>),
 
@@ -38,7 +38,7 @@ enum Commands {
         command: ReplaceCommands,
     },
 
-    /// Interactively search through matches one by one
+    /// Interactively search your codebase match by match. Navigate results using keyboard shortcuts, display context lines, skip files, and optionally edit matches on the spot
     #[command(visible_alias = "i")]
     InteractiveSearch(Box<InteractiveSearchArgs>),
 
@@ -73,256 +73,467 @@ fn setup_logging(level: &str) -> Result<()> {
 }
 
 #[derive(Subcommand, Debug)]
+#[command(about = "Perform search-and-replace operations with powerful pattern matching and undo capabilities")]
+#[command(long_about = "RustScout's advanced find-and-replace workflow suite, featuring:\n\
+1. Powerful Search/Replace capabilities (replace do), with literal or regex matches, boundary modes, dry runs, and interactive approvals.\n\
+2. Seamless Undo operations (replace undo), supporting partial or full revert of prior changes, with interactive or hunk-based selection.")]
 enum ReplaceCommands {
     /// Perform a search/replace operation
     Do(ReplaceDo),
 
-    /// Undo a previous replacement operation
+    /// Undo or partially revert a previous replacement operation
     Undo(ReplaceUndo),
 }
 
 #[derive(Parser, Debug)]
+#[command(about = "Powerfully search your codebase for patterns—literal or regex—while leveraging features like boundary modes, incremental caching, context lines, and more")]
+#[command(after_help = "\
+Example Workflows:
+
+1. Simple Literal Search
+   rustscout-cli search -p \"TODO\" -d ./src
+   Finds \"TODO\" in the src directory.
+
+2. Multiple Patterns (Mixed Regex/Literal)
+   rustscout-cli search \\
+     -p \"MyClass\" -r false \\
+     -p \"fn (\\w+)\\(\" -r true \\
+     -B 2 -A 2
+   Searches for both a literal \"MyClass\" and a Rust function definition pattern, showing 2 lines of surrounding context.
+
+3. Incremental Caching for Speed
+   rustscout-cli search \\
+     -p \"RefactorMe\" \\
+     -I --cache-path .rustscout-cache.json \\
+     -S git \\
+     -j 8
+   Uses 8 threads, leverages Git metadata for incremental scanning, and caches results in .rustscout-cache.json.
+
+4. File Extension & Ignore Patterns
+   rustscout-cli search \\
+     -p \"TODO\" \\
+     -x rs,ts \\
+     -g \"**/dist/**\" \\
+     --stats
+   Only searches .rs or .ts files, ignores the dist/ folder, and prints statistics (e.g., how many matches found).
+
+5. Handling Special UTF-8 Cases
+   rustscout-cli search \\
+     -p \"🔑KEYWORD\" \\
+     -E lossy
+   Continues searching in files even if some contain invalid UTF-8 sequences, representing them with placeholders.")]
 struct CliSearchConfig {
-    /// Pattern to search for (can be specified multiple times)
-    #[arg(short = 'p', long = "pattern")]
+    /// Specifies a pattern to search for. Can be provided multiple times:
+    /// Each -p adds a new pattern. By default, these are literal substring matches.
+    #[arg(short = 'p', long = "pattern", help_heading = "Core Pattern Options")]
     patterns: Vec<String>,
 
     /// Legacy positional patterns (deprecated)
     #[arg(hide = true)]
     legacy_patterns: Vec<String>,
 
-    /// Treat the most recently specified pattern as a regular expression
-    #[arg(short = 'r', long = "regex", action = clap::ArgAction::Append)]
+    /// For the most recently specified --pattern, treat it as a regular expression (if true).
+    /// Example:
+    ///   rustscout-cli search -p "fn (\w+)\(\)" -r true
+    /// This matches Rust function definitions.
+    /// Tip: You can set -r false again if you want the next pattern to be literal.
+    #[arg(short = 'r', long = "regex", action = clap::ArgAction::Append, help_heading = "Core Pattern Options")]
     is_regex: Vec<bool>,
 
-    /// Word boundary mode (strict|partial|none)
-    #[arg(short = 'b', long = "boundary-mode", default_value = "none")]
+    /// Specifies word boundary handling:
+    /// - strict: Only match whole words
+    /// - partial: Loose boundary detection
+    /// - none (default): No boundary constraints
+    /// Tip: Use -w, --word-boundary as a shorthand for --boundary-mode strict
+    #[arg(short = 'b', long = "boundary-mode", default_value = "none", help_heading = "Core Pattern Options")]
     boundary_mode: String,
 
-    /// Match whole words only (shorthand for --boundary-mode strict)
-    #[arg(short = 'w', long = "word-boundary", conflicts_with = "boundary_mode")]
+    /// Shorthand for --boundary-mode strict
+    #[arg(short = 'w', long = "word-boundary", conflicts_with = "boundary_mode", help_heading = "Core Pattern Options")]
     word_boundary: bool,
 
-    /// How to handle hyphens in word boundaries (boundary|joining)
-    #[arg(short = 'y', long = "hyphen-mode", default_value = "joining")]
+    /// Determines how hyphens are treated in word boundaries:
+    /// - boundary: Hyphens are considered separate boundaries
+    /// - joining (default): Hyphens are treated as word characters, bridging word parts
+    #[arg(short = 'y', long = "hyphen-mode", default_value = "joining", help_heading = "Core Pattern Options")]
     hyphen_mode: String,
 
-    /// Root directory to search in
-    #[arg(short = 'd', long = "root", default_value = ".")]
+    /// Specifies the root directory to search in.
+    /// Default: Current directory (.)
+    #[arg(short = 'd', long = "root", default_value = ".", help_heading = "File/Directory Options")]
     root: PathBuf,
 
-    /// File extensions to include (e.g. rs,go,js)
-    #[arg(short = 'x', long = "extensions")]
+    /// Comma-separated list of file extensions to include.
+    /// Example: -x rs,go,js
+    #[arg(short = 'x', long = "extensions", help_heading = "File/Directory Options")]
     extensions: Option<String>,
 
-    /// Patterns to ignore (glob format)
-    #[arg(short = 'g', long = "ignore")]
+    /// Defines ignore patterns (in glob format) for files or directories.
+    /// Example: -g "**/node_modules/**" to skip node modules.
+    #[arg(short = 'g', long = "ignore", help_heading = "File/Directory Options")]
     ignore: Vec<String>,
 
-    /// Number of context lines before match
-    #[arg(short = 'B', long = "context-before", default_value = "0")]
+    /// Number of context lines before each match (default: 0)
+    #[arg(short = 'B', long = "context-before", default_value = "0", help_heading = "Match Output & Context")]
     context_before: usize,
 
-    /// Number of context lines after match
-    #[arg(short = 'A', long = "context-after", default_value = "0")]
+    /// Number of context lines after each match (default: 0)
+    /// When used together (like -B 2 -A 2), you get a small snippet of lines around each match—helpful for code review.
+    #[arg(short = 'A', long = "context-after", default_value = "0", help_heading = "Match Output & Context")]
     context_after: usize,
 
-    /// Show only statistics, not matches
-    #[arg(short = 's', long = "stats")]
+    /// Show only statistics, not the actual matches.
+    /// Perfect for counting how many files or lines matched without spamming the terminal.
+    #[arg(short = 's', long = "stats", help_heading = "Match Output & Context")]
     stats: bool,
 
-    /// Number of threads to use
-    #[arg(short = 'j', long = "threads")]
+    /// Number of threads to use for parallel searching.
+    /// Defaults to the number of CPU cores.
+    #[arg(short = 'j', long = "threads", help_heading = "Performance & Caching")]
     threads: Option<NonZeroUsize>,
 
-    /// Enable incremental search using cache
-    #[arg(short = 'I', long = "incremental")]
+    /// Enable incremental search using a local cache of file checksums or Git metadata. This speeds up repeated searches.
+    /// Combine with -C, -S, -M, -Z for advanced tuning.
+    #[arg(short = 'I', long = "incremental", help_heading = "Performance & Caching")]
     incremental: bool,
 
-    /// Path to cache file (default: .rustscout-cache.json)
-    #[arg(short = 'C', long = "cache-path")]
+    /// Specifies the path to the cache file (default: .rustscout-cache.json)
+    #[arg(short = 'C', long = "cache-path", help_heading = "Performance & Caching")]
     cache_path: Option<PathBuf>,
 
-    /// Strategy for detecting file changes (auto|git|signature)
-    #[arg(short = 'S', long = "cache-strategy", default_value = "auto")]
+    /// Sets the strategy for detecting changed files:
+    /// - auto (default): Heuristics based on modification times, file size, etc.
+    /// - git: Use Git's index or HEAD references (when in a Git repo)
+    /// - signature: Compute checksums or signatures
+    #[arg(short = 'S', long = "cache-strategy", default_value = "auto", help_heading = "Performance & Caching")]
     cache_strategy: String,
 
-    /// Maximum cache size in MB (0 for unlimited)
-    #[arg(short = 'M', long = "max-cache-size")]
+    /// Limits the cache to <MB> megabytes. Use 0 for unlimited.
+    #[arg(short = 'M', long = "max-cache-size", help_heading = "Performance & Caching")]
     max_cache_size: Option<u64>,
 
-    /// Enable cache compression
-    #[arg(short = 'Z', long = "compress-cache")]
+    /// Enables compression for the incremental cache. Useful for large codebases with limited disk space.
+    #[arg(short = 'Z', long = "compress-cache", help_heading = "Performance & Caching")]
     compress_cache: bool,
 
-    /// How to handle invalid UTF-8 sequences (failfast|lossy)
-    #[arg(short = 'E', long = "encoding", default_value = "failfast")]
+    /// Controls how to handle invalid UTF-8 sequences:
+    /// - failfast (default): Abort on invalid sequences
+    /// - lossy: Replace invalid bytes with placeholders, continuing the search
+    #[arg(short = 'E', long = "encoding", default_value = "failfast", help_heading = "Miscellaneous")]
     encoding: String,
 
-    /// Disable colored output
-    #[arg(short = 'N', long = "no-color")]
+    /// Disables colored output. Handy for scripts or logs that don't support ANSI colors.
+    #[arg(short = 'N', long = "no-color", help_heading = "Miscellaneous")]
     no_color: bool,
 
-    /// Verbosity level for logging (error|warn|info|debug|trace)
-    #[arg(short = 'v', long = "verbosity", default_value = "info")]
+    /// Sets the log level (error, warn, info, debug, or trace). More detail as you go up.
+    #[arg(short = 'v', long = "verbosity", default_value = "info", help_heading = "Miscellaneous")]
     log_level: String,
 }
 
+/// Perform a powerful, configurable search‐and‐replace across multiple files or directories, with optional backups, interactive TUI, and advanced pattern matching.
 #[derive(Parser, Debug)]
+#[command(about = "Perform a search/replace operation across one or more files/directories")]
+#[command(long_about = "Perform a powerful, configurable search‐and‐replace across multiple files or directories, with optional backups, interactive TUI, and advanced pattern matching.")]
+#[command(after_help = "\
+Examples:
+  # Simple literal replace
+  rustscout-cli replace do -p foo -r bar src/**/*.rs
+
+  # Regex replacement with capture groups
+  rustscout-cli replace do -x --pattern 'fn (\\w+)\\(\\)' --replacement 'fn new_$1()' src/**/*.rs
+
+  # Preview with side-by-side diffs
+  rustscout-cli replace do -p HTTP -r HTTPS -n --diff-format side-by-side /var/www
+
+  # Interactive approval with backups
+  rustscout-cli replace do --pattern temp --replacement permanent --interactive --backup .")]
 struct ReplaceDo {
-    /// Pattern to search for
-    #[arg(short = 'p', long = "pattern", required = true)]
+    /// Text or pattern to search for
+    #[arg(short = 'p', long = "pattern", required = true, value_name = "PATTERN")]
+    #[arg(help_heading = "Required Options")]
     pattern: String,
 
     /// Text to replace matches with
-    #[arg(short = 'r', long = "replacement", required = true)]
+    #[arg(short = 'r', long = "replacement", required = true, value_name = "REPLACEMENT")]
+    #[arg(help_heading = "Required Options")]
     replacement: String,
 
     /// Treat pattern as a regular expression
     #[arg(short = 'x', long = "regex")]
+    #[arg(help_heading = "General Options")]
     is_regex: bool,
 
-    /// Word boundary mode (none, partial, strict)
-    #[arg(short = 'b', long = "boundary-mode", default_value = "none")]
+    /// Word boundary handling for matches:
+    /// - none (default) – match anywhere
+    /// - partial – partial boundary detection
+    /// - strict – only match whole words
+    #[arg(short = 'b', long = "boundary-mode", default_value = "none", value_name = "MODE")]
+    #[arg(help_heading = "General Options")]
     boundary_mode: String,
 
     /// Shorthand for --boundary-mode strict
     #[arg(short = 'w', long = "word-boundary", conflicts_with = "boundary_mode")]
+    #[arg(help_heading = "General Options")]
     word_boundary: bool,
 
-    /// How to handle hyphens in boundaries
-    #[arg(short = 'y', long = "hyphen-mode", default_value = "joining")]
+    /// How to treat hyphens in boundary detection (boundary|joining)
+    #[arg(short = 'y', long = "hyphen-mode", default_value = "joining", value_name = "MODE")]
+    #[arg(help_heading = "General Options")]
     hyphen_mode: String,
 
-    /// Configuration file for replacements
-    #[arg(short = 'c', long = "config")]
+    /// Load advanced configuration from a YAML/JSON file (e.g., multiple patterns, filtering rules)
+    #[arg(short = 'c', long = "config", value_name = "FILE")]
+    #[arg(help_heading = "General Options")]
     config: Option<PathBuf>,
 
-    /// Dry run - show what would be changed without making changes
+    /// Shows what would be changed without modifying files. Great for previews
     #[arg(short = 'n', long = "dry-run")]
+    #[arg(help_heading = "General Options")]
     dry_run: bool,
 
-    /// Number of threads to use
-    #[arg(short = 'j', long = "threads")]
-    threads: Option<NonZeroUsize>,
-
-    /// Preview diff format (unified|side-by-side)
-    #[arg(short = 'd', long = "diff-format", default_value = "unified")]
+    /// Format of diffs shown in a dry run (unified|side-by-side)
+    #[arg(short = 'd', long = "diff-format", default_value = "unified", value_name = "FORMAT")]
+    #[arg(help_heading = "General Options")]
     diff_format: String,
 
-    /// Paths to process
-    #[arg(required = true)]
+    /// Number of threads to use (default: CPU cores)
+    #[arg(short = 'j', long = "threads", value_name = "N")]
+    #[arg(help_heading = "General Options")]
+    threads: Option<NonZeroUsize>,
+
+    /// Opens an interactive "approve or skip" TUI for each match. Perfect for selectively replacing matches in large codebases
+    #[arg(short = 'i', long = "interactive")]
+    #[arg(help_heading = "Advanced Options")]
+    interactive: bool,
+
+    /// Creates backups in .rustscout/undo for each changed file, enabling an easy revert with replace undo
+    #[arg(short = 'B', long = "backup")]
+    #[arg(help_heading = "Advanced Options")]
+    backup: bool,
+
+    /// Keeps file permissions and timestamps intact after replacement
+    #[arg(short = 'm', long = "preserve-metadata")]
+    #[arg(help_heading = "Advanced Options")]
+    preserve_metadata: bool,
+
+    /// Additional filters or globs for included files. Handy if you specify large directories but only want certain file types
+    #[arg(short = 'f', long = "file-filter", value_name = "PATTERNS")]
+    #[arg(help_heading = "Advanced Options")]
+    file_filter: Option<String>,
+
+    /// Increases logging detail (may be repeated: -vvv)
+    #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count)]
+    #[arg(help_heading = "Advanced Options")]
+    verbose: u8,
+
+    /// One or more files, directories, or globs to process
+    #[arg(required = true, value_name = "PATHS")]
+    #[arg(help_heading = "Arguments")]
     paths: Vec<PathBuf>,
 }
 
+/// Revert all or part of a previous replacement operation. Supports listing hunks, partial revert, and interactive hunk selection.
 #[derive(Parser, Debug)]
+#[command(about = "Undo or partially revert a previous replacement operation")]
+#[command(long_about = "Revert all or part of a previous replacement operation. Supports listing hunks, partial revert, and interactive hunk selection.")]
+#[command(after_help = "\
+Examples:
+  # Full revert
+  rustscout-cli replace undo 1672834872
+
+  # List hunks
+  rustscout-cli replace undo 1672834872 --list-hunks
+
+  # Partial revert
+  rustscout-cli replace undo 1672834872 --hunks 0,1,3
+
+  # Interactive
+  rustscout-cli replace undo 1672834872 -i
+
+  # Preview
+  rustscout-cli replace undo 1672834872 --hunks 2,4 --preview")]
 struct ReplaceUndo {
-    /// ID of the replacement to undo
-    #[arg()]
+    /// ID of the replacement operation to revert
+    #[arg(value_name = "ID")]
+    #[arg(help_heading = "Arguments")]
     id: String,
 
-    /// List all hunks available for partial revert in a given undo operation, but do not revert anything
+    /// Lists all hunks (change chunks) in the specified operation
     #[arg(short = 'l', long = "list-hunks")]
+    #[arg(help_heading = "Options")]
     list_hunks: bool,
 
-    /// A comma-separated list of zero-based hunk indices to revert. If omitted, all hunks are reverted. Example: --hunks 1,3,5
-    #[arg(short = 'u', long = "hunks")]
+    /// Revert only these hunk indices (comma-separated). If omitted, reverts all hunks
+    #[arg(short = 'u', long = "hunks", value_name = "HUNKS")]
+    #[arg(conflicts_with = "interactive")]
+    #[arg(help_heading = "Options")]
     hunks: Option<String>,
 
-    /// Preview the result of reverting the specified hunks without modifying any files
+    /// Shows the content that would be restored without changing files
     #[arg(short = 'p', long = "preview")]
+    #[arg(help_heading = "Options")]
     preview: bool,
 
-    /// Launch an interactive wizard or TUI to select hunks for partial revert
+    /// Interactive "approve or skip" flow for each hunk, letting you partially revert
     #[arg(short = 'i', long = "interactive")]
+    #[arg(conflicts_with = "hunks")]
+    #[arg(help_heading = "Options")]
     interactive: bool,
 
-    /// Skip confirmation prompts; proceed without user input
+    /// Skip all confirmations. Use with caution
     #[arg(short = 'f', long = "force", alias = "yes")]
+    #[arg(help_heading = "Options")]
     force: bool,
 
-    /// Directory containing undo information
+    /// Override the default .rustscout/undo path where backup data is stored
     #[arg(long = "undo-dir", default_value = ".rustscout/undo")]
+    #[arg(value_name = "UNDO_DIR")]
+    #[arg(help_heading = "Options")]
     undo_dir: PathBuf,
 }
 
 /// Arguments for interactive search
 #[derive(Parser, Debug)]
+#[command(about = "Interactively search your codebase match by match. Navigate results using keyboard shortcuts, display context lines, skip files, and optionally edit matches on the spot")]
+#[command(after_help = "\
+Navigation:
+  n or Right Arrow: next match
+  p or Left Arrow: previous match
+  f: skip the entire file
+  a: skip all remaining matches
+  q: quit
+  e: edit the matched line(s)
+
+Editing:
+When you enter edit mode:
+  - Use arrow keys to select a line
+  - Press Enter to edit that line in place
+  - Press r to replace the current match (or do a local fix)
+  - Save or Cancel your edits
+
+Example Usage:
+
+1. Basic Interactive Search
+   rustscout-cli interactive-search \\
+     -p \"TODO\" \\
+     --root ./src
+   Steps through every \"TODO\" match in the src directory, showing 2 lines of context on each side.
+
+2. Regex with 4 Lines of Context
+   rustscout-cli interactive-search \\
+     -p \"fn (\\w+)\\(\" -r true \\
+     -B 4 -A 4 \\
+     -d . \\
+     -x rs
+   Lets you navigate and optionally edit each Rust function definition, with 4 lines of context before/after.
+
+3. Ignore Patterns, Multi-Extensions
+   rustscout-cli interactive-search \\
+     -p \"RefactorMe\" \\
+     -x rs,go,js \\
+     -g \"**/vendor/**\" \\
+     -I
+   Skips vendor/ directories, only searches .rs, .go, and .js files, using incremental caching for faster subsequent runs.
+
+4. Large Repos with Parallel Threads
+   rustscout-cli interactive-search \\
+     -p \"FIXME\" \\
+     -j 8
+   Processes matches with 8 threads, ensuring a fast interactive experience even in huge projects.")]
 struct InteractiveSearchArgs {
-    /// Pattern to search for (can be specified multiple times)
-    #[arg(short = 'p', long = "pattern")]
+    /// Adds one or more search patterns (literal by default).
+    /// Can be specified multiple times:
+    ///   -p "MyClass" -p "TODO" ...
+    /// Each pattern is evaluated or-style unless you combine with advanced config or TUI selections.
+    #[arg(short = 'p', long = "pattern", help_heading = "Core Pattern Options")]
     patterns: Vec<String>,
 
     /// Legacy positional patterns (deprecated)
     #[arg(hide = true)]
     legacy_patterns: Vec<String>,
 
-    /// Treat the most recently specified pattern as a regular expression
-    #[arg(short = 'r', long = "regex", action = clap::ArgAction::Append)]
+    /// Toggles regex interpretation for the most recently added pattern.
+    /// Default: false (treat pattern as literal)
+    /// Example:
+    ///   -p "fn (\w+)\(" -r true
+    /// Regex matching for Rust function definitions.
+    #[arg(short = 'r', long = "regex", action = clap::ArgAction::Append, help_heading = "Core Pattern Options")]
     is_regex: Vec<bool>,
 
-    /// Word boundary mode (strict|partial|none)
-    #[arg(short = 'b', long = "boundary-mode", default_value = "none")]
+    /// Controls word boundary matching:
+    /// - strict: Only match entire words
+    /// - partial: Loose boundary handling
+    /// - none (default): No boundary constraint
+    /// Shorthand: -w, --word-boundary = --boundary-mode strict
+    #[arg(short = 'b', long = "boundary-mode", default_value = "none", help_heading = "Core Pattern Options")]
     boundary_mode: String,
 
-    /// Match whole words only (shorthand for --boundary-mode strict)
-    #[arg(short = 'w', long = "word-boundary", conflicts_with = "boundary_mode")]
+    /// Shorthand for --boundary-mode strict
+    #[arg(short = 'w', long = "word-boundary", conflicts_with = "boundary_mode", help_heading = "Core Pattern Options")]
     word_boundary: bool,
 
-    /// How to handle hyphens in word boundaries (boundary|joining)
-    #[arg(short = 'y', long = "hyphen-mode", default_value = "joining")]
+    /// Defines how hyphens are treated in boundary detection (boundary or joining).
+    /// Default: joining (hyphens considered part of a word).
+    #[arg(short = 'y', long = "hyphen-mode", default_value = "joining", help_heading = "Core Pattern Options")]
     hyphen_mode: String,
 
-    /// Root directory to search in
-    #[arg(short = 'd', long = "root", default_value = ".")]
+    /// Specifies the root directory to search.
+    /// Default: . (current directory)
+    #[arg(short = 'd', long = "root", default_value = ".", help_heading = "File & Directory Options")]
     root: PathBuf,
 
-    /// File extensions to include (e.g. rs,go,js)
-    #[arg(short = 'x', long = "extensions")]
+    /// Comma-separated list of file extensions to include.
+    /// Example: -x rs,py,md
+    #[arg(short = 'x', long = "extensions", help_heading = "File & Directory Options")]
     extensions: Option<String>,
 
-    /// Patterns to ignore (glob format)
-    #[arg(short = 'g', long = "ignore")]
+    /// Glob patterns to ignore certain files/folders.
+    /// Example: --ignore "**/node_modules/**" to skip dependencies.
+    #[arg(short = 'g', long = "ignore", help_heading = "File & Directory Options")]
     ignore: Vec<String>,
 
-    /// Number of context lines before match
-    #[arg(short = 'B', long = "context-before", default_value = "2")]
+    /// Number of context lines before each match (default: 2)
+    #[arg(short = 'B', long = "context-before", default_value = "2", help_heading = "Interactive Navigation & Context")]
     context_before: usize,
 
-    /// Number of context lines after match
-    #[arg(short = 'A', long = "context-after", default_value = "2")]
+    /// Number of context lines after each match (default: 2)
+    #[arg(short = 'A', long = "context-after", default_value = "2", help_heading = "Interactive Navigation & Context")]
     context_after: usize,
 
-    /// Number of threads to use
-    #[arg(short = 'j', long = "threads")]
+    /// Number of threads for parallel searching.
+    /// Default: number of CPU cores
+    #[arg(short = 'j', long = "threads", help_heading = "Performance & Caching")]
     threads: Option<NonZeroUsize>,
 
-    /// Enable incremental search using cache
-    #[arg(short = 'I', long = "incremental")]
+    /// Enables incremental caching of file checksums or Git data. Improves speed on repeated searches.
+    #[arg(short = 'I', long = "incremental", help_heading = "Performance & Caching")]
     incremental: bool,
 
     /// Path to cache file (default: .rustscout-cache.json)
-    #[arg(short = 'C', long = "cache-path")]
+    #[arg(short = 'C', long = "cache-path", help_heading = "Performance & Caching")]
     cache_path: Option<PathBuf>,
 
-    /// Strategy for detecting file changes (auto|git|signature)
-    #[arg(short = 'S', long = "cache-strategy", default_value = "auto")]
+    /// Method for detecting changed files: auto (default), git, or signature
+    #[arg(short = 'S', long = "cache-strategy", default_value = "auto", help_heading = "Performance & Caching")]
     cache_strategy: String,
 
-    /// How to handle invalid UTF-8 sequences (failfast|lossy)
-    #[arg(short = 'E', long = "encoding", default_value = "failfast")]
+    /// Specifies how to handle invalid UTF-8:
+    /// - failfast (default)
+    /// - lossy (replace invalid sequences)
+    #[arg(short = 'E', long = "encoding", default_value = "failfast", help_heading = "Misc. & Logging")]
     encoding: String,
 
-    /// Disable colored output
-    #[arg(short = 'N', long = "no-color")]
+    /// Disables colored output in the TUI. Suitable for terminals that lack color support.
+    #[arg(short = 'N', long = "no-color", help_heading = "Misc. & Logging")]
     no_color: bool,
 
-    /// Verbosity level for logging (error|warn|info|debug|trace)
-    #[arg(short = 'v', long = "verbosity", default_value = "info")]
+    /// Sets log level (error, warn, info, debug, or trace)
+    #[arg(short = 'v', long = "verbosity", default_value = "info", help_heading = "Misc. & Logging")]
     log_level: String,
 
-    /// Enable verbose output
-    #[arg(short = 'V', long = "verbose")]
+    /// Shorthand for increasing verbosity to debug
+    #[arg(short = 'V', long = "verbose", help_heading = "Misc. & Logging")]
     verbose: bool,
 }
 
