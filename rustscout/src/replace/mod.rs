@@ -424,11 +424,23 @@ impl FileReplacementPlan {
             .strip_prefix(&workspace_root)
             .unwrap_or(&self.file_path);
         println!("Debug: Relative path for backup: {}", relative.display());
-        // On Windows, remove drive letters like "C:" 
-        let relative_str = relative_str
-            .trim_start_matches(|c| c.is_ascii_alphabetic() || c == ':')
-            .trim_start_matches("\\") // in case of something like "C:\\"
-            .to_string();
+        
+        // On Windows, remove drive letters like "C:"
+        // Convert to a forward-slash form
+        let mut relative_str = relative.to_string_lossy().replace('\\', "/");
+
+        // If it literally starts with something like "C:/" or "D:/", remove that prefix.
+        if relative_str.len() > 2
+            && relative_str.chars().nth(1) == Some(':')
+            && relative_str.chars().next().unwrap().is_ascii_alphabetic()
+        {
+            // e.g. "C:/Users/..." -> after skipping "C:" -> "/Users/..."
+            relative_str = relative_str.chars().skip(2).collect();
+        }
+
+        // Now flatten further if you want to replace slashes with underscores
+        // e.g. "crate_a/lib.rs" -> "crate_a_lib.rs"
+        relative_str = relative_str.replace("/", "_");
         println!("Debug: Sanitized relative path: {}", relative_str);
 
         let timestamp = SystemTime::now()
