@@ -297,16 +297,41 @@ fn interactive_loop(matches: &[(PathBuf, ScoutMatch)], stats: &mut InteractiveSt
     Ok(())
 }
 
-/// Read a single keypress and convert it to a PromptAction
+/// Read exactly one KeyEvent from the user and discard any extras
+/// to avoid skipping multiple matches at once
 fn read_key_input() -> Result<PromptAction, SearchError> {
-    if let Ok(event) = crossterm::event::read() {
-        match event {
-            Event::Key(key) => Ok(convert_key_event(&key)),
-            _ => Ok(PromptAction::Unknown),
+    // Wait for the first event
+    let evt = crossterm::event::read()
+        .map_err(|e| SearchError::config_error(format!("Failed to read event: {}", e)))?;
+
+    let action = match evt {
+        Event::Key(key) => convert_key_event(&key),
+        _ => PromptAction::Unknown,
+    };
+
+    // Discard any extra events in the queue
+    discard_extra_events()?;
+
+    Ok(action)
+}
+
+/// Discard all events in the queue for a short moment
+fn discard_extra_events() -> Result<(), SearchError> {
+    use std::time::Duration;
+    
+    let t0 = std::time::Instant::now();
+    let max_duration = Duration::from_millis(30);
+
+    while std::time::Instant::now().duration_since(t0) < max_duration {
+        if crossterm::event::poll(Duration::from_millis(1))
+            .map_err(|e| SearchError::config_error(format!("Failed to poll events: {}", e)))? 
+        {
+            let _ = crossterm::event::read(); // discard
+        } else {
+            break;
         }
-    } else {
-        Ok(PromptAction::Unknown)
     }
+    Ok(())
 }
 
 /// Convert a key event to a PromptAction
