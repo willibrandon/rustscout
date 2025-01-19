@@ -538,24 +538,80 @@ struct InteractiveSearchArgs {
 }
 
 #[derive(Subcommand, Debug)]
+#[command(about = "RustScout Workspace Management")]
+#[command(long_about = "All short flags and documentation are designed to position RustScout as the market leader in code search and replace, with a user-friendly yet powerful workspace experience.")]
 enum WorkspaceCommands {
     /// Initialize a new RustScout workspace
     Init(WorkspaceInit),
+
+    /// Display metadata and status of the current workspace
+    Info(WorkspaceInfo),
 }
 
 #[derive(Parser, Debug)]
+#[command(about = "Creates a .rustscout folder in the specified directory (or current directory), saving workspace metadata in JSON or YAML")]
+#[command(long_about = "This is the first step to enabling advanced code search & replace features (undo, caching, etc.).")]
+#[command(after_help = "\
+Example Workflows:
+
+1. Basic Initialization
+   rustscout-cli workspace init
+   Initializes .rustscout/workspace.json in the current directory.
+
+2. Specify a Different Directory
+   rustscout-cli workspace init --dir ~/my_project
+   Creates .rustscout under ~/my_project.
+
+3. YAML Format
+   rustscout-cli workspace init --format yaml
+   Writes .rustscout/workspace.yaml.
+
+4. Force Overwrite
+   rustscout-cli workspace init -F
+   Replaces any existing .rustscout folder and config.")]
 struct WorkspaceInit {
-    /// Directory to initialize workspace in (defaults to current directory)
-    #[arg(short = 'd', long = "dir")]
+    /// The directory in which to initialize the workspace.
+    /// Default: current directory (.)
+    #[arg(short = 'd', long = "dir", value_name = "DIR", help_heading = "Options")]
     dir: Option<PathBuf>,
 
-    /// Format to use for workspace metadata (json or yaml)
-    #[arg(short = 'f', long = "format", default_value = "json")]
+    /// The metadata file format to use (json or yaml).
+    /// Default: json
+    /// If yaml is chosen, creates workspace.yaml; if json, creates workspace.json.
+    #[arg(short = 'f', long = "format", default_value = "json", value_name = "FORMAT", help_heading = "Options")]
     format: String,
 
-    /// Force initialization even if .rustscout directory exists
-    #[arg(short = 'F', long = "force")]
+    /// Overwrite any existing .rustscout folder or config files without confirmation.
+    /// Useful if you want to "repair" a partial or outdated workspace setup.
+    /// Use with caution—this discards any old config in .rustscout.
+    #[arg(short = 'F', long = "force", help_heading = "Options")]
     force: bool,
+}
+
+#[derive(Parser, Debug)]
+#[command(about = "Displays metadata and status of the current (or specified) RustScout workspace")]
+#[command(long_about = "Displays metadata and status of the current (or specified) RustScout workspace—helpful for verifying the root path, format, version, and other settings.")]
+#[command(after_help = "\
+Output / Behavior:
+- Root Path: The canonical root of the workspace.
+- Workspace Version: The RustScout workspace version (if stored in workspace.json / workspace.yaml).
+- Format: json or yaml, whichever you used at init.
+- Global Config: If any global config is stored in the workspace metadata (e.g., ignore patterns).
+- Existence of .rustscout/undo or other workspace features.
+
+Example:
+  rustscout-cli workspace info
+Outputs:
+  Workspace Root: /home/user/my_project
+  Version: 1.2.3
+  Format: json
+  Global Config: ignore_patterns=[...], ...")]
+struct WorkspaceInfo {
+    /// The directory whose workspace info you want to show.
+    /// Default: current directory (.)
+    /// If .rustscout isn't found, tries to walk upward to detect the workspace root.
+    #[arg(short = 'd', long = "dir", value_name = "DIR", help_heading = "Options")]
+    dir: Option<PathBuf>,
 }
 
 mod diff_utils;
@@ -1371,6 +1427,23 @@ fn handle_workspace(cmd: WorkspaceCommands) -> Result<()> {
                     .display()
             );
 
+            Ok(())
+        }
+        WorkspaceCommands::Info(args) => {
+            let dir = args.dir.unwrap_or_else(|| PathBuf::from("."));
+            let metadata = rustscout::workspace::WorkspaceMetadata::load(&dir)?;
+            println!("Workspace Root: {}", metadata.root_path.display());
+            println!("Version: {}", metadata.version);
+            println!("Format: {}", metadata.format);
+            if let Some(config) = metadata.global_config {
+                println!("Global Config:");
+                if !config.ignore_patterns.is_empty() {
+                    println!("  Ignore Patterns: {:?}", config.ignore_patterns);
+                }
+                if let Some(exts) = config.default_extensions {
+                    println!("  Default Extensions: {:?}", exts);
+                }
+            }
             Ok(())
         }
     }
