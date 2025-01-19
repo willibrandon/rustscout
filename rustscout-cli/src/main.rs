@@ -8,7 +8,7 @@ use rustscout::{
     config::{EncodingMode, SearchConfig},
     errors::SearchError,
     replace::{
-        FileDiff, FileReplacementPlan, ReplacementConfig, ReplacementPattern, ReplacementSet,
+        FileReplacementPlan, ReplacementConfig, ReplacementPattern, ReplacementSet,
         ReplacementTask, UndoInfo,
     },
     search::matcher::{HyphenMode, PatternDefinition, WordBoundaryMode},
@@ -54,8 +54,7 @@ impl Commands {
 }
 
 fn setup_logging(level: &str) -> Result<()> {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(level));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
 
     tracing_subscriber::fmt()
         .with_env_filter(filter)
@@ -326,22 +325,21 @@ fn interactive_select_hunks(info: &UndoInfo) -> Result<Vec<usize>> {
         println!("\nFile: {}", file_diff.file_path.display());
         for (h_idx, hunk) in file_diff.hunks.iter().enumerate() {
             mapping.push((global_idx, f_idx, h_idx));
-            
+
             // Show hunk header with clearer line range format
             let range_text = if hunk.original_line_count == 1 {
                 format!("line {}", hunk.original_start_line)
             } else {
-                format!("lines {}–{}", 
+                format!(
+                    "lines {}–{}",
                     hunk.original_start_line,
                     hunk.original_start_line + hunk.original_line_count - 1
                 )
             };
-            
+
             println!(
                 "  [ ] Hunk {} (Global index {}): {}",
-                h_idx,
-                global_idx,
-                range_text
+                h_idx, global_idx, range_text
             );
 
             // Show hunk content with line numbers
@@ -400,7 +398,8 @@ fn interactive_select_hunks(info: &UndoInfo) -> Result<Vec<usize>> {
                 let range_text = if hunk.original_line_count == 1 {
                     format!("line {}", hunk.original_start_line)
                 } else {
-                    format!("lines {}–{}", 
+                    format!(
+                        "lines {}–{}",
                         hunk.original_start_line,
                         hunk.original_start_line + hunk.original_line_count - 1
                     )
@@ -495,9 +494,9 @@ fn handle_search(args: CliSearchConfig) -> Result<()> {
                 "none" => WordBoundaryMode::None,
                 _ => {
                     return Err(SearchError::config_error(format!(
-                    "Invalid boundary mode '{}'. Valid values are: strict, partial, none",
-                    args.boundary_mode
-                )))
+                        "Invalid boundary mode '{}'. Valid values are: strict, partial, none",
+                        args.boundary_mode
+                    )))
                 }
             }
         };
@@ -622,10 +621,8 @@ fn handle_search(args: CliSearchConfig) -> Result<()> {
                     if args.no_color {
                         highlighted_line.push_str(&line[m.start..m.end]);
                     } else {
-                        highlighted_line.push_str(&format!(
-                            "\x1b[1;31m{}\x1b[0m",
-                            &line[m.start..m.end]
-                        ));
+                        highlighted_line
+                            .push_str(&format!("\x1b[1;31m{}\x1b[0m", &line[m.start..m.end]));
                     }
 
                     last_offset = m.end;
@@ -825,9 +822,7 @@ fn handle_replace(command: ReplaceCommands) -> Result<()> {
             for plan in &replacement_set.plans {
                 let (old_content, new_content) = plan.preview_old_new()?;
                 match do_command.diff_format.as_str() {
-                    "unified" => {
-                        print_unified_diff(&plan.file_path, &old_content, &new_content)
-                    }
+                    "unified" => print_unified_diff(&plan.file_path, &old_content, &new_content),
                     "side-by-side" => {
                         print_side_by_side_diff(&plan.file_path, &old_content, &new_content)
                     }
@@ -882,9 +877,11 @@ fn handle_undo(undo_command: &ReplaceUndo) -> Result<()> {
         if undo_command.preview {
             println!("Preview of full file revert for operation {}:", id);
             for (original, backup) in &info.backups {
-                let backup_content = std::fs::read_to_string(backup)?;
-                let current_content = std::fs::read_to_string(original)?;
-                print_unified_diff(original, &current_content, &backup_content);
+                let backup_path = backup.get_abs_path()?;
+                let original_path = original.get_abs_path()?;
+                let backup_content = std::fs::read_to_string(&backup_path)?;
+                let current_content = std::fs::read_to_string(&original_path)?;
+                print_unified_diff(&original_path, &current_content, &backup_content);
             }
             return Ok(());
         }
@@ -902,13 +899,14 @@ fn handle_undo(undo_command: &ReplaceUndo) -> Result<()> {
                 let range_text = if hunk.original_line_count == 1 {
                     format!("line {}", hunk.original_start_line)
                 } else {
-                    format!("lines {}–{}", 
+                    format!(
+                        "lines {}–{}",
                         hunk.original_start_line,
                         hunk.original_start_line + hunk.original_line_count - 1
                     )
                 };
                 println!("  [Hunk {}] {}", i, range_text);
-                
+
                 // Show a preview of the hunk content if --preview is also used
                 if undo_command.preview {
                     println!("    Original:");
@@ -923,6 +921,58 @@ fn handle_undo(undo_command: &ReplaceUndo) -> Result<()> {
                     }
                 }
             }
+        }
+        return Ok(());
+    }
+
+    // Handle preview of specific hunks
+    if undo_command.preview {
+        // Parse hunk indices if provided
+        let hunk_indices: Vec<usize> = if let Some(hunks_str) = &undo_command.hunks {
+            hunks_str
+                .split(',')
+                .map(|s| {
+                    s.trim().parse::<usize>().map_err(|_| {
+                        SearchError::config_error(format!("Invalid hunk index: {}", s.trim()))
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            // If no hunks specified, use all hunks
+            (0..info.file_diffs.iter().map(|d| d.hunks.len()).sum()).collect()
+        };
+
+        for file_diff in &info.file_diffs {
+            let file_path = file_diff.file_path.get_abs_path()?;
+            let current_content = std::fs::read_to_string(&file_path)?;
+            let mut preview_content = current_content.clone();
+
+            // Apply selected hunks
+            for &idx in &hunk_indices {
+                if let Some(hunk) = file_diff.hunks.get(idx) {
+                    // Apply hunk changes to preview_content
+                    let lines: Vec<&str> = preview_content.lines().collect();
+                    let mut new_lines = Vec::new();
+
+                    // Copy lines before the hunk
+                    new_lines.extend(lines.iter().take(hunk.new_start_line - 1).cloned());
+
+                    // Add the original lines from the hunk
+                    new_lines.extend(hunk.original_lines.iter().map(|s| s.as_str()));
+
+                    // Copy remaining lines
+                    new_lines.extend(
+                        lines
+                            .iter()
+                            .skip(hunk.new_start_line - 1 + hunk.new_line_count)
+                            .cloned(),
+                    );
+
+                    preview_content = new_lines.join("\n");
+                }
+            }
+
+            print_unified_diff(&file_path, &current_content, &preview_content);
         }
         return Ok(());
     }
@@ -960,29 +1010,6 @@ fn handle_undo(undo_command: &ReplaceUndo) -> Result<()> {
         // If no hunks specified, use all hunks
         (0..info.file_diffs.iter().map(|d| d.hunks.len()).sum()).collect()
     };
-
-    // Handle --preview
-    if undo_command.preview {
-        println!("Preview of changes to be reverted:");
-        for file_diff in &info.file_diffs {
-            let mut preview_diff = FileDiff {
-                file_path: file_diff.file_path.clone(),
-                hunks: Vec::new(),
-            };
-            for (i, hunk) in file_diff.hunks.iter().enumerate() {
-                if hunk_indices.contains(&i) {
-                    preview_diff.hunks.push(hunk.clone());
-                }
-            }
-            if !preview_diff.hunks.is_empty() {
-                let current_content = std::fs::read_to_string(&file_diff.file_path)?;
-                let preview_content = current_content.clone();
-                FileReplacementPlan::revert_file_with_hunks(&preview_diff)?;
-                print_unified_diff(&file_diff.file_path, &current_content, &preview_content);
-            }
-        }
-        return Ok(());
-    }
 
     // Confirm unless --force is used
     if !undo_command.force {

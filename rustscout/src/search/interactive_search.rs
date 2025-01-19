@@ -1,22 +1,23 @@
-use std::path::PathBuf;
-use std::io::{self, Write};
 use std::fs;
+use std::io::{self, Write};
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use colored::Colorize;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
-    terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode},
+    terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType},
 };
 
 use crate::{
-    SearchError,
-    search::search,
-    search::matcher::{PatternDefinition, WordBoundaryMode, HyphenMode},
-    config::{SearchConfig, EncodingMode},
     cache::ChangeDetectionStrategy,
+    config::{EncodingMode, SearchConfig},
+    replace::{UndoFileReference, UndoInfo},
     results::Match as ScoutMatch,
-    replace::UndoInfo,
+    search::matcher::{HyphenMode, PatternDefinition, WordBoundaryMode},
+    search::search,
+    workspace::detect_workspace_root,
+    SearchError,
 };
 
 use std::num::NonZeroUsize;
@@ -78,10 +79,10 @@ impl Default for InteractiveStats {
 /// Mode for the edit session
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EditMode {
-    View,           // Viewing/navigating lines
-    LineEdit,       // Editing a specific line
-    Replace,        // In replace mode
-    SaveConfirm,    // Confirming save
+    View,        // Viewing/navigating lines
+    LineEdit,    // Editing a specific line
+    Replace,     // In replace mode
+    SaveConfirm, // Confirming save
 }
 
 /// Actions available during edit mode
@@ -103,17 +104,22 @@ struct EditSession {
     current_line: usize,
     mode: EditMode,
     modified: bool,
-    match_line: usize,     // The original match line number
-    match_start: usize,    // Start offset of match in line
-    match_end: usize,      // End offset of match in line
-    undo_info: Option<UndoInfo>,  // Track undo information
+    match_line: usize,           // The original match line number
+    match_start: usize,          // Start offset of match in line
+    match_end: usize,            // End offset of match in line
+    undo_info: Option<UndoInfo>, // Track undo information
 }
 
 impl EditSession {
-    fn new(file_path: PathBuf, match_line: usize, match_start: usize, match_end: usize) -> io::Result<Self> {
+    fn new(
+        file_path: PathBuf,
+        match_line: usize,
+        match_start: usize,
+        match_end: usize,
+    ) -> io::Result<Self> {
         let content = fs::read_to_string(&file_path)?;
         let lines: Vec<String> = content.lines().map(String::from).collect();
-        
+
         Ok(Self {
             file_path,
             lines,
@@ -135,10 +141,10 @@ impl EditSession {
         if let Some(ref info) = self.undo_info {
             let undo_dir = PathBuf::from(".rustscout").join("undo");
             let json_path = undo_dir.join(format!("{}.json", info.timestamp));
-            
+
             let data = serde_json::to_string_pretty(&info)
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-            
+
             fs::write(&json_path, data)?;
         }
 
@@ -150,17 +156,17 @@ impl EditSession {
             // Clear screen and show content
             print!("{}", Clear(ClearType::All));
             print!("\x1B[H");
-            
+
             // Show header
-            let header = format!(
-                "=== Edit Mode: {} ===",
-                self.file_path.display()
+            let header = format!("=== Edit Mode: {} ===", self.file_path.display());
+            println!(
+                "{}",
+                if use_color {
+                    header.bright_blue().bold()
+                } else {
+                    header.normal()
+                }
             );
-            println!("{}", if use_color { 
-                header.bright_blue().bold()
-            } else { 
-                header.normal()
-            });
             println!("Press: [↑/↓] navigate, [Enter] edit line, [r]eplace, [s]ave, [c]ancel\n");
 
             // Show file content with context
@@ -195,7 +201,7 @@ impl EditSession {
                                 // Clear screen one last time
                                 print!("{}", Clear(ClearType::All));
                                 print!("\x1B[H");
-                                
+
                                 // Show final save confirmation with undo info
                                 if let Some(ref info) = self.undo_info {
                                     println!("\nFile saved successfully!");
@@ -227,7 +233,7 @@ impl EditSession {
                 _ => {}
             }
         }
-        
+
         Ok(false)
     }
 
@@ -253,7 +259,10 @@ impl EditSession {
                     if highlight_end > self.match_start {
                         colored_line.replace_range(
                             self.match_start..highlight_end,
-                            &line[self.match_start..highlight_end].bright_green().bold().to_string()
+                            &line[self.match_start..highlight_end]
+                                .bright_green()
+                                .bold()
+                                .to_string(),
                         );
                     }
                 }
@@ -272,7 +281,7 @@ impl EditSession {
 
             println!("{}{:>3}: {}", line_prefix, line_num + 1, line_display);
         }
-        
+
         Ok(())
     }
 
@@ -286,7 +295,9 @@ impl EditSession {
                 KeyCode::Enter => Ok(EditAction::StartEdit),
                 KeyCode::Char('r') | KeyCode::Char('R') => Ok(EditAction::StartReplace),
                 KeyCode::Char('s') | KeyCode::Char('S') => Ok(EditAction::Save),
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Ok(EditAction::Cancel),
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    Ok(EditAction::Cancel)
+                }
                 KeyCode::Char('c') | KeyCode::Char('C') => Ok(EditAction::Cancel),
                 KeyCode::Esc => Ok(EditAction::Cancel),
                 _ => Ok(EditAction::Unknown),
@@ -301,7 +312,8 @@ impl EditSession {
 
         // Read the new line content
         let mut input = String::new();
-        io::stdin().read_line(&mut input)
+        io::stdin()
+            .read_line(&mut input)
             .map_err(|e| SearchError::config_error(format!("Failed to read line: {}", e)))?;
 
         let new_content = input.trim();
@@ -310,28 +322,46 @@ impl EditSession {
             if !self.modified && self.undo_info.is_none() {
                 let timestamp = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .map_err(|e| SearchError::config_error(format!("Failed to get timestamp: {}", e)))?
+                    .map_err(|e| {
+                        SearchError::config_error(format!("Failed to get timestamp: {}", e))
+                    })?
                     .as_secs();
 
                 // Create undo directory if it doesn't exist
                 let undo_dir = PathBuf::from(".rustscout").join("undo");
-                fs::create_dir_all(&undo_dir)
-                    .map_err(|e| SearchError::config_error(format!("Failed to create undo directory: {}", e)))?;
+                fs::create_dir_all(&undo_dir).map_err(|e| {
+                    SearchError::config_error(format!("Failed to create undo directory: {}", e))
+                })?;
 
                 // Create backup path and copy the file
                 let backup_path = undo_dir.join(format!("{}.bak", timestamp));
-                fs::copy(&self.file_path, &backup_path)
-                    .map_err(|e| SearchError::config_error(format!("Failed to create backup: {}", e)))?;
+                fs::copy(&self.file_path, &backup_path).map_err(|e| {
+                    SearchError::config_error(format!("Failed to create backup: {}", e))
+                })?;
 
-                // Create undo info
+                // Create undo info with UndoFileReference
                 let file_size = fs::metadata(&self.file_path)
-                    .map_err(|e| SearchError::config_error(format!("Failed to get file metadata: {}", e)))?
+                    .map_err(|e| {
+                        SearchError::config_error(format!("Failed to get file metadata: {}", e))
+                    })?
                     .len();
+
+                // Detect workspace root and create UndoFileReference
+                let _workspace_root = detect_workspace_root(&self.file_path).map_err(|e| {
+                    SearchError::config_error(format!("Failed to detect workspace root: {}", e))
+                })?;
+
+                let file_ref = UndoFileReference::new(&self.file_path).map_err(|e| {
+                    SearchError::config_error(format!("Failed to create file reference: {}", e))
+                })?;
+                let backup_ref = UndoFileReference::new(&backup_path).map_err(|e| {
+                    SearchError::config_error(format!("Failed to create backup reference: {}", e))
+                })?;
 
                 self.undo_info = Some(UndoInfo {
                     timestamp,
                     description: format!("Interactive edit in file: {}", self.file_path.display()),
-                    backups: vec![(self.file_path.clone(), backup_path)],
+                    backups: vec![(file_ref, backup_ref)],
                     total_size: file_size,
                     file_count: 1,
                     dry_run: false,
@@ -353,22 +383,25 @@ impl EditSession {
         print!("\r\nSearch pattern: ");
         io::stdout().flush().ok();
         let mut pattern = String::new();
-        io::stdin().read_line(&mut pattern)
+        io::stdin()
+            .read_line(&mut pattern)
             .map_err(|e| SearchError::config_error(format!("Failed to read pattern: {}", e)))?;
         let pattern = pattern.trim();
 
         print!("Replacement text: ");
         io::stdout().flush().ok();
         let mut replacement = String::new();
-        io::stdin().read_line(&mut replacement)
+        io::stdin()
+            .read_line(&mut replacement)
             .map_err(|e| SearchError::config_error(format!("Failed to read replacement: {}", e)))?;
         let replacement = replacement.trim();
 
         print!("Confirm each replacement? (y/N): ");
         io::stdout().flush().ok();
         let mut confirm = String::new();
-        io::stdin().read_line(&mut confirm)
-            .map_err(|e| SearchError::config_error(format!("Failed to read confirmation: {}", e)))?;
+        io::stdin().read_line(&mut confirm).map_err(|e| {
+            SearchError::config_error(format!("Failed to read confirmation: {}", e))
+        })?;
         let mut confirm_replacements = confirm.trim().to_lowercase().starts_with('y');
 
         let mut modified = false;
@@ -383,8 +416,9 @@ impl EditSession {
                     io::stdout().flush().ok();
 
                     let mut response = String::new();
-                    io::stdin().read_line(&mut response)
-                        .map_err(|e| SearchError::config_error(format!("Failed to read response: {}", e)))?;
+                    io::stdin().read_line(&mut response).map_err(|e| {
+                        SearchError::config_error(format!("Failed to read response: {}", e))
+                    })?;
                     let response = response.trim().to_lowercase();
 
                     if response == "a" {
@@ -428,7 +462,7 @@ fn flush_pending_input() -> Result<(), SearchError> {
 pub fn run_interactive_search(args: &InteractiveSearchArgs) -> Result<(), SearchError> {
     // Convert args to search config
     let config = convert_args_to_config(args)?;
-    
+
     // Perform the search
     let search_result = search(&config)?;
 
@@ -461,9 +495,9 @@ pub fn run_interactive_search(args: &InteractiveSearchArgs) -> Result<(), Search
         return Ok(());
     }
 
-    println!("Found {} matches in {} files.", 
-        search_result.total_matches,
-        search_result.files_with_matches
+    println!(
+        "Found {} matches in {} files.",
+        search_result.total_matches, search_result.files_with_matches
     );
 
     // Initialize stats and visited flags
@@ -482,8 +516,10 @@ pub fn run_interactive_search(args: &InteractiveSearchArgs) -> Result<(), Search
 }
 
 fn convert_args_to_config(args: &InteractiveSearchArgs) -> Result<SearchConfig, SearchError> {
-    let pattern_defs = args.patterns.iter().map(|p| {
-        PatternDefinition {
+    let pattern_defs = args
+        .patterns
+        .iter()
+        .map(|p| PatternDefinition {
             text: p.clone(),
             is_regex: args.is_regex.get(0).copied().unwrap_or(false),
             boundary_mode: if args.word_boundary {
@@ -499,16 +535,21 @@ fn convert_args_to_config(args: &InteractiveSearchArgs) -> Result<SearchConfig, 
                 "boundary" => HyphenMode::Boundary,
                 _ => HyphenMode::Joining,
             },
-        }
-    }).collect();
+        })
+        .collect();
 
     Ok(SearchConfig {
         pattern_definitions: pattern_defs,
         root_path: args.root.clone(),
-        file_extensions: args.extensions.as_ref().map(|e| e.split(',').map(String::from).collect()),
+        file_extensions: args
+            .extensions
+            .as_ref()
+            .map(|e| e.split(',').map(String::from).collect()),
         ignore_patterns: args.ignore.clone(),
         stats_only: false,
-        thread_count: args.threads.unwrap_or_else(|| NonZeroUsize::new(4).unwrap()),
+        thread_count: args
+            .threads
+            .unwrap_or_else(|| NonZeroUsize::new(4).unwrap()),
         log_level: "info".to_string(),
         context_before: args.context_before,
         context_after: args.context_after,
@@ -530,10 +571,10 @@ fn convert_args_to_config(args: &InteractiveSearchArgs) -> Result<SearchConfig, 
 
 /// Main interactive loop for processing matches
 fn interactive_loop(
-    matches: &[(PathBuf, ScoutMatch)], 
+    matches: &[(PathBuf, ScoutMatch)],
     stats: &mut InteractiveStats,
     visited_flags: &mut [bool],
-    use_color: bool
+    use_color: bool,
 ) -> Result<(), SearchError> {
     if matches.is_empty() {
         println!("No matches found.");
@@ -555,10 +596,18 @@ fn interactive_loop(
 
     while current_index < matches.len() {
         let (file_path, m) = &matches[current_index];
-        
+
         // Show the current match and update visited status
-        show_match(current_index, matches, stats, visited_flags, file_path, m, use_color);
-        
+        show_match(
+            current_index,
+            matches,
+            stats,
+            visited_flags,
+            file_path,
+            m,
+            use_color,
+        );
+
         match read_key_input()? {
             PromptAction::Next => {
                 // Wrap around to first match if at the end
@@ -625,9 +674,10 @@ fn interactive_loop(
             PromptAction::Quit => break,
             PromptAction::Editor => {
                 disable_raw_mode()?;
-                let was_modified = open_in_editor(file_path, m.line_number, m.start, m.end, use_color)?;
+                let was_modified =
+                    open_in_editor(file_path, m.line_number, m.start, m.end, use_color)?;
                 enable_raw_mode()?;
-                
+
                 if was_modified {
                     // Re-run the search to get updated matches
                     // TODO: Implement re-scanning of the modified file
@@ -665,40 +715,47 @@ fn show_match(
     // Clear screen and print header
     print!("{}", Clear(ClearType::All));
     print!("\x1B[H");
-    
+
     let header = format!(
         "RustScout Interactive Search :: Match {} of {} ({})",
         index + 1,
         matches.len(),
         file_path.display()
     );
-    println!("{}", if use_color { 
-        header.bright_blue().bold()
-    } else { 
-        header.normal()
-    });
-    
+    println!(
+        "{}",
+        if use_color {
+            header.bright_blue().bold()
+        } else {
+            header.normal()
+        }
+    );
+
     let stats_line = format!(
         "Visited: {}, Skipped: {}, Files skipped: {}",
-        stats.matches_visited,
-        stats.matches_skipped,
-        stats.files_skipped
+        stats.matches_visited, stats.matches_skipped, stats.files_skipped
     );
-    println!("{}", if use_color { 
-        stats_line.bright_black()
-    } else { 
-        stats_line.normal()
-    });
-    
+    println!(
+        "{}",
+        if use_color {
+            stats_line.bright_black()
+        } else {
+            stats_line.normal()
+        }
+    );
+
     print_context(file_path, m, use_color);
-    
+
     println!("\nNavigation (wrap-around enabled):");
     let nav_help = "[n]ext [p]rev [f]skip file [a]ll skip [q]uit [e]dit";
-    println!("{}", if use_color { 
-        nav_help.bright_black()
-    } else { 
-        nav_help.normal()
-    });
+    println!(
+        "{}",
+        if use_color {
+            nav_help.bright_black()
+        } else {
+            nav_help.normal()
+        }
+    );
     println!("Arrow keys: ←/→ prev/next, ↑/↓ prev/next");
 }
 
@@ -723,13 +780,13 @@ fn read_key_input() -> Result<PromptAction, SearchError> {
 /// Discard all events in the queue for a short moment
 fn discard_extra_events() -> Result<(), SearchError> {
     use std::time::Duration;
-    
+
     let t0 = std::time::Instant::now();
     let max_duration = Duration::from_millis(30);
 
     while std::time::Instant::now().duration_since(t0) < max_duration {
         if crossterm::event::poll(Duration::from_millis(1))
-            .map_err(|e| SearchError::config_error(format!("Failed to poll events: {}", e)))? 
+            .map_err(|e| SearchError::config_error(format!("Failed to poll events: {}", e)))?
         {
             let _ = crossterm::event::read(); // discard
         } else {
@@ -761,26 +818,38 @@ fn print_context(file_path: &PathBuf, m: &ScoutMatch, use_color: bool) {
     // Print header with file info
     println!("\n{}", "-".repeat(40));
     let header = format!("File: {}", file_path.display());
-    println!("{}", if use_color { 
-        header.bright_yellow()
-    } else { 
-        header.normal()
-    });
+    println!(
+        "{}",
+        if use_color {
+            header.bright_yellow()
+        } else {
+            header.normal()
+        }
+    );
 
     // Show context before
     for (num, line) in &m.context_before {
         let line_str = format!("   {} | {}", num, line);
-        println!("{}", if use_color { 
-            line_str.dimmed()
-        } else { 
-            line_str.normal()
-        });
+        println!(
+            "{}",
+            if use_color {
+                line_str.dimmed()
+            } else {
+                line_str.normal()
+            }
+        );
     }
 
     // Highlight the matched line
     let line = if use_color {
         let mut colored_line = m.line_content.clone();
-        colored_line.replace_range(m.start..m.end, &m.line_content[m.start..m.end].bright_green().bold().to_string());
+        colored_line.replace_range(
+            m.start..m.end,
+            &m.line_content[m.start..m.end]
+                .bright_green()
+                .bold()
+                .to_string(),
+        );
         colored_line
     } else {
         m.line_content.clone()
@@ -790,16 +859,25 @@ fn print_context(file_path: &PathBuf, m: &ScoutMatch, use_color: bool) {
     // Show context after
     for (num, line) in &m.context_after {
         let line_str = format!("   {} | {}", num, line);
-        println!("{}", if use_color { 
-            line_str.dimmed()
-        } else { 
-            line_str.normal()
-        });
+        println!(
+            "{}",
+            if use_color {
+                line_str.dimmed()
+            } else {
+                line_str.normal()
+            }
+        );
     }
 }
 
 /// Open the file in an editor at the specified line
-fn open_in_editor(file_path: &PathBuf, line: usize, match_start: usize, match_end: usize, use_color: bool) -> Result<bool, SearchError> {
+fn open_in_editor(
+    file_path: &PathBuf,
+    line: usize,
+    match_start: usize,
+    match_end: usize,
+    use_color: bool,
+) -> Result<bool, SearchError> {
     // Create and run an edit session
     let mut session = EditSession::new(file_path.clone(), line, match_start, match_end)
         .map_err(|e| SearchError::config_error(format!("Failed to create edit session: {}", e)))?;
@@ -929,4 +1007,4 @@ mod tests {
             PromptAction::Unknown
         );
     }
-} 
+}

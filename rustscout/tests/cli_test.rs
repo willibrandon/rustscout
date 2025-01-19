@@ -1,3 +1,6 @@
+use anyhow::Result;
+use assert_cmd::prelude::*;
+use predicates::prelude::*;
 use rustscout::{
     cache::ChangeDetectionStrategy,
     config::{EncodingMode, SearchConfig},
@@ -7,12 +10,9 @@ use rustscout::{
     search,
     search::matcher::{HyphenMode, PatternDefinition, WordBoundaryMode},
 };
+use std::process::Command;
 use std::{fs, num::NonZeroUsize, path::Path};
 use tempfile::tempdir;
-use std::process::Command;
-use assert_cmd::prelude::*;
-use predicates::prelude::*;
-use anyhow::Result;
 
 // Helper function to create test files
 fn create_test_files(dir: impl AsRef<Path>, files: &[(&str, &str)]) -> Result<()> {
@@ -536,21 +536,26 @@ fn test_search_hyphen_mode() -> Result<()> {
 #[test]
 fn test_interactive_search() -> Result<()> {
     let temp_dir = tempdir()?;
-    
+
     // Create test files
-    create_test_files(&temp_dir, &[
-        ("file1.txt", "Hello world\nTODO: Fix this\nGoodbye"),
-        ("file2.txt", "Another TODO here\nSome text"),
-    ])?;
+    create_test_files(
+        &temp_dir,
+        &[
+            ("file1.txt", "Hello world\nTODO: Fix this\nGoodbye"),
+            ("file2.txt", "Another TODO here\nSome text"),
+        ],
+    )?;
 
     // Set up environment for test mode
     std::env::set_var("INTERACTIVE_TEST", "1");
-    
+
     let mut cmd = Command::cargo_bin("rustscout-cli")?;
     cmd.args([
         "interactive-search",
-        "-p", "TODO",
-        "-d", temp_dir.path().to_str().unwrap(),
+        "-p",
+        "TODO",
+        "-d",
+        temp_dir.path().to_str().unwrap(),
     ]);
 
     cmd.assert()
