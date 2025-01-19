@@ -308,6 +308,14 @@ struct InteractiveSearchArgs {
     /// Disable colored output
     #[arg(short = 'N', long = "no-color")]
     no_color: bool,
+
+    /// Verbosity level for logging (error|warn|info|debug|trace)
+    #[arg(short = 'v', long = "verbosity", default_value = "info")]
+    log_level: String,
+
+    /// Enable verbose output
+    #[arg(short = 'V', long = "verbose")]
+    verbose: bool,
 }
 
 mod diff_utils;
@@ -469,6 +477,7 @@ fn handle_interactive_search(args: InteractiveSearchArgs) -> Result<()> {
         cache_strategy: args.cache_strategy,
         encoding: args.encoding,
         no_color: args.no_color,
+        verbose: args.verbose,
     };
 
     rustscout::search::interactive_search::run_interactive_search(&lib_args)?;

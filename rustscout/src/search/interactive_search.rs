@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{PathBuf, Path};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use colored::Colorize;
@@ -22,6 +22,27 @@ use crate::{
 
 use std::num::NonZeroUsize;
 
+/// Helper function to display shorter relative paths when possible
+fn short_path(path: &Path, workspace_root: &Path, verbose: bool) -> String {
+    if verbose {
+        // In verbose mode, always show full paths with forward slashes
+        path.to_string_lossy()
+            .replace('\\', "/")
+            .to_string()
+    } else if let Ok(rel) = path.strip_prefix(workspace_root) {
+        // Convert to forward slashes for consistent display
+        rel.to_string_lossy()
+            .replace('\\', "/")
+            .trim_start_matches('/')
+            .to_string()
+    } else {
+        // Convert absolute paths to forward slashes too
+        path.to_string_lossy()
+            .replace('\\', "/")
+            .to_string()
+    }
+}
+
 /// Arguments for interactive search
 #[derive(Debug)]
 pub struct InteractiveSearchArgs {
@@ -42,6 +63,7 @@ pub struct InteractiveSearchArgs {
     pub cache_strategy: String,
     pub encoding: String,
     pub no_color: bool,
+    pub verbose: bool,
 }
 
 /// Actions available during interactive search
@@ -152,13 +174,17 @@ impl EditSession {
     }
 
     fn run(&mut self, use_color: bool) -> Result<bool, SearchError> {
+        // Get workspace root for path display
+        let _workspace_root = detect_workspace_root(&self.file_path)
+            .unwrap_or_else(|_| self.file_path.parent().unwrap().to_path_buf());
+
         while self.mode != EditMode::SaveConfirm {
             // Clear screen and show content
             print!("{}", Clear(ClearType::All));
             print!("\x1B[H");
 
-            // Show header
-            let header = format!("=== Edit Mode: {} ===", self.file_path.display());
+            // Show header with short path - default to non-verbose mode for EditSession
+            let header = format!("=== Edit Mode: {} ===", short_path(&self.file_path, &_workspace_root, false));
             println!(
                 "{}",
                 if use_color {
@@ -307,6 +333,10 @@ impl EditSession {
     }
 
     fn edit_current_line(&mut self, _use_color: bool) -> Result<(), SearchError> {
+        // Get workspace root for path display
+        let _workspace_root = detect_workspace_root(&self.file_path)
+            .unwrap_or_else(|_| self.file_path.parent().unwrap().to_path_buf());
+
         print!("\r\nEdit line {}: ", self.current_line + 1);
         io::stdout().flush().ok();
 
@@ -328,7 +358,7 @@ impl EditSession {
                     .as_secs();
 
                 // Detect workspace root
-                let workspace_root = detect_workspace_root(&self.file_path)
+                let _workspace_root = detect_workspace_root(&self.file_path)
                     .unwrap_or_else(|_| self.file_path.parent().unwrap().to_path_buf());
 
                 // Get absolute paths
@@ -336,12 +366,12 @@ impl EditSession {
                     SearchError::config_error(format!("Failed to canonicalize original path: {}", e))
                 })?;
                 let original_rel = original_abs
-                    .strip_prefix(&workspace_root)
+                    .strip_prefix(&_workspace_root)
                     .unwrap_or(original_abs.as_path())
                     .to_path_buf();
 
                 // Create backup directory under workspace root
-                let backup_dir = workspace_root.join(".rustscout").join("undo");
+                let backup_dir = _workspace_root.join(".rustscout").join("undo");
                 fs::create_dir_all(&backup_dir).map_err(|e| {
                     SearchError::config_error(format!("Failed to create backup directory: {}", e))
                 })?;
@@ -357,7 +387,7 @@ impl EditSession {
                     SearchError::config_error(format!("Failed to canonicalize backup path: {}", e))
                 })?;
                 let backup_rel = backup_abs
-                    .strip_prefix(&workspace_root)
+                    .strip_prefix(&_workspace_root)
                     .unwrap_or(backup_abs.as_path())
                     .to_path_buf();
 
@@ -380,7 +410,8 @@ impl EditSession {
 
                 self.undo_info = Some(UndoInfo {
                     timestamp,
-                    description: format!("Interactive edit in file: {}", self.file_path.display()),
+                    description: format!("Interactive edit in file: {}", 
+                        short_path(&self.file_path, &_workspace_root, false)),
                     backups: vec![(original_ref, backup_ref)],
                     total_size: file_size,
                     file_count: 1,
@@ -530,7 +561,7 @@ pub fn run_interactive_search(args: &InteractiveSearchArgs) -> Result<(), Search
     flush_pending_input()?;
 
     // Run the interactive loop
-    interactive_loop(&all_matches, &mut stats, &mut visited_flags, use_color)?;
+    interactive_loop(&all_matches, &mut stats, &mut visited_flags, use_color, args.verbose)?;
 
     Ok(())
 }
@@ -595,6 +626,7 @@ fn interactive_loop(
     stats: &mut InteractiveStats,
     visited_flags: &mut [bool],
     use_color: bool,
+    verbose: bool,
 ) -> Result<(), SearchError> {
     if matches.is_empty() {
         println!("No matches found.");
@@ -605,7 +637,7 @@ fn interactive_loop(
     if std::env::var("INTERACTIVE_TEST").is_ok() {
         // In test mode, just display all matches without interaction
         for (i, (file_path, m)) in matches.iter().enumerate() {
-            show_match(i, matches, stats, visited_flags, file_path, m, use_color);
+            show_match(i, matches, stats, visited_flags, file_path, m, use_color, verbose);
         }
         return Ok(());
     }
@@ -626,6 +658,7 @@ fn interactive_loop(
             file_path,
             m,
             use_color,
+            verbose,
         );
 
         match read_key_input()? {
@@ -725,7 +758,12 @@ fn show_match(
     file_path: &PathBuf,
     m: &ScoutMatch,
     use_color: bool,
+    verbose: bool,
 ) {
+    // Get workspace root for path display
+    let workspace_root = detect_workspace_root(file_path)
+        .unwrap_or_else(|_| file_path.parent().unwrap().to_path_buf());
+
     // Update visited status if this is the first time seeing this match
     if !visited_flags[index] {
         visited_flags[index] = true;
@@ -740,7 +778,7 @@ fn show_match(
         "RustScout Interactive Search :: Match {} of {} ({})",
         index + 1,
         matches.len(),
-        file_path.display()
+        short_path(file_path, &workspace_root, verbose)
     );
     println!(
         "{}",
@@ -764,7 +802,7 @@ fn show_match(
         }
     );
 
-    print_context(file_path, m, use_color);
+    print_context(file_path, m, use_color, verbose);
 
     println!("\nNavigation (wrap-around enabled):");
     let nav_help = "[n]ext [p]rev [f]skip file [a]ll skip [q]uit [e]dit";
@@ -834,10 +872,14 @@ fn convert_key_event(event: &KeyEvent) -> PromptAction {
 }
 
 /// Print the context around a match
-fn print_context(file_path: &PathBuf, m: &ScoutMatch, use_color: bool) {
+fn print_context(file_path: &PathBuf, m: &ScoutMatch, use_color: bool, verbose: bool) {
+    // Get workspace root for path display
+    let workspace_root = detect_workspace_root(file_path)
+        .unwrap_or_else(|_| file_path.parent().unwrap().to_path_buf());
+
     // Print header with file info
     println!("\n{}", "-".repeat(40));
-    let header = format!("File: {}", file_path.display());
+    let header = format!("File: {}", short_path(file_path, &workspace_root, verbose));
     println!(
         "{}",
         if use_color {
@@ -919,6 +961,70 @@ fn print_summary(stats: &InteractiveStats) {
 mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[test]
+    fn test_short_path() {
+        // Create platform-agnostic paths
+        let workspace_root = if cfg!(windows) {
+            PathBuf::from(r"C:\Users\dev\project")
+        } else {
+            PathBuf::from("/home/user/project")
+        };
+        
+        let file_path = workspace_root.join("src").join("main.rs");
+        
+        // Test non-verbose mode (default)
+        assert_eq!(
+            short_path(&file_path, &workspace_root, false),
+            "src/main.rs",
+            "Should show relative path when not verbose"
+        );
+
+        // Test verbose mode
+        let expected_verbose = if cfg!(windows) {
+            "C:/Users/dev/project/src/main.rs"
+        } else {
+            "/home/user/project/src/main.rs"
+        };
+        assert_eq!(
+            short_path(&file_path, &workspace_root, true),
+            expected_verbose,
+            "Should show full path in verbose mode"
+        );
+
+        // Test path outside workspace
+        let outside_path = if cfg!(windows) {
+            PathBuf::from(r"D:\temp\other\file.rs")
+        } else {
+            PathBuf::from("/tmp/other/file.rs")
+        };
+        let expected_outside = if cfg!(windows) {
+            "D:/temp/other/file.rs"
+        } else {
+            "/tmp/other/file.rs"
+        };
+        assert_eq!(
+            short_path(&outside_path, &workspace_root, false),
+            expected_outside,
+            "Should show full path when file is outside workspace root"
+        );
+
+        // Test workspace root itself
+        assert_eq!(
+            short_path(&workspace_root, &workspace_root, false),
+            "",
+            "Should show empty string for workspace root itself"
+        );
+
+        // Test nested workspace case
+        let nested_workspace = workspace_root.join("packages").join("lib");
+        let nested_file = nested_workspace.join("src").join("lib.rs");
+        assert_eq!(
+            short_path(&nested_file, &nested_workspace, false),
+            "src/lib.rs",
+            "Should handle nested workspace roots correctly"
+        );
+    }
 
     #[test]
     fn test_prompt_actions() {
