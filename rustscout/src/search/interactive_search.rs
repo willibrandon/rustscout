@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::io::{self, Write};
 use std::fs;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use colored::Colorize;
 use crossterm::{
@@ -15,6 +16,7 @@ use crate::{
     config::{SearchConfig, EncodingMode},
     cache::ChangeDetectionStrategy,
     results::Match as ScoutMatch,
+    replace::UndoInfo,
 };
 
 use std::num::NonZeroUsize;
@@ -104,6 +106,7 @@ struct EditSession {
     match_line: usize,     // The original match line number
     match_start: usize,    // Start offset of match in line
     match_end: usize,      // End offset of match in line
+    undo_info: Option<UndoInfo>,  // Track undo information
 }
 
 impl EditSession {
@@ -120,12 +123,30 @@ impl EditSession {
             match_line: match_line.saturating_sub(1),
             match_start,
             match_end,
+            undo_info: None,
         })
     }
 
     fn save(&self) -> io::Result<()> {
-        let content = self.lines.join("\n") + "\n";
-        fs::write(&self.file_path, content)
+        let content = self.lines.join("\n");
+        fs::write(&self.file_path, content)?;
+
+        // If we have undo info, save it and show feedback
+        if let Some(ref info) = self.undo_info {
+            let undo_dir = PathBuf::from(".rustscout").join("undo");
+            let json_path = undo_dir.join(format!("{}.json", info.timestamp));
+            
+            let data = serde_json::to_string_pretty(&info)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            
+            fs::write(&json_path, data)?;
+
+            // Show feedback about undo capability
+            println!("\nChanges saved with undo ID: {}", info.timestamp);
+            println!("To revert changes, run: rustscout-cli replace undo {}", info.timestamp);
+        }
+
+        Ok(())
     }
 
     fn run(&mut self, use_color: bool) -> Result<bool, SearchError> {
@@ -174,6 +195,20 @@ impl EditSession {
                                 if let Err(e) = self.save() {
                                     eprintln!("Failed to save: {}", e);
                                     continue;
+                                }
+                                // Clear screen one last time
+                                print!("{}", Clear(ClearType::All));
+                                print!("\x1B[H");
+                                
+                                // Show final save confirmation with undo info
+                                if let Some(ref info) = self.undo_info {
+                                    println!("\nFile saved successfully!");
+                                    println!("\nUndo Information:");
+                                    println!("  Undo ID: {}", info.timestamp);
+                                    println!("  To revert changes, run:");
+                                    println!("  rustscout-cli replace undo {}", info.timestamp);
+                                    println!("\nPress any key to continue...");
+                                    let _ = read_key_input()?;
                                 }
                                 return Ok(true); // true = file was modified
                             } else {
@@ -276,6 +311,39 @@ impl EditSession {
 
         let new_content = input.trim();
         if new_content != self.lines[self.current_line] {
+            // Content is being modified, create backup if this is the first modification
+            if !self.modified && self.undo_info.is_none() {
+                let timestamp = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|e| SearchError::config_error(format!("Failed to get timestamp: {}", e)))?
+                    .as_secs();
+
+                // Create undo directory if it doesn't exist
+                let undo_dir = PathBuf::from(".rustscout").join("undo");
+                fs::create_dir_all(&undo_dir)
+                    .map_err(|e| SearchError::config_error(format!("Failed to create undo directory: {}", e)))?;
+
+                // Create backup path and copy the file
+                let backup_path = undo_dir.join(format!("{}.bak", timestamp));
+                fs::copy(&self.file_path, &backup_path)
+                    .map_err(|e| SearchError::config_error(format!("Failed to create backup: {}", e)))?;
+
+                // Create undo info
+                let file_size = fs::metadata(&self.file_path)
+                    .map_err(|e| SearchError::config_error(format!("Failed to get file metadata: {}", e)))?
+                    .len();
+
+                self.undo_info = Some(UndoInfo {
+                    timestamp,
+                    description: format!("Interactive edit in file: {}", self.file_path.display()),
+                    backups: vec![(self.file_path.clone(), backup_path)],
+                    total_size: file_size,
+                    file_count: 1,
+                    dry_run: false,
+                    file_diffs: Vec::new(),
+                });
+            }
+
             self.lines[self.current_line] = new_content.to_string();
             self.modified = true;
         }
