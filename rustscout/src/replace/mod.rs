@@ -773,70 +773,71 @@ impl ReplacementSet {
     /// Undoes a specific operation by its ID
     pub fn undo_by_id(id: u64, config: &ReplacementConfig) -> SearchResult<()> {
         let info_path = config.undo_dir.join(format!("{}.json", id));
-        let content = fs::read_to_string(&info_path)
-            .map_err(|e| SearchError::config_error(format!("Failed to read undo info: {}", e)))?;
+        let content = fs::read_to_string(&info_path).map_err(|e| {
+            SearchError::config_error(format!("Failed to read undo info: {}", e))
+        })?;
+        let info: UndoInfo = serde_json::from_str(&content)?;
 
-        let info: UndoInfo = serde_json::from_str(&content)
-            .map_err(|e| SearchError::config_error(format!("Failed to parse undo info: {}", e)))?;
+        // Detect workspace root from the undo directory which we know exists
+        let workspace_root = detect_workspace_root(&config.undo_dir)?;
+        println!("Debug: undo workspace_root = {}", workspace_root.display());
 
-        // If we have file diffs, apply them first
-        for file_diff in &info.file_diffs {
-            let abs_path = file_diff.file_path.get_abs_path()?;
-            Self::apply_file_diff(&abs_path, file_diff)?;
-        }
-
-        // Then handle any full-file backups
+        // Restore files from backups
         for (original, backup) in &info.backups {
-            if backup.exists() {
-                let orig_path = original.get_abs_path()?;
-                let backup_path = backup.get_abs_path()?;
-                fs::copy(&backup_path, &orig_path).map_err(|e| {
-                    SearchError::config_error(format!("Failed to restore backup: {}", e))
-                })?;
-                fs::remove_file(&backup_path).ok(); // Ignore errors on cleanup
+            let path_to_restore = if let Some(abs) = original.abs_path.as_ref() {
+                if abs.exists() {
+                    println!("Debug: Using absolute path for restore: {}", abs.display());
+                    abs.clone()
+                } else {
+                    let fallback = workspace_root.join(&original.rel_path);
+                    println!("Debug: Using fallback path for restore: {}", fallback.display());
+                    fallback
+                }
+            } else {
+                let fallback = workspace_root.join(&original.rel_path);
+                println!("Debug: Using relative path for restore: {}", fallback.display());
+                fallback
+            };
+
+            let backup_path = if let Some(abs) = backup.abs_path.as_ref() {
+                if abs.exists() {
+                    println!("Debug: Using absolute backup path: {}", abs.display());
+                    abs.clone()
+                } else {
+                    let fallback = workspace_root.join(&backup.rel_path);
+                    println!("Debug: Using fallback backup path: {}", fallback.display());
+                    fallback
+                }
+            } else {
+                let fallback = workspace_root.join(&backup.rel_path);
+                println!("Debug: Using relative backup path: {}", fallback.display());
+                fallback
+            };
+
+            // Ensure backup exists and has content
+            if !backup_path.exists() {
+                return Err(SearchError::config_error(format!(
+                    "Backup file not found: {}",
+                    backup_path.display()
+                )));
             }
+
+            // Read backup content and write to original file
+            let backup_content = fs::read_to_string(&backup_path).map_err(|e| {
+                SearchError::config_error(format!("Failed to read backup: {}", e))
+            })?;
+
+            println!("Debug: Writing backup content to: {}", path_to_restore.display());
+            fs::write(&path_to_restore, backup_content).map_err(|e| {
+                SearchError::config_error(format!("Failed to restore backup: {}", e))
+            })?;
+
+            // Clean up backup file
+            fs::remove_file(&backup_path).ok();
         }
 
         // Clean up the undo info file
         fs::remove_file(info_path).ok();
-
-        Ok(())
-    }
-
-    /// Apply a file diff to restore a file to its previous state
-    fn apply_file_diff(path: &Path, file_diff: &FileDiff) -> SearchResult<()> {
-        if !path.exists() {
-            return Err(SearchError::config_error(format!(
-                "File to revert does not exist: {}",
-                path.display()
-            )));
-        }
-
-        let new_content = std::fs::read_to_string(path).map_err(SearchError::IoError)?;
-        let mut lines: Vec<String> = new_content.lines().map(String::from).collect();
-
-        // Sort hunks in descending order of new_start_line so we can safely patch from bottom to top
-        let mut hunks = file_diff.hunks.clone();
-        hunks.sort_by_key(|h| std::cmp::Reverse(h.new_start_line));
-
-        for hunk in hunks {
-            let new_start = hunk.new_start_line.saturating_sub(1);
-            // Remove the lines that were "newly added" in that region
-            if hunk.new_line_count > 0 {
-                let end = new_start + hunk.new_line_count.min(lines.len() - new_start);
-                lines.drain(new_start..end);
-            }
-            // Then re-insert the old lines
-            if !hunk.original_lines.is_empty() {
-                for (i, old_line) in hunk.original_lines.iter().enumerate() {
-                    lines.insert(new_start + i, old_line.clone());
-                }
-            }
-        }
-
-        // Join lines back and overwrite file
-        let reverted_content = lines.join("\n");
-        std::fs::write(path, reverted_content).map_err(SearchError::IoError)?;
 
         Ok(())
     }
@@ -849,11 +850,10 @@ impl ReplacementSet {
         hunk_indices: &[usize],
     ) -> SearchResult<()> {
         let info_path = config.undo_dir.join(format!("{}.json", id));
-        let content = fs::read_to_string(&info_path)
-            .map_err(|e| SearchError::config_error(format!("Failed to read undo info: {}", e)))?;
-
-        let mut info: UndoInfo = serde_json::from_str(&content)
-            .map_err(|e| SearchError::config_error(format!("Failed to parse undo info: {}", e)))?;
+        let content = fs::read_to_string(&info_path).map_err(|e| {
+            SearchError::config_error(format!("Failed to read undo info: {}", e))
+        })?;
+        let info: UndoInfo = serde_json::from_str(&content)?;
 
         // If there's no diff data, partial revert isn't possible
         if info.file_diffs.is_empty() {
@@ -862,20 +862,32 @@ impl ReplacementSet {
             ));
         }
 
-        // Filter hunks based on provided indices
-        for file_diff in &mut info.file_diffs {
-            let mut new_hunks = Vec::new();
-            for (idx, hunk) in file_diff.hunks.iter().enumerate() {
-                if hunk_indices.contains(&idx) {
-                    new_hunks.push(hunk.clone());
-                }
-            }
-            file_diff.hunks = new_hunks;
-        }
-
-        // Revert only the filtered hunks
+        // Process each file diff
         for file_diff in &info.file_diffs {
-            FileReplacementPlan::revert_file_with_hunks(file_diff)?;
+            let workspace_root = detect_workspace_root(&file_diff.file_path.rel_path)?;
+            let path_to_restore = if let Some(abs) = file_diff.file_path.abs_path.as_ref() {
+                if abs.exists() {
+                    abs.clone()
+                } else {
+                    // Fallback to workspace-relative path
+                    workspace_root.join(&file_diff.file_path.rel_path)
+                }
+            } else {
+                workspace_root.join(&file_diff.file_path.rel_path)
+            };
+
+            // Create a new file diff with only the selected hunks
+            let mut filtered_diff = file_diff.clone();
+            filtered_diff.hunks = file_diff
+                .hunks
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| hunk_indices.contains(i))
+                .map(|(_, h)| h.clone())
+                .collect();
+
+            // Apply the filtered hunks
+            apply_file_diff(&path_to_restore, &filtered_diff)?;
         }
 
         Ok(())
@@ -1011,6 +1023,44 @@ pub fn generate_file_diff(old_content: &str, new_content: &str, file_path: &Path
         file_path: file_ref,
         hunks,
     }
+}
+
+/// Apply a file diff to restore a file to its previous state
+fn apply_file_diff(path: &Path, file_diff: &FileDiff) -> SearchResult<()> {
+    if !path.exists() {
+        return Err(SearchError::config_error(format!(
+            "File to revert does not exist: {}",
+            path.display()
+        )));
+    }
+
+    let new_content = std::fs::read_to_string(path).map_err(SearchError::IoError)?;
+    let mut lines: Vec<String> = new_content.lines().map(String::from).collect();
+
+    // Sort hunks in descending order of new_start_line so we can safely patch from bottom to top
+    let mut hunks = file_diff.hunks.clone();
+    hunks.sort_by_key(|h| std::cmp::Reverse(h.new_start_line));
+
+    for hunk in hunks {
+        let new_start = hunk.new_start_line.saturating_sub(1);
+        // Remove the lines that were "newly added" in that region
+        if hunk.new_line_count > 0 {
+            let end = new_start + hunk.new_line_count.min(lines.len() - new_start);
+            lines.drain(new_start..end);
+        }
+        // Then re-insert the old lines
+        if !hunk.original_lines.is_empty() {
+            for (i, old_line) in hunk.original_lines.iter().enumerate() {
+                lines.insert(new_start + i, old_line.clone());
+            }
+        }
+    }
+
+    // Join lines back and overwrite file
+    let reverted_content = lines.join("\n");
+    std::fs::write(path, reverted_content).map_err(SearchError::IoError)?;
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1557,6 +1607,94 @@ mod tests {
             file_ref.rel_path
         );
         assert_eq!(deserialized.file_diffs[0].hunks.len(), diff_hunks_len);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_undo_with_fallback() -> SearchResult<()> {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+
+        // Initialize workspace
+        init_workspace(root)?;
+
+        // Create test file and make a backup
+        let test_file = root.join("test.txt");
+        fs::write(&test_file, "original content").unwrap();
+
+        let config = ReplacementConfig {
+            patterns: vec![],
+            backup_enabled: true,
+            dry_run: false,
+            backup_dir: None,
+            preserve_metadata: true,
+            undo_dir: root.join(".rustscout").join("undo"),
+        };
+
+        // Verify workspace root detection
+        let workspace_root = detect_workspace_root(&config.undo_dir)?;
+        println!("Debug: workspace_root = {}", workspace_root.display());
+        println!("Debug: temp_dir = {}", root.display());
+        assert_eq!(workspace_root, root, "Workspace root should match temp dir");
+
+        // Create undo info with absolute path that won't exist
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let non_existent = root.join("non_existent_dir").join("test.txt");
+        let original_ref = UndoFileReference {
+            rel_path: PathBuf::from("test.txt"),
+            abs_path: Some(non_existent.clone()),
+        };
+
+        println!("Debug: non_existent path = {}", non_existent.display());
+
+        // Create backup directory and backup file
+        fs::create_dir_all(config.undo_dir.as_path())?;
+        let backup_path = config.undo_dir.join(format!("{}.bak", timestamp));
+        fs::copy(&test_file, &backup_path)?;
+
+        println!("Debug: backup_path exists = {}", backup_path.exists());
+        println!("Debug: backup content = {:?}", fs::read_to_string(&backup_path)?);
+
+        let backup_ref = UndoFileReference {
+            rel_path: PathBuf::from(format!(".rustscout/undo/{}.bak", timestamp)),
+            abs_path: Some(backup_path.clone()),
+        };
+
+        let info = UndoInfo {
+            timestamp,
+            description: "Test undo".to_string(),
+            backups: vec![(original_ref, backup_ref)],
+            total_size: 100,
+            file_count: 1,
+            dry_run: false,
+            file_diffs: vec![],
+        };
+
+        // Save undo info
+        let info_path = config.undo_dir.join(format!("{}.json", timestamp));
+        let json = serde_json::to_string_pretty(&info)?;
+        fs::write(&info_path, json)?;
+
+        // Modify the test file
+        fs::write(&test_file, "modified content")?;
+
+        println!("Debug: test_file exists = {}", test_file.exists());
+        println!("Debug: test_file path = {}", test_file.display());
+        println!("Debug: test_file content = {:?}", fs::read_to_string(&test_file)?);
+
+        // Try to undo - should fallback to relative path
+        ReplacementSet::undo_by_id(timestamp, &config)?;
+
+        // Verify content was restored
+        let restored_content = fs::read_to_string(&test_file)?;
+        println!("Debug: restored content = {:?}", restored_content);
+
+        assert_eq!(restored_content, "original content");
 
         Ok(())
     }
