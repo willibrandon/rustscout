@@ -424,7 +424,7 @@ impl FileReplacementPlan {
             .strip_prefix(&workspace_root)
             .unwrap_or(&self.file_path);
         println!("Debug: Relative path for backup: {}", relative.display());
-        
+
         // On Windows, remove drive letters like "C:"
         // Convert to a forward-slash form
         let mut relative_str = relative.to_string_lossy().replace('\\', "/");
