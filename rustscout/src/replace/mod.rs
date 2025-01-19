@@ -424,10 +424,11 @@ impl FileReplacementPlan {
             .strip_prefix(&workspace_root)
             .unwrap_or(&self.file_path);
         println!("Debug: Relative path for backup: {}", relative.display());
-        let relative_str = relative
-            .to_string_lossy()
-            .replace("\\", "_")
-            .replace("/", "_");
+        // On Windows, remove drive letters like "C:" 
+        let relative_str = relative_str
+            .trim_start_matches(|c| c.is_ascii_alphabetic() || c == ':')
+            .trim_start_matches("\\") // in case of something like "C:\\"
+            .to_string();
         println!("Debug: Sanitized relative path: {}", relative_str);
 
         let timestamp = SystemTime::now()
