@@ -280,6 +280,9 @@ impl EditSession {
             self.modified = true;
         }
 
+        // Discard any pending events before returning to view mode
+        discard_extra_events()?;
+
         Ok(())
     }
 
