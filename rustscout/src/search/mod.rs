@@ -94,6 +94,7 @@
 pub mod engine;
 pub mod matcher;
 pub mod processor;
+pub mod interactive_search;
 
 pub use engine::search;
 pub use matcher::PatternMatcher;

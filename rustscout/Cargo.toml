@@ -33,10 +33,14 @@ humantime = "2.1.0"
 tempfile = "3.9"
 unicode_categories = "0.1.1"
 similar = "2.4"
+colored = "2.0"
+crossterm = "0.27"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 anyhow = "1.0"
+assert_cmd = "2.0"
+predicates = "3.0"
 
 [[bench]]
 name = "search_benchmarks"
