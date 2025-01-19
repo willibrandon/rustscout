@@ -773,9 +773,8 @@ impl ReplacementSet {
     /// Undoes a specific operation by its ID
     pub fn undo_by_id(id: u64, config: &ReplacementConfig) -> SearchResult<()> {
         let info_path = config.undo_dir.join(format!("{}.json", id));
-        let content = fs::read_to_string(&info_path).map_err(|e| {
-            SearchError::config_error(format!("Failed to read undo info: {}", e))
-        })?;
+        let content = fs::read_to_string(&info_path)
+            .map_err(|e| SearchError::config_error(format!("Failed to read undo info: {}", e)))?;
         let info: UndoInfo = serde_json::from_str(&content)?;
 
         // Detect workspace root from the undo directory which we know exists
@@ -790,12 +789,18 @@ impl ReplacementSet {
                     abs.clone()
                 } else {
                     let fallback = workspace_root.join(&original.rel_path);
-                    println!("Debug: Using fallback path for restore: {}", fallback.display());
+                    println!(
+                        "Debug: Using fallback path for restore: {}",
+                        fallback.display()
+                    );
                     fallback
                 }
             } else {
                 let fallback = workspace_root.join(&original.rel_path);
-                println!("Debug: Using relative path for restore: {}", fallback.display());
+                println!(
+                    "Debug: Using relative path for restore: {}",
+                    fallback.display()
+                );
                 fallback
             };
 
@@ -823,11 +828,13 @@ impl ReplacementSet {
             }
 
             // Read backup content and write to original file
-            let backup_content = fs::read_to_string(&backup_path).map_err(|e| {
-                SearchError::config_error(format!("Failed to read backup: {}", e))
-            })?;
+            let backup_content = fs::read_to_string(&backup_path)
+                .map_err(|e| SearchError::config_error(format!("Failed to read backup: {}", e)))?;
 
-            println!("Debug: Writing backup content to: {}", path_to_restore.display());
+            println!(
+                "Debug: Writing backup content to: {}",
+                path_to_restore.display()
+            );
             fs::write(&path_to_restore, backup_content).map_err(|e| {
                 SearchError::config_error(format!("Failed to restore backup: {}", e))
             })?;
@@ -850,9 +857,8 @@ impl ReplacementSet {
         hunk_indices: &[usize],
     ) -> SearchResult<()> {
         let info_path = config.undo_dir.join(format!("{}.json", id));
-        let content = fs::read_to_string(&info_path).map_err(|e| {
-            SearchError::config_error(format!("Failed to read undo info: {}", e))
-        })?;
+        let content = fs::read_to_string(&info_path)
+            .map_err(|e| SearchError::config_error(format!("Failed to read undo info: {}", e)))?;
         let info: UndoInfo = serde_json::from_str(&content)?;
 
         // If there's no diff data, partial revert isn't possible
@@ -1514,7 +1520,7 @@ mod tests {
         let root = temp.path();
 
         // Initialize workspace
-        init_workspace(root)?;
+        init_workspace(root, "json")?;
 
         // Create test files
         let original = root.join("test.txt");
@@ -1573,7 +1579,7 @@ mod tests {
         let root = temp.path();
 
         // Initialize workspace
-        init_workspace(root)?;
+        init_workspace(root, "json")?;
 
         // Create test file
         let test_file = root.join("test.txt");
@@ -1617,7 +1623,7 @@ mod tests {
         let root = temp.path();
 
         // Initialize workspace
-        init_workspace(root)?;
+        init_workspace(root, "json")?;
 
         // Create test file and make a backup
         let test_file = root.join("test.txt");
@@ -1658,7 +1664,10 @@ mod tests {
         fs::copy(&test_file, &backup_path)?;
 
         println!("Debug: backup_path exists = {}", backup_path.exists());
-        println!("Debug: backup content = {:?}", fs::read_to_string(&backup_path)?);
+        println!(
+            "Debug: backup content = {:?}",
+            fs::read_to_string(&backup_path)?
+        );
 
         let backup_ref = UndoFileReference {
             rel_path: PathBuf::from(format!(".rustscout/undo/{}.bak", timestamp)),
@@ -1685,7 +1694,10 @@ mod tests {
 
         println!("Debug: test_file exists = {}", test_file.exists());
         println!("Debug: test_file path = {}", test_file.display());
-        println!("Debug: test_file content = {:?}", fs::read_to_string(&test_file)?);
+        println!(
+            "Debug: test_file content = {:?}",
+            fs::read_to_string(&test_file)?
+        );
 
         // Try to undo - should fallback to relative path
         ReplacementSet::undo_by_id(timestamp, &config)?;

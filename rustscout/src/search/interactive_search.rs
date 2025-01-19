@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::{self, Write};
-use std::path::{PathBuf, Path};
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use colored::Colorize;
@@ -26,9 +26,7 @@ use std::num::NonZeroUsize;
 fn short_path(path: &Path, workspace_root: &Path, verbose: bool) -> String {
     if verbose {
         // In verbose mode, always show full paths with forward slashes
-        path.to_string_lossy()
-            .replace('\\', "/")
-            .to_string()
+        path.to_string_lossy().replace('\\', "/").to_string()
     } else if let Ok(rel) = path.strip_prefix(workspace_root) {
         // Convert to forward slashes for consistent display
         rel.to_string_lossy()
@@ -37,9 +35,7 @@ fn short_path(path: &Path, workspace_root: &Path, verbose: bool) -> String {
             .to_string()
     } else {
         // Convert absolute paths to forward slashes too
-        path.to_string_lossy()
-            .replace('\\', "/")
-            .to_string()
+        path.to_string_lossy().replace('\\', "/").to_string()
     }
 }
 
@@ -184,7 +180,10 @@ impl EditSession {
             print!("\x1B[H");
 
             // Show header with short path - default to non-verbose mode for EditSession
-            let header = format!("=== Edit Mode: {} ===", short_path(&self.file_path, &_workspace_root, false));
+            let header = format!(
+                "=== Edit Mode: {} ===",
+                short_path(&self.file_path, &_workspace_root, false)
+            );
             println!(
                 "{}",
                 if use_color {
@@ -363,7 +362,10 @@ impl EditSession {
 
                 // Get absolute paths
                 let original_abs = self.file_path.canonicalize().map_err(|e| {
-                    SearchError::config_error(format!("Failed to canonicalize original path: {}", e))
+                    SearchError::config_error(format!(
+                        "Failed to canonicalize original path: {}",
+                        e
+                    ))
                 })?;
                 let original_rel = original_abs
                     .strip_prefix(&_workspace_root)
@@ -410,8 +412,10 @@ impl EditSession {
 
                 self.undo_info = Some(UndoInfo {
                     timestamp,
-                    description: format!("Interactive edit in file: {}", 
-                        short_path(&self.file_path, &_workspace_root, false)),
+                    description: format!(
+                        "Interactive edit in file: {}",
+                        short_path(&self.file_path, &_workspace_root, false)
+                    ),
                     backups: vec![(original_ref, backup_ref)],
                     total_size: file_size,
                     file_count: 1,
@@ -561,7 +565,13 @@ pub fn run_interactive_search(args: &InteractiveSearchArgs) -> Result<(), Search
     flush_pending_input()?;
 
     // Run the interactive loop
-    interactive_loop(&all_matches, &mut stats, &mut visited_flags, use_color, args.verbose)?;
+    interactive_loop(
+        &all_matches,
+        &mut stats,
+        &mut visited_flags,
+        use_color,
+        args.verbose,
+    )?;
 
     Ok(())
 }
@@ -637,7 +647,16 @@ fn interactive_loop(
     if std::env::var("INTERACTIVE_TEST").is_ok() {
         // In test mode, just display all matches without interaction
         for (i, (file_path, m)) in matches.iter().enumerate() {
-            show_match(i, matches, stats, visited_flags, file_path, m, use_color, verbose);
+            show_match(
+                i,
+                matches,
+                stats,
+                visited_flags,
+                file_path,
+                m,
+                use_color,
+                verbose,
+            );
         }
         return Ok(());
     }
@@ -970,9 +989,9 @@ mod tests {
         } else {
             PathBuf::from("/home/user/project")
         };
-        
+
         let file_path = workspace_root.join("src").join("main.rs");
-        
+
         // Test non-verbose mode (default)
         assert_eq!(
             short_path(&file_path, &workspace_root, false),

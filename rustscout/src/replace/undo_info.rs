@@ -177,7 +177,7 @@ mod tests {
         let root = temp.path();
 
         // Initialize workspace
-        init_workspace(root)?;
+        init_workspace(root, "json")?;
 
         // Create a test file
         let test_file = root.join("test.txt");
@@ -207,7 +207,7 @@ mod tests {
         let root = temp.path();
 
         // Initialize workspace
-        init_workspace(root)?;
+        init_workspace(root, "json")?;
 
         // Create test files
         let original = root.join("original.txt");

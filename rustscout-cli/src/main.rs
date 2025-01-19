@@ -41,6 +41,13 @@ enum Commands {
     /// Interactively search through matches one by one
     #[command(visible_alias = "i")]
     InteractiveSearch(Box<InteractiveSearchArgs>),
+
+    /// Manage RustScout workspace configuration
+    #[command(visible_alias = "w")]
+    Workspace {
+        #[command(subcommand)]
+        command: WorkspaceCommands,
+    },
 }
 
 impl Commands {
@@ -49,6 +56,7 @@ impl Commands {
             Commands::Search(_) => "info",
             Commands::Replace { .. } => "info",
             Commands::InteractiveSearch(_) => "info",
+            Commands::Workspace { .. } => "info",
         }
     }
 }
@@ -318,6 +326,27 @@ struct InteractiveSearchArgs {
     verbose: bool,
 }
 
+#[derive(Subcommand, Debug)]
+enum WorkspaceCommands {
+    /// Initialize a new RustScout workspace
+    Init(WorkspaceInit),
+}
+
+#[derive(Parser, Debug)]
+struct WorkspaceInit {
+    /// Directory to initialize workspace in (defaults to current directory)
+    #[arg(short = 'd', long = "dir")]
+    dir: Option<PathBuf>,
+
+    /// Format to use for workspace metadata (json or yaml)
+    #[arg(short = 'f', long = "format", default_value = "json")]
+    format: String,
+
+    /// Force initialization even if .rustscout directory exists
+    #[arg(short = 'F', long = "force")]
+    force: bool,
+}
+
 mod diff_utils;
 use diff_utils::{print_side_by_side_diff, print_unified_diff};
 
@@ -453,6 +482,9 @@ fn run() -> Result<()> {
         }
         Commands::InteractiveSearch(args) => {
             handle_interactive_search(*args)?;
+        }
+        Commands::Workspace { command } => {
+            handle_workspace(command)?;
         }
     }
     Ok(())
@@ -1041,4 +1073,94 @@ fn handle_undo(undo_command: &ReplaceUndo) -> Result<()> {
 
     println!("Successfully reverted changes.");
     Ok(())
+}
+
+/// Handle workspace-related commands
+fn handle_workspace(cmd: WorkspaceCommands) -> Result<()> {
+    match cmd {
+        WorkspaceCommands::Init(args) => {
+            let dir = args.dir.unwrap_or_else(|| PathBuf::from("."));
+            let format = args.format.to_lowercase();
+
+            // Validate format
+            if !["json", "yaml"].contains(&format.as_str()) {
+                return Err(SearchError::config_error(
+                    "Invalid format. Must be either 'json' or 'yaml'.",
+                ));
+            }
+
+            // Validate directory
+            let abs_dir = dir.canonicalize().map_err(|e| {
+                SearchError::config_error(format!(
+                    "Invalid directory path '{}': {}",
+                    dir.display(),
+                    e
+                ))
+            })?;
+
+            // Check if directory exists and is a directory
+            let metadata = std::fs::metadata(&abs_dir).map_err(|e| {
+                SearchError::config_error(format!(
+                    "Cannot read metadata for '{}': {}",
+                    abs_dir.display(),
+                    e
+                ))
+            })?;
+            if !metadata.is_dir() {
+                return Err(SearchError::config_error(format!(
+                    "'{}' is not a directory",
+                    abs_dir.display()
+                )));
+            }
+
+            // Check write permissions with a test directory
+            let test_path = abs_dir.join(".rustscout_write_test");
+            match std::fs::create_dir(&test_path) {
+                Ok(_) => {
+                    std::fs::remove_dir(&test_path).ok(); // Cleanup
+                }
+                Err(e) => {
+                    return Err(SearchError::config_error(format!(
+                        "Directory '{}' is not writable: {}",
+                        abs_dir.display(),
+                        e
+                    )));
+                }
+            }
+
+            // Check for existing workspace
+            let rustscout_dir = abs_dir.join(".rustscout");
+            if rustscout_dir.exists() {
+                if !args.force {
+                    return Err(SearchError::config_error(format!(
+                        "Directory '{}' is already a RustScout workspace. Use --force to reinitialize.",
+                        abs_dir.display()
+                    )));
+                }
+                println!(
+                    "Warning: Reinitializing existing workspace at '{}'",
+                    abs_dir.display()
+                );
+            }
+
+            // Initialize workspace
+            let workspace_root = rustscout::workspace::init_workspace(&abs_dir, &format)?;
+
+            println!("Successfully initialized workspace:");
+            println!("  Root: {}", workspace_root.root_path.display());
+            println!("  Format: {}", workspace_root.format);
+            println!(
+                "  Config: {}",
+                rustscout_dir
+                    .join(if format == "yaml" {
+                        "workspace.yaml"
+                    } else {
+                        "workspace.json"
+                    })
+                    .display()
+            );
+
+            Ok(())
+        }
+    }
 }

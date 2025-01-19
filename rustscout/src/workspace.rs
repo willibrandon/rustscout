@@ -15,6 +15,8 @@ pub struct WorkspaceMetadata {
     pub root_path: PathBuf,
     /// Version of the workspace format for future compatibility
     pub version: String,
+    /// Format used for workspace configuration (json or yaml)
+    pub format: String,
     /// Optional global configuration overrides
     #[serde(default)]
     pub global_config: Option<GlobalConfig>,
@@ -33,10 +35,11 @@ pub struct GlobalConfig {
 
 impl WorkspaceMetadata {
     /// Create a new workspace metadata instance
-    pub fn new(root_path: PathBuf) -> Self {
+    pub fn new(root_path: PathBuf, format: String) -> Self {
         Self {
             root_path,
             version: env!("CARGO_PKG_VERSION").to_string(),
+            format,
             global_config: None,
         }
     }
@@ -57,7 +60,7 @@ impl WorkspaceMetadata {
     pub fn load(root_path: &Path) -> SearchResult<Self> {
         let config_path = root_path.join(WORKSPACE_DIR).join(WORKSPACE_CONFIG);
         if !config_path.exists() {
-            return Ok(Self::new(root_path.to_path_buf()));
+            return Ok(Self::new(root_path.to_path_buf(), "json".to_string()));
         }
 
         let json = fs::read_to_string(&config_path).map_err(SearchError::IoError)?;
@@ -71,14 +74,34 @@ impl WorkspaceMetadata {
 }
 
 /// Initialize a new workspace at the specified directory
-pub fn init_workspace(root_path: &Path) -> SearchResult<WorkspaceMetadata> {
-    let workspace_dir = root_path.join(WORKSPACE_DIR);
-    if !workspace_dir.exists() {
-        fs::create_dir_all(&workspace_dir).map_err(SearchError::IoError)?;
+pub fn init_workspace(root: &Path, format: &str) -> SearchResult<WorkspaceMetadata> {
+    let root = root.canonicalize()?;
+    let rustscout_dir = root.join(WORKSPACE_DIR);
+    if !rustscout_dir.exists() {
+        fs::create_dir_all(&rustscout_dir)?;
     }
 
-    let metadata = WorkspaceMetadata::new(root_path.to_path_buf());
-    metadata.save()?;
+    let metadata = WorkspaceMetadata::new(root.to_path_buf(), format.to_string());
+
+    // Save in the specified format
+    let config_path = rustscout_dir.join(match format.to_lowercase().as_str() {
+        "yaml" => "workspace.yaml",
+        _ => WORKSPACE_CONFIG, // Default to JSON
+    });
+
+    if format.to_lowercase() == "yaml" {
+        let yaml = serde_yaml::to_string(&metadata).map_err(|e| {
+            SearchError::config_error(format!(
+                "Failed to serialize workspace metadata to YAML: {}",
+                e
+            ))
+        })?;
+        fs::write(&config_path, yaml)?;
+    } else {
+        let json = serde_json::to_string_pretty(&metadata)?;
+        fs::write(&config_path, json)?;
+    }
+
     Ok(metadata)
 }
 
@@ -123,7 +146,7 @@ mod tests {
 
         // Create workspace at root/a
         let workspace_root = root.join("a");
-        init_workspace(&workspace_root)?;
+        init_workspace(&workspace_root, "json")?;
 
         // Should now detect workspace at root/a
         let detected = detect_workspace_root(&nested)?;
@@ -138,7 +161,7 @@ mod tests {
         let root = temp.path();
 
         // Create initial metadata
-        let mut metadata = WorkspaceMetadata::new(root.to_path_buf());
+        let mut metadata = WorkspaceMetadata::new(root.to_path_buf(), "json".to_string());
         metadata.global_config = Some(GlobalConfig {
             ignore_patterns: vec!["*.tmp".to_string()],
             default_extensions: Some(vec!["rs".to_string()]),
@@ -163,8 +186,8 @@ mod tests {
         let root = temp.path();
 
         // Initialize new workspace
-        let metadata = init_workspace(root)?;
-        assert_eq!(metadata.root_path, root);
+        let metadata = init_workspace(root, "json")?;
+        assert_eq!(unify_path(&metadata.root_path), unify_path(root));
 
         // Verify workspace directory and config exist
         assert!(root.join(WORKSPACE_DIR).exists());
