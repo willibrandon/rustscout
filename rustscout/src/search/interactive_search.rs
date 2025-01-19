@@ -125,15 +125,17 @@ pub fn run_interactive_search(args: &InteractiveSearchArgs) -> Result<(), Search
         search_result.files_with_matches
     );
 
-    // Initialize stats
+    // Initialize stats and visited flags
     let mut stats = InteractiveStats::default();
+    stats.total_matches = all_matches.len();
+    let mut visited_flags = vec![false; all_matches.len()];
     let use_color = !args.no_color;
 
     // Flush any pending input before starting interactive mode
     flush_pending_input()?;
 
     // Run the interactive loop
-    interactive_loop(&all_matches, &mut stats, use_color)?;
+    interactive_loop(&all_matches, &mut stats, &mut visited_flags, use_color)?;
 
     Ok(())
 }
@@ -186,7 +188,12 @@ fn convert_args_to_config(args: &InteractiveSearchArgs) -> Result<SearchConfig, 
 }
 
 /// Main interactive loop for processing matches
-fn interactive_loop(matches: &[(PathBuf, ScoutMatch)], stats: &mut InteractiveStats, use_color: bool) -> Result<(), SearchError> {
+fn interactive_loop(
+    matches: &[(PathBuf, ScoutMatch)], 
+    stats: &mut InteractiveStats,
+    visited_flags: &mut [bool],
+    use_color: bool
+) -> Result<(), SearchError> {
     if matches.is_empty() {
         println!("No matches found.");
         return Ok(());
@@ -196,10 +203,7 @@ fn interactive_loop(matches: &[(PathBuf, ScoutMatch)], stats: &mut InteractiveSt
     if std::env::var("INTERACTIVE_TEST").is_ok() {
         // In test mode, just display all matches without interaction
         for (i, (file_path, m)) in matches.iter().enumerate() {
-            print_context(file_path, m, use_color);
-            println!("\nMatch {} of {}", i + 1, matches.len());
-            println!("\n[n]ext [p]rev [f]skip file [a]ll skip [q]uit [e]dit\n");
-            stats.matches_visited += 1;
+            show_match(i, matches, stats, visited_flags, file_path, m, use_color);
         }
         return Ok(());
     }
@@ -207,78 +211,74 @@ fn interactive_loop(matches: &[(PathBuf, ScoutMatch)], stats: &mut InteractiveSt
     // Regular interactive mode
     enable_raw_mode()?;
     let mut current_index = 0;
-    stats.total_matches = matches.len();
 
     while current_index < matches.len() {
         let (file_path, m) = &matches[current_index];
         
-        // Clear screen and print header
-        print!("{}", Clear(ClearType::All));
-        
-        // Show progress header
-        let header = format!(
-            "RustScout Interactive Search :: Match {} of {} ({})",
-            current_index + 1,
-            matches.len(),
-            file_path.display()
-        );
-        println!("{}", if use_color { 
-            header.bold().bright_blue() 
-        } else { 
-            header.normal() 
-        });
-        
-        // Show stats
-        let stats_line = format!(
-            "Visited: {}, Skipped: {}, Files skipped: {}",
-            stats.matches_visited,
-            stats.matches_skipped,
-            stats.files_skipped
-        );
-        println!("{}", if use_color { 
-            stats_line.bright_black() 
-        } else { 
-            stats_line.normal() 
-        });
-        
-        print_context(file_path, m, use_color);
-        
-        // Show navigation help
-        println!("\nNavigation:");
-        let nav_help = "[n]ext [p]rev [f]skip file [a]ll skip [q]uit [e]dit";
-        println!("{}", if use_color { 
-            nav_help.bright_black() 
-        } else { 
-            nav_help.normal() 
-        });
-        println!("Arrow keys: ←/→ prev/next, ↑/↓ prev/next");
-
-        // Only increment matches_visited when we actually show a match
-        if stats.matches_visited < current_index + 1 {
-            stats.matches_visited = current_index + 1;
-        }
+        // Show the current match and update visited status
+        show_match(current_index, matches, stats, visited_flags, file_path, m, use_color);
         
         match read_key_input()? {
             PromptAction::Next => {
-                if current_index < matches.len() - 1 {
+                // Wrap around to first match if at the end
+                if current_index == matches.len() - 1 {
+                    current_index = 0;
+                } else {
                     current_index += 1;
                 }
             }
             PromptAction::Previous => {
-                if current_index > 0 {
+                // Wrap around to last match if at the start
+                if current_index == 0 {
+                    current_index = matches.len() - 1;
+                } else {
                     current_index -= 1;
                 }
             }
             PromptAction::SkipFile => {
                 let current_file = file_path;
-                while current_index < matches.len() && &matches[current_index].0 == current_file {
-                    current_index += 1;
-                    stats.matches_skipped += 1;
+                // Mark all unvisited matches in this file as skipped
+                let mut skipped = 0;
+                for i in 0..matches.len() {
+                    if &matches[i].0 == current_file && !visited_flags[i] {
+                        visited_flags[i] = true;
+                        skipped += 1;
+                    }
                 }
+                stats.matches_skipped += skipped;
                 stats.files_skipped += 1;
+
+                // Find next match in a different file
+                let mut found_next = false;
+                let start_index = current_index;
+                for _ in 0..matches.len() {
+                    if current_index == matches.len() - 1 {
+                        current_index = 0;
+                    } else {
+                        current_index += 1;
+                    }
+                    if &matches[current_index].0 != current_file {
+                        found_next = true;
+                        break;
+                    }
+                    if current_index == start_index {
+                        break;
+                    }
+                }
+                if !found_next {
+                    break;
+                }
             }
             PromptAction::SkipAll => {
-                stats.matches_skipped += matches.len() - current_index;
+                // Mark all unvisited matches as skipped
+                let mut skipped = 0;
+                for i in 0..matches.len() {
+                    if !visited_flags[i] {
+                        visited_flags[i] = true;
+                        skipped += 1;
+                    }
+                }
+                stats.matches_skipped += skipped;
                 break;
             }
             PromptAction::Quit => break,
@@ -295,6 +295,62 @@ fn interactive_loop(matches: &[(PathBuf, ScoutMatch)], stats: &mut InteractiveSt
     disable_raw_mode()?;
     print_summary(stats);
     Ok(())
+}
+
+/// Show a match and update visited status
+fn show_match(
+    index: usize,
+    matches: &[(PathBuf, ScoutMatch)],
+    stats: &mut InteractiveStats,
+    visited_flags: &mut [bool],
+    file_path: &PathBuf,
+    m: &ScoutMatch,
+    use_color: bool,
+) {
+    // Update visited status if this is the first time seeing this match
+    if !visited_flags[index] {
+        visited_flags[index] = true;
+        stats.matches_visited += 1;
+    }
+
+    // Clear screen and print header
+    print!("{}", Clear(ClearType::All));
+    print!("\x1B[H");
+    
+    let header = format!(
+        "RustScout Interactive Search :: Match {} of {} ({})",
+        index + 1,
+        matches.len(),
+        file_path.display()
+    );
+    println!("{}", if use_color { 
+        header.bold().bright_blue() 
+    } else { 
+        header.normal() 
+    });
+    
+    let stats_line = format!(
+        "Visited: {}, Skipped: {}, Files skipped: {}",
+        stats.matches_visited,
+        stats.matches_skipped,
+        stats.files_skipped
+    );
+    println!("{}", if use_color { 
+        stats_line.bright_black() 
+    } else { 
+        stats_line.normal() 
+    });
+    
+    print_context(file_path, m, use_color);
+    
+    println!("\nNavigation (wrap-around enabled):");
+    let nav_help = "[n]ext [p]rev [f]skip file [a]ll skip [q]uit [e]dit";
+    println!("{}", if use_color { 
+        nav_help.bright_black() 
+    } else { 
+        nav_help.normal() 
+    });
+    println!("Arrow keys: ←/→ prev/next, ↑/↓ prev/next");
 }
 
 /// Read exactly one KeyEvent from the user and discard any extras
