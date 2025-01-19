@@ -327,41 +327,61 @@ impl EditSession {
                     })?
                     .as_secs();
 
-                // Create undo directory if it doesn't exist
-                let undo_dir = PathBuf::from(".rustscout").join("undo");
-                fs::create_dir_all(&undo_dir).map_err(|e| {
-                    SearchError::config_error(format!("Failed to create undo directory: {}", e))
+                // Detect workspace root
+                let workspace_root = detect_workspace_root(&self.file_path)
+                    .unwrap_or_else(|_| self.file_path.parent().unwrap().to_path_buf());
+
+                // Get absolute paths
+                let original_abs = self.file_path.canonicalize().map_err(|e| {
+                    SearchError::config_error(format!("Failed to canonicalize original path: {}", e))
+                })?;
+                let original_rel = original_abs
+                    .strip_prefix(&workspace_root)
+                    .unwrap_or(original_abs.as_path())
+                    .to_path_buf();
+
+                // Create backup directory under workspace root
+                let backup_dir = workspace_root.join(".rustscout").join("undo");
+                fs::create_dir_all(&backup_dir).map_err(|e| {
+                    SearchError::config_error(format!("Failed to create backup directory: {}", e))
                 })?;
 
-                // Create backup path and copy the file
-                let backup_path = undo_dir.join(format!("{}.bak", timestamp));
-                fs::copy(&self.file_path, &backup_path).map_err(|e| {
+                // Create backup file
+                let backup_file = backup_dir.join(format!("{}.bak", timestamp));
+                fs::copy(&original_abs, &backup_file).map_err(|e| {
                     SearchError::config_error(format!("Failed to create backup: {}", e))
                 })?;
 
-                // Create undo info with UndoFileReference
+                // Get backup paths
+                let backup_abs = backup_file.canonicalize().map_err(|e| {
+                    SearchError::config_error(format!("Failed to canonicalize backup path: {}", e))
+                })?;
+                let backup_rel = backup_abs
+                    .strip_prefix(&workspace_root)
+                    .unwrap_or(backup_abs.as_path())
+                    .to_path_buf();
+
+                // Create file references
+                let original_ref = UndoFileReference {
+                    rel_path: original_rel,
+                    abs_path: Some(original_abs),
+                };
+                let backup_ref = UndoFileReference {
+                    rel_path: backup_rel,
+                    abs_path: Some(backup_abs),
+                };
+
+                // Get file size for metadata
                 let file_size = fs::metadata(&self.file_path)
                     .map_err(|e| {
                         SearchError::config_error(format!("Failed to get file metadata: {}", e))
                     })?
                     .len();
 
-                // Detect workspace root and create UndoFileReference
-                let _workspace_root = detect_workspace_root(&self.file_path).map_err(|e| {
-                    SearchError::config_error(format!("Failed to detect workspace root: {}", e))
-                })?;
-
-                let file_ref = UndoFileReference::new(&self.file_path).map_err(|e| {
-                    SearchError::config_error(format!("Failed to create file reference: {}", e))
-                })?;
-                let backup_ref = UndoFileReference::new(&backup_path).map_err(|e| {
-                    SearchError::config_error(format!("Failed to create backup reference: {}", e))
-                })?;
-
                 self.undo_info = Some(UndoInfo {
                     timestamp,
                     description: format!("Interactive edit in file: {}", self.file_path.display()),
-                    backups: vec![(file_ref, backup_ref)],
+                    backups: vec![(original_ref, backup_ref)],
                     total_size: file_size,
                     file_count: 1,
                     dry_run: false,
