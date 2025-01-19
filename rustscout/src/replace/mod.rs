@@ -398,17 +398,24 @@ impl FileReplacementPlan {
     /// Create a backup of the file if backup is enabled
     fn create_backup(&self, config: &ReplacementConfig) -> SearchResult<Option<PathBuf>> {
         if !config.backup_enabled {
+            println!("Debug: Backup not enabled");
             return Ok(None);
         }
 
         // 1) Figure out the workspace root
         let workspace_root = detect_workspace_root(&self.file_path)?;
+        println!("Debug: Workspace root = {}", workspace_root.display());
+
         // 2) Determine the "backups" subdirectory
         let backup_dir = if let Some(ref dir) = config.backup_dir {
+            println!("Debug: Using user-specified backup dir: {}", dir.display());
             dir.clone()
         } else {
-            workspace_root.join(".rustscout").join("backups")
+            let default_dir = workspace_root.join(".rustscout").join("backups");
+            println!("Debug: Using default backup dir: {}", default_dir.display());
+            default_dir
         };
+        println!("Debug: Creating backup dir: {}", backup_dir.display());
         fs::create_dir_all(&backup_dir)?;
 
         // 3) Compute a unique backup filename from the *relative path*
@@ -416,10 +423,12 @@ impl FileReplacementPlan {
             .file_path
             .strip_prefix(&workspace_root)
             .unwrap_or(&self.file_path);
+        println!("Debug: Relative path for backup: {}", relative.display());
         let relative_str = relative
             .to_string_lossy()
             .replace("\\", "_")
             .replace("/", "_");
+        println!("Debug: Sanitized relative path: {}", relative_str);
 
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -430,9 +439,18 @@ impl FileReplacementPlan {
         // e.g. "crate_a_lib.rs.1737267859"
         let backup_name = format!("{}.{}", relative_str, timestamp);
         let backup_path = backup_dir.join(&backup_name);
+        println!("Debug: Final backup path: {}", backup_path.display());
 
         // 5) Copy original file to the new backup path
-        fs::copy(&self.file_path, &backup_path).map_err(SearchError::IoError)?;
+        println!(
+            "Debug: Copying from {} to {}",
+            self.file_path.display(),
+            backup_path.display()
+        );
+        match fs::copy(&self.file_path, &backup_path) {
+            Ok(_) => println!("Debug: Successfully created backup"),
+            Err(e) => println!("Debug: Failed to create backup: {}", e),
+        }
 
         if config.preserve_metadata {
             if let Ok(metadata) = fs::metadata(&self.file_path) {

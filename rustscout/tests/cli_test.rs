@@ -68,12 +68,23 @@ fn test_replace_basic() -> Result<()> {
 fn test_replace_with_backup() -> Result<()> {
     let dir = tempdir()?;
     let backup_dir = dir.path().join("backups");
+    println!("Debug: Test backup dir = {}", backup_dir.display());
     fs::create_dir_all(&backup_dir)?;
+    println!(
+        "Debug: Created backup dir, exists = {}",
+        backup_dir.exists()
+    );
 
     let undo_dir = dir.path().join(".rustscout").join("undo");
     fs::create_dir_all(&undo_dir)?;
 
     create_test_files(&dir, &[("test.txt", "Hello world")])?;
+    let test_file = dir.path().join("test.txt");
+    println!(
+        "Debug: Test file = {}, exists = {}",
+        test_file.display(),
+        test_file.exists()
+    );
 
     let config = ReplacementConfig {
         patterns: vec![ReplacementPattern {
@@ -109,8 +120,25 @@ fn test_replace_with_backup() -> Result<()> {
         fs::read_to_string(dir.path().join("test.txt"))?,
         "World world"
     );
-    // Check that the backup directory is not empty
-    assert!(fs::read_dir(&backup_dir)?.next().is_some());
+
+    // Enhanced backup directory check with diagnostics
+    println!("Debug: Checking backup dir after replacement");
+    match fs::read_dir(&backup_dir) {
+        Ok(entries) => {
+            let entries: Vec<_> = entries.collect();
+            println!("Debug: Found {} entries in backup dir", entries.len());
+            for entry in &entries {
+                if let Ok(entry) = entry {
+                    println!("Debug: Found backup file: {}", entry.path().display());
+                }
+            }
+            assert!(!entries.is_empty(), "Backup directory should not be empty");
+        }
+        Err(e) => {
+            println!("Debug: Failed to read backup dir: {}", e);
+            assert!(false, "Failed to read backup directory: {}", e);
+        }
+    }
     Ok(())
 }
 
