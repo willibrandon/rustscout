@@ -131,7 +131,7 @@ impl EditSession {
         let content = self.lines.join("\n");
         fs::write(&self.file_path, content)?;
 
-        // If we have undo info, save it and show feedback
+        // If we have undo info, save it
         if let Some(ref info) = self.undo_info {
             let undo_dir = PathBuf::from(".rustscout").join("undo");
             let json_path = undo_dir.join(format!("{}.json", info.timestamp));
@@ -140,10 +140,6 @@ impl EditSession {
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
             
             fs::write(&json_path, data)?;
-
-            // Show feedback about undo capability
-            println!("\nChanges saved with undo ID: {}", info.timestamp);
-            println!("To revert changes, run: rustscout-cli replace undo {}", info.timestamp);
         }
 
         Ok(())
@@ -207,7 +203,6 @@ impl EditSession {
                                     println!("  Undo ID: {}", info.timestamp);
                                     println!("  To revert changes, run:");
                                     println!("  rustscout-cli replace undo {}", info.timestamp);
-                                    println!("\nPress any key to continue...");
                                     let _ = read_key_input()?;
                                 }
                                 return Ok(true); // true = file was modified
@@ -637,7 +632,7 @@ fn interactive_loop(
                     // Re-run the search to get updated matches
                     // TODO: Implement re-scanning of the modified file
                     // For now, we'll just continue with the current matches
-                    println!("\nFile was modified. Press any key to continue...");
+                    println!("\nPress any key to continue...");
                     let _ = read_key_input()?;
                 }
             }
