@@ -1,6 +1,4 @@
 use anyhow::Result;
-use assert_cmd::prelude::*;
-use predicates::prelude::*;
 use rustscout::{
     cache::ChangeDetectionStrategy,
     config::{EncodingMode, SearchConfig},
@@ -10,7 +8,6 @@ use rustscout::{
     search,
     search::matcher::{HyphenMode, PatternDefinition, WordBoundaryMode},
 };
-use std::process::Command;
 use std::{fs, num::NonZeroUsize, path::Path};
 use tempfile::tempdir;
 
@@ -530,43 +527,5 @@ fn test_search_hyphen_mode() -> Result<()> {
         .iter()
         .any(|m| m.line_content.contains("hello-world")));
 
-    Ok(())
-}
-
-#[test]
-fn test_interactive_search() -> Result<()> {
-    let temp_dir = tempdir()?;
-
-    // Create test files
-    create_test_files(
-        &temp_dir,
-        &[
-            ("file1.txt", "Hello world\nTODO: Fix this\nGoodbye"),
-            ("file2.txt", "Another TODO here\nSome text"),
-        ],
-    )?;
-
-    // Set up environment for test mode
-    std::env::set_var("INTERACTIVE_TEST", "1");
-
-    let mut cmd = Command::cargo_bin("rustscout-cli")?;
-    cmd.args([
-        "interactive-search",
-        "-p",
-        "TODO",
-        "-d",
-        temp_dir.path().to_str().unwrap(),
-    ]);
-
-    cmd.assert()
-        .success()
-        .stdout(predicate::str::contains("Found 2 matches"))
-        .stdout(predicate::str::contains("TODO: Fix this"))
-        .stdout(predicate::str::contains("Another TODO here"))
-        .stdout(predicate::str::contains("Match 1 of 2"))
-        .stdout(predicate::str::contains("Match 2 of 2"));
-
-    // Clean up test environment
-    std::env::remove_var("INTERACTIVE_TEST");
     Ok(())
 }

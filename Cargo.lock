@@ -1195,15 +1195,18 @@ name = "rustscout-cli"
 version = "1.1.1"
 dependencies = [
  "anyhow",
+ "assert_cmd",
  "clap",
  "colored",
  "ignore",
  "itertools 0.12.1",
  "num_cpus",
+ "predicates",
  "rayon",
  "rustscout",
  "serde_json",
  "similar",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
 ]
