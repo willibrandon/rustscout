@@ -50,7 +50,7 @@ impl WorkspaceMetadata {
         fs::create_dir_all(&workspace_dir).map_err(SearchError::IoError)?;
 
         let config_path = workspace_dir.join(WORKSPACE_CONFIG);
-        let json = serde_json::to_string_pretty(self).map_err(|e| SearchError::JsonError(e))?;
+        let json = serde_json::to_string_pretty(self).map_err(SearchError::JsonError)?;
 
         fs::write(config_path, json).map_err(SearchError::IoError)?;
         Ok(())
@@ -65,7 +65,7 @@ impl WorkspaceMetadata {
 
         let json = fs::read_to_string(&config_path).map_err(SearchError::IoError)?;
         let mut metadata: WorkspaceMetadata =
-            serde_json::from_str(&json).map_err(|e| SearchError::JsonError(e))?;
+            serde_json::from_str(&json).map_err(SearchError::JsonError)?;
 
         // Always use the provided root path to avoid path inconsistencies
         metadata.root_path = root_path.to_path_buf();

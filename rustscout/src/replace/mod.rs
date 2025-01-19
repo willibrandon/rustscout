@@ -775,8 +775,8 @@ impl ReplacementSet {
         fs::create_dir_all(&undo_dir).map_err(SearchError::IoError)?;
 
         let undo_file = undo_dir.join(format!("{}.json", timestamp));
-        let content = serde_json::to_string_pretty(&info).map_err(|e| SearchError::JsonError(e))?;
-        fs::write(undo_file, content).map_err(SearchError::IoError)?;
+        let content = serde_json::to_string_pretty(&info).map_err(SearchError::JsonError)?;
+        fs::write(&undo_file, content).map_err(SearchError::IoError)?;
 
         Ok(())
     }
@@ -1562,7 +1562,8 @@ mod tests {
         };
 
         let undo_file = undo_dir.join("1234.json");
-        fs::write(&undo_file, serde_json::to_string_pretty(&info)?)?;
+        let content = serde_json::to_string_pretty(&info).map_err(|e| SearchError::JsonError(e))?;
+        fs::write(&undo_file, content).map_err(SearchError::IoError)?;
 
         // Test undo
         let config = ReplacementConfig {
@@ -1696,9 +1697,9 @@ mod tests {
         };
 
         // Save undo info
-        let info_path = config.undo_dir.join(format!("{}.json", timestamp));
+        let undo_file = config.undo_dir.join(format!("{}.json", timestamp));
         let json = serde_json::to_string_pretty(&info)?;
-        fs::write(&info_path, json)?;
+        fs::write(&undo_file, json)?;
 
         // Modify the test file
         fs::write(&test_file, "modified content")?;

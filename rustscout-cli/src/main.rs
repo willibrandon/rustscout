@@ -20,7 +20,9 @@ type Result<T> = std::result::Result<T, SearchError>;
 
 #[derive(Parser, Debug)]
 #[command(name = "RustScout CLI")]
-#[command(about = "RustScout is a **high-performance** code search and replace tool, featuring concurrency, incremental caching, partial/interactive workflows, and robust workspace management.")]
+#[command(
+    about = "RustScout is a **high-performance** code search and replace tool, featuring concurrency, incremental caching, partial/interactive workflows, and robust workspace management."
+)]
 #[command(long_about = None)]
 #[command(after_help = "\
 Global Options:
@@ -113,7 +115,9 @@ enum ReplaceCommands {
 }
 
 #[derive(Parser, Debug)]
-#[command(about = "Powerfully search your codebase for patterns—literal or regex—while leveraging features like boundary modes, incremental caching, context lines, and more")]
+#[command(
+    about = "Powerfully search your codebase for patterns—literal or regex—while leveraging features like boundary modes, incremental caching, context lines, and more"
+)]
 #[command(after_help = "\
 Example Workflows:
 
@@ -167,32 +171,54 @@ struct CliSearchConfig {
     #[arg(short = 'r', long = "regex", action = clap::ArgAction::Append, help_heading = "Core Pattern Options")]
     is_regex: Vec<bool>,
 
-    /// Specifies word boundary handling:
-    /// - strict: Only match whole words
-    /// - partial: Loose boundary detection
-    /// - none (default): No boundary constraints
-    /// Tip: Use -w, --word-boundary as a shorthand for --boundary-mode strict
-    #[arg(short = 'b', long = "boundary-mode", default_value = "none", help_heading = "Core Pattern Options")]
+    /// Word boundary mode for pattern matching
+    ///
+    ///   Tip: Use -w, --word-boundary as a shorthand for --boundary-mode strict
+    #[arg(
+        short = 'b',
+        long = "boundary-mode",
+        default_value = "none",
+        help_heading = "Core Pattern Options"
+    )]
     boundary_mode: String,
 
     /// Shorthand for --boundary-mode strict
-    #[arg(short = 'w', long = "word-boundary", conflicts_with = "boundary_mode", help_heading = "Core Pattern Options")]
+    #[arg(
+        short = 'w',
+        long = "word-boundary",
+        conflicts_with = "boundary_mode",
+        help_heading = "Core Pattern Options"
+    )]
     word_boundary: bool,
 
     /// Determines how hyphens are treated in word boundaries:
     /// - boundary: Hyphens are considered separate boundaries
     /// - joining (default): Hyphens are treated as word characters, bridging word parts
-    #[arg(short = 'y', long = "hyphen-mode", default_value = "joining", help_heading = "Core Pattern Options")]
+    #[arg(
+        short = 'y',
+        long = "hyphen-mode",
+        default_value = "joining",
+        help_heading = "Core Pattern Options"
+    )]
     hyphen_mode: String,
 
     /// Specifies the root directory to search in.
     /// Default: Current directory (.)
-    #[arg(short = 'd', long = "root", default_value = ".", help_heading = "File/Directory Options")]
+    #[arg(
+        short = 'd',
+        long = "root",
+        default_value = ".",
+        help_heading = "File/Directory Options"
+    )]
     root: PathBuf,
 
     /// Comma-separated list of file extensions to include.
     /// Example: -x rs,go,js
-    #[arg(short = 'x', long = "extensions", help_heading = "File/Directory Options")]
+    #[arg(
+        short = 'x',
+        long = "extensions",
+        help_heading = "File/Directory Options"
+    )]
     extensions: Option<String>,
 
     /// Defines ignore patterns (in glob format) for files or directories.
@@ -201,12 +227,22 @@ struct CliSearchConfig {
     ignore: Vec<String>,
 
     /// Number of context lines before each match (default: 0)
-    #[arg(short = 'B', long = "context-before", default_value = "0", help_heading = "Match Output & Context")]
+    #[arg(
+        short = 'B',
+        long = "context-before",
+        default_value = "0",
+        help_heading = "Match Output & Context"
+    )]
     context_before: usize,
 
     /// Number of context lines after each match (default: 0)
     /// When used together (like -B 2 -A 2), you get a small snippet of lines around each match—helpful for code review.
-    #[arg(short = 'A', long = "context-after", default_value = "0", help_heading = "Match Output & Context")]
+    #[arg(
+        short = 'A',
+        long = "context-after",
+        default_value = "0",
+        help_heading = "Match Output & Context"
+    )]
     context_after: usize,
 
     /// Show only statistics, not the actual matches.
@@ -221,32 +257,58 @@ struct CliSearchConfig {
 
     /// Enable incremental search using a local cache of file checksums or Git metadata. This speeds up repeated searches.
     /// Combine with -C, -S, -M, -Z for advanced tuning.
-    #[arg(short = 'I', long = "incremental", help_heading = "Performance & Caching")]
+    #[arg(
+        short = 'I',
+        long = "incremental",
+        help_heading = "Performance & Caching"
+    )]
     incremental: bool,
 
     /// Specifies the path to the cache file (default: .rustscout-cache.json)
-    #[arg(short = 'C', long = "cache-path", help_heading = "Performance & Caching")]
+    #[arg(
+        short = 'C',
+        long = "cache-path",
+        help_heading = "Performance & Caching"
+    )]
     cache_path: Option<PathBuf>,
 
     /// Sets the strategy for detecting changed files:
     /// - auto (default): Heuristics based on modification times, file size, etc.
     /// - git: Use Git's index or HEAD references (when in a Git repo)
     /// - signature: Compute checksums or signatures
-    #[arg(short = 'S', long = "cache-strategy", default_value = "auto", help_heading = "Performance & Caching")]
+    #[arg(
+        short = 'S',
+        long = "cache-strategy",
+        default_value = "auto",
+        help_heading = "Performance & Caching"
+    )]
     cache_strategy: String,
 
     /// Limits the cache to <MB> megabytes. Use 0 for unlimited.
-    #[arg(short = 'M', long = "max-cache-size", help_heading = "Performance & Caching")]
+    #[arg(
+        short = 'M',
+        long = "max-cache-size",
+        help_heading = "Performance & Caching"
+    )]
     max_cache_size: Option<u64>,
 
     /// Enables compression for the incremental cache. Useful for large codebases with limited disk space.
-    #[arg(short = 'Z', long = "compress-cache", help_heading = "Performance & Caching")]
+    #[arg(
+        short = 'Z',
+        long = "compress-cache",
+        help_heading = "Performance & Caching"
+    )]
     compress_cache: bool,
 
     /// Controls how to handle invalid UTF-8 sequences:
     /// - failfast (default): Abort on invalid sequences
     /// - lossy: Replace invalid bytes with placeholders, continuing the search
-    #[arg(short = 'E', long = "encoding", default_value = "failfast", help_heading = "Miscellaneous")]
+    #[arg(
+        short = 'E',
+        long = "encoding",
+        default_value = "failfast",
+        help_heading = "Miscellaneous"
+    )]
     encoding: String,
 
     /// Disables colored output. Handy for scripts or logs that don't support ANSI colors.
@@ -257,7 +319,9 @@ struct CliSearchConfig {
 /// Perform a powerful, configurable search‐and‐replace across multiple files or directories, with optional backups, interactive TUI, and advanced pattern matching.
 #[derive(Parser, Debug)]
 #[command(about = "Perform a search/replace operation across one or more files/directories")]
-#[command(long_about = "Perform a powerful, configurable search‐and‐replace across multiple files or directories, with optional backups, interactive TUI, and advanced pattern matching.")]
+#[command(
+    long_about = "Perform a powerful, configurable search‐and‐replace across multiple files or directories, with optional backups, interactive TUI, and advanced pattern matching."
+)]
 #[command(after_help = "\
 Examples:
   # Simple literal replace
@@ -278,7 +342,12 @@ struct ReplaceDo {
     pattern: String,
 
     /// Text to replace matches with
-    #[arg(short = 'r', long = "replacement", required = true, value_name = "REPLACEMENT")]
+    #[arg(
+        short = 'r',
+        long = "replacement",
+        required = true,
+        value_name = "REPLACEMENT"
+    )]
     #[arg(help_heading = "Required Options")]
     replacement: String,
 
@@ -291,7 +360,12 @@ struct ReplaceDo {
     /// - none (default) – match anywhere
     /// - partial – partial boundary detection
     /// - strict – only match whole words
-    #[arg(short = 'b', long = "boundary-mode", default_value = "none", value_name = "MODE")]
+    #[arg(
+        short = 'b',
+        long = "boundary-mode",
+        default_value = "none",
+        value_name = "MODE"
+    )]
     #[arg(help_heading = "General Options")]
     boundary_mode: String,
 
@@ -301,7 +375,12 @@ struct ReplaceDo {
     word_boundary: bool,
 
     /// How to treat hyphens in boundary detection (boundary|joining)
-    #[arg(short = 'y', long = "hyphen-mode", default_value = "joining", value_name = "MODE")]
+    #[arg(
+        short = 'y',
+        long = "hyphen-mode",
+        default_value = "joining",
+        value_name = "MODE"
+    )]
     #[arg(help_heading = "General Options")]
     hyphen_mode: String,
 
@@ -316,7 +395,12 @@ struct ReplaceDo {
     dry_run: bool,
 
     /// Format of diffs shown in a dry run (unified|side-by-side)
-    #[arg(short = 'd', long = "diff-format", default_value = "unified", value_name = "FORMAT")]
+    #[arg(
+        short = 'd',
+        long = "diff-format",
+        default_value = "unified",
+        value_name = "FORMAT"
+    )]
     #[arg(help_heading = "General Options")]
     diff_format: String,
 
@@ -354,7 +438,9 @@ struct ReplaceDo {
 /// Revert all or part of a previous replacement operation. Supports listing hunks, partial revert, and interactive hunk selection.
 #[derive(Parser, Debug)]
 #[command(about = "Undo or partially revert a previous replacement operation")]
-#[command(long_about = "Revert all or part of a previous replacement operation. Supports listing hunks, partial revert, and interactive hunk selection.")]
+#[command(
+    long_about = "Revert all or part of a previous replacement operation. Supports listing hunks, partial revert, and interactive hunk selection."
+)]
 #[command(after_help = "\
 Examples:
   # Full revert
@@ -413,7 +499,9 @@ struct ReplaceUndo {
 
 /// Arguments for interactive search
 #[derive(Parser, Debug)]
-#[command(about = "Interactively search your codebase match by match. Navigate results using keyboard shortcuts, display context lines, skip files, and optionally edit matches on the spot")]
+#[command(
+    about = "Interactively search your codebase match by match. Navigate results using keyboard shortcuts, display context lines, skip files, and optionally edit matches on the spot"
+)]
 #[command(after_help = "\
 Navigation:
   n or Right Arrow: next match
@@ -483,40 +571,79 @@ struct InteractiveSearchArgs {
     /// - strict: Only match entire words
     /// - partial: Loose boundary handling
     /// - none (default): No boundary constraint
-    /// Shorthand: -w, --word-boundary = --boundary-mode strict
-    #[arg(short = 'b', long = "boundary-mode", default_value = "none", help_heading = "Core Pattern Options")]
+    ///
+    ///   Shorthand: -w, --word-boundary = --boundary-mode strict
+    #[arg(
+        short = 'b',
+        long = "boundary-mode",
+        default_value = "none",
+        help_heading = "Core Pattern Options"
+    )]
     boundary_mode: String,
 
     /// Shorthand for --boundary-mode strict
-    #[arg(short = 'w', long = "word-boundary", conflicts_with = "boundary_mode", help_heading = "Core Pattern Options")]
+    #[arg(
+        short = 'w',
+        long = "word-boundary",
+        conflicts_with = "boundary_mode",
+        help_heading = "Core Pattern Options"
+    )]
     word_boundary: bool,
 
     /// Defines how hyphens are treated in boundary detection (boundary or joining).
     /// Default: joining (hyphens considered part of a word).
-    #[arg(short = 'y', long = "hyphen-mode", default_value = "joining", help_heading = "Core Pattern Options")]
+    #[arg(
+        short = 'y',
+        long = "hyphen-mode",
+        default_value = "joining",
+        help_heading = "Core Pattern Options"
+    )]
     hyphen_mode: String,
 
     /// Specifies the root directory to search.
     /// Default: . (current directory)
-    #[arg(short = 'd', long = "root", default_value = ".", help_heading = "File & Directory Options")]
+    #[arg(
+        short = 'd',
+        long = "root",
+        default_value = ".",
+        help_heading = "File & Directory Options"
+    )]
     root: PathBuf,
 
     /// Comma-separated list of file extensions to include.
     /// Example: -x rs,py,md
-    #[arg(short = 'x', long = "extensions", help_heading = "File & Directory Options")]
+    #[arg(
+        short = 'x',
+        long = "extensions",
+        help_heading = "File & Directory Options"
+    )]
     extensions: Option<String>,
 
     /// Glob patterns to ignore certain files/folders.
     /// Example: --ignore "**/node_modules/**" to skip dependencies.
-    #[arg(short = 'g', long = "ignore", help_heading = "File & Directory Options")]
+    #[arg(
+        short = 'g',
+        long = "ignore",
+        help_heading = "File & Directory Options"
+    )]
     ignore: Vec<String>,
 
     /// Number of context lines before each match (default: 2)
-    #[arg(short = 'B', long = "context-before", default_value = "2", help_heading = "Interactive Navigation & Context")]
+    #[arg(
+        short = 'B',
+        long = "context-before",
+        default_value = "2",
+        help_heading = "Interactive Navigation & Context"
+    )]
     context_before: usize,
 
     /// Number of context lines after each match (default: 2)
-    #[arg(short = 'A', long = "context-after", default_value = "2", help_heading = "Interactive Navigation & Context")]
+    #[arg(
+        short = 'A',
+        long = "context-after",
+        default_value = "2",
+        help_heading = "Interactive Navigation & Context"
+    )]
     context_after: usize,
 
     /// Number of threads for parallel searching.
@@ -525,21 +652,39 @@ struct InteractiveSearchArgs {
     threads: Option<NonZeroUsize>,
 
     /// Enables incremental caching of file checksums or Git data. Improves speed on repeated searches.
-    #[arg(short = 'I', long = "incremental", help_heading = "Performance & Caching")]
+    #[arg(
+        short = 'I',
+        long = "incremental",
+        help_heading = "Performance & Caching"
+    )]
     incremental: bool,
 
     /// Path to cache file (default: .rustscout-cache.json)
-    #[arg(short = 'C', long = "cache-path", help_heading = "Performance & Caching")]
+    #[arg(
+        short = 'C',
+        long = "cache-path",
+        help_heading = "Performance & Caching"
+    )]
     cache_path: Option<PathBuf>,
 
     /// Method for detecting changed files: auto (default), git, or signature
-    #[arg(short = 'S', long = "cache-strategy", default_value = "auto", help_heading = "Performance & Caching")]
+    #[arg(
+        short = 'S',
+        long = "cache-strategy",
+        default_value = "auto",
+        help_heading = "Performance & Caching"
+    )]
     cache_strategy: String,
 
     /// Specifies how to handle invalid UTF-8:
     /// - failfast (default)
     /// - lossy (replace invalid sequences)
-    #[arg(short = 'E', long = "encoding", default_value = "failfast", help_heading = "Misc. & Logging")]
+    #[arg(
+        short = 'E',
+        long = "encoding",
+        default_value = "failfast",
+        help_heading = "Misc. & Logging"
+    )]
     encoding: String,
 
     /// Disables colored output in the TUI. Suitable for terminals that lack color support.
@@ -549,7 +694,9 @@ struct InteractiveSearchArgs {
 
 #[derive(Subcommand, Debug)]
 #[command(about = "RustScout Workspace Management")]
-#[command(long_about = "All short flags and documentation are designed to position RustScout as the market leader in code search and replace, with a user-friendly yet powerful workspace experience.")]
+#[command(
+    long_about = "All short flags and documentation are designed to position RustScout as the market leader in code search and replace, with a user-friendly yet powerful workspace experience."
+)]
 enum WorkspaceCommands {
     /// Initialize a new RustScout workspace
     Init(WorkspaceInit),
@@ -559,8 +706,12 @@ enum WorkspaceCommands {
 }
 
 #[derive(Parser, Debug)]
-#[command(about = "Creates a .rustscout folder in the specified directory (or current directory), saving workspace metadata in JSON or YAML")]
-#[command(long_about = "This is the first step to enabling advanced code search & replace features (undo, caching, etc.).")]
+#[command(
+    about = "Creates a .rustscout folder in the specified directory (or current directory), saving workspace metadata in JSON or YAML"
+)]
+#[command(
+    long_about = "This is the first step to enabling advanced code search & replace features (undo, caching, etc.)."
+)]
 #[command(after_help = "\
 Example Workflows:
 
@@ -582,13 +733,24 @@ Example Workflows:
 struct WorkspaceInit {
     /// The directory in which to initialize the workspace.
     /// Default: current directory (.)
-    #[arg(short = 'd', long = "dir", value_name = "DIR", help_heading = "Options")]
+    #[arg(
+        short = 'd',
+        long = "dir",
+        value_name = "DIR",
+        help_heading = "Options"
+    )]
     dir: Option<PathBuf>,
 
     /// The metadata file format to use (json or yaml).
     /// Default: json
     /// If yaml is chosen, creates workspace.yaml; if json, creates workspace.json.
-    #[arg(short = 'f', long = "format", default_value = "json", value_name = "FORMAT", help_heading = "Options")]
+    #[arg(
+        short = 'f',
+        long = "format",
+        default_value = "json",
+        value_name = "FORMAT",
+        help_heading = "Options"
+    )]
     format: String,
 
     /// Overwrite any existing .rustscout folder or config files without confirmation.
@@ -600,7 +762,9 @@ struct WorkspaceInit {
 
 #[derive(Parser, Debug)]
 #[command(about = "Displays metadata and status of the current (or specified) RustScout workspace")]
-#[command(long_about = "Displays metadata and status of the current (or specified) RustScout workspace—helpful for verifying the root path, format, version, and other settings.")]
+#[command(
+    long_about = "Displays metadata and status of the current (or specified) RustScout workspace—helpful for verifying the root path, format, version, and other settings."
+)]
 #[command(after_help = "\
 Output / Behavior:
 - Root Path: The canonical root of the workspace.
@@ -620,7 +784,12 @@ struct WorkspaceInfo {
     /// The directory whose workspace info you want to show.
     /// Default: current directory (.)
     /// If .rustscout isn't found, tries to walk upward to detect the workspace root.
-    #[arg(short = 'd', long = "dir", value_name = "DIR", help_heading = "Options")]
+    #[arg(
+        short = 'd',
+        long = "dir",
+        value_name = "DIR",
+        help_heading = "Options"
+    )]
     dir: Option<PathBuf>,
 }
 
@@ -1455,7 +1624,8 @@ fn handle_interactive_search(args: InteractiveSearchArgs, verbosity: &str) -> Re
     };
 
     // Convert args to search config with the global verbosity
-    let config = rustscout::search::interactive_search::convert_args_to_config(&lib_args, verbosity)?;
+    let config =
+        rustscout::search::interactive_search::convert_args_to_config(&lib_args, verbosity)?;
 
     rustscout::search::interactive_search::run_interactive_search(&lib_args, &config)?;
     Ok(())

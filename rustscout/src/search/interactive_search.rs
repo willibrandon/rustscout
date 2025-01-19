@@ -74,23 +74,12 @@ pub enum PromptAction {
 }
 
 /// Statistics for the interactive search session
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct InteractiveStats {
     pub matches_visited: usize,
     pub matches_skipped: usize,
     pub files_skipped: usize,
     pub total_matches: usize,
-}
-
-impl Default for InteractiveStats {
-    fn default() -> Self {
-        Self {
-            matches_visited: 0,
-            matches_skipped: 0,
-            files_skipped: 0,
-            total_matches: 0,
-        }
-    }
 }
 
 /// Mode for the edit session
@@ -290,17 +279,9 @@ impl EditSession {
                         );
                     }
                 }
-                if use_color {
-                    colored_line.normal()
-                } else {
-                    colored_line.normal()
-                }
+                colored_line.normal()
             } else {
-                if use_color {
-                    line.normal()
-                } else {
-                    line.normal()
-                }
+                line.normal()
             };
 
             println!("{}{:>3}: {}", line_prefix, line_num + 1, line_display);
@@ -513,7 +494,10 @@ fn flush_pending_input() -> Result<(), SearchError> {
 }
 
 /// Run an interactive search session
-pub fn run_interactive_search(args: &InteractiveSearchArgs, config: &SearchConfig) -> Result<(), SearchError> {
+pub fn run_interactive_search(
+    args: &InteractiveSearchArgs,
+    config: &SearchConfig,
+) -> Result<(), SearchError> {
     // Perform the search
     let search_result = search(config)?;
 
@@ -552,8 +536,10 @@ pub fn run_interactive_search(args: &InteractiveSearchArgs, config: &SearchConfi
     );
 
     // Initialize stats and visited flags
-    let mut stats = InteractiveStats::default();
-    stats.total_matches = all_matches.len();
+    let mut stats = InteractiveStats {
+        total_matches: all_matches.len(),
+        ..Default::default()
+    };
     let mut visited_flags = vec![false; all_matches.len()];
     let use_color = !args.no_color;
 
@@ -561,24 +547,22 @@ pub fn run_interactive_search(args: &InteractiveSearchArgs, config: &SearchConfi
     flush_pending_input()?;
 
     // Run the interactive loop
-    interactive_loop(
-        &all_matches,
-        &mut stats,
-        &mut visited_flags,
-        use_color,
-    )?;
+    interactive_loop(&all_matches, &mut stats, &mut visited_flags, use_color)?;
 
     Ok(())
 }
 
 /// Convert args to search config
-pub fn convert_args_to_config(args: &InteractiveSearchArgs, verbosity: &str) -> Result<SearchConfig, SearchError> {
+pub fn convert_args_to_config(
+    args: &InteractiveSearchArgs,
+    verbosity: &str,
+) -> Result<SearchConfig, SearchError> {
     let pattern_defs = args
         .patterns
         .iter()
         .map(|p| PatternDefinition {
             text: p.clone(),
-            is_regex: args.is_regex.get(0).copied().unwrap_or(false),
+            is_regex: args.is_regex.first().copied().unwrap_or(false),
             boundary_mode: if args.word_boundary {
                 WordBoundaryMode::WholeWords
             } else {
@@ -642,15 +626,7 @@ fn interactive_loop(
     if std::env::var("INTERACTIVE_TEST").is_ok() {
         // In test mode, just display all matches without interaction
         for (i, (file_path, m)) in matches.iter().enumerate() {
-            show_match(
-                i,
-                matches,
-                stats,
-                visited_flags,
-                file_path,
-                m,
-                use_color,
-            );
+            show_match(i, matches, stats, visited_flags, file_path, m, use_color);
         }
         return Ok(());
     }
@@ -694,9 +670,9 @@ fn interactive_loop(
                 let current_file = file_path;
                 // Mark all unvisited matches in this file as skipped
                 let mut skipped = 0;
-                for i in 0..matches.len() {
-                    if &matches[i].0 == current_file && !visited_flags[i] {
-                        visited_flags[i] = true;
+                for (i, flag) in visited_flags.iter_mut().enumerate() {
+                    if &matches[i].0 == current_file && !*flag {
+                        *flag = true;
                         skipped += 1;
                     }
                 }
@@ -727,9 +703,9 @@ fn interactive_loop(
             PromptAction::SkipAll => {
                 // Mark all unvisited matches as skipped
                 let mut skipped = 0;
-                for i in 0..matches.len() {
-                    if !visited_flags[i] {
-                        visited_flags[i] = true;
+                for flag in visited_flags.iter_mut() {
+                    if !*flag {
+                        *flag = true;
                         skipped += 1;
                     }
                 }
@@ -767,7 +743,7 @@ fn show_match(
     matches: &[(PathBuf, ScoutMatch)],
     stats: &mut InteractiveStats,
     visited_flags: &mut [bool],
-    file_path: &PathBuf,
+    file_path: &Path,
     m: &ScoutMatch,
     use_color: bool,
 ) {
@@ -883,7 +859,7 @@ fn convert_key_event(event: &KeyEvent) -> PromptAction {
 }
 
 /// Print the context around a match
-fn print_context(file_path: &PathBuf, m: &ScoutMatch, use_color: bool) {
+fn print_context(file_path: &Path, m: &ScoutMatch, use_color: bool) {
     // Get workspace root for path display
     let workspace_root = detect_workspace_root(file_path)
         .unwrap_or_else(|_| file_path.parent().unwrap().to_path_buf());
@@ -945,14 +921,14 @@ fn print_context(file_path: &PathBuf, m: &ScoutMatch, use_color: bool) {
 
 /// Open the file in an editor at the specified line
 fn open_in_editor(
-    file_path: &PathBuf,
+    file_path: &Path,
     line: usize,
     match_start: usize,
     match_end: usize,
     use_color: bool,
 ) -> Result<bool, SearchError> {
     // Create and run an edit session
-    let mut session = EditSession::new(file_path.clone(), line, match_start, match_end)
+    let mut session = EditSession::new(file_path.to_path_buf(), line, match_start, match_end)
         .map_err(|e| SearchError::config_error(format!("Failed to create edit session: {}", e)))?;
 
     // Run the edit session

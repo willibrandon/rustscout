@@ -17,13 +17,13 @@ impl UndoFileReference {
     /// Create a new file reference by computing both relative and absolute paths
     pub fn new(path: &Path) -> SearchResult<Self> {
         // Get absolute path
-        let abs_path = path.canonicalize().map_err(|e| SearchError::IoError(e))?;
+        let abs_path = path.canonicalize().map_err(SearchError::IoError)?;
 
         // Find workspace root and compute relative path
         let workspace_root = detect_workspace_root(path)?;
         let workspace_root = workspace_root
             .canonicalize()
-            .map_err(|e| SearchError::IoError(e))?;
+            .map_err(SearchError::IoError)?;
 
         // Strip the workspace root to get the relative path
         let rel_path = match abs_path.strip_prefix(&workspace_root) {
@@ -31,7 +31,7 @@ impl UndoFileReference {
             Err(_) => {
                 // If stripping fails, try with the original path components
                 path.strip_prefix(&workspace_root)
-                    .unwrap_or_else(|_| Path::new(path.file_name().unwrap_or_default()))
+                    .unwrap_or(path)
                     .to_path_buf()
             }
         };
@@ -85,7 +85,7 @@ impl UndoFileReference {
         let workspace_root = detect_workspace_root(&abs_path)?;
         let rel_path = abs_path
             .strip_prefix(&workspace_root)
-            .unwrap_or_else(|_| abs_path.as_path())
+            .unwrap_or(&abs_path)
             .to_path_buf();
 
         Ok(Self {
