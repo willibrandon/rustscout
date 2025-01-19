@@ -1,7 +1,10 @@
 use std::path::PathBuf;
+use std::io::{self, Write};
+use std::fs;
+
 use colored::Colorize;
 use crossterm::{
-    event::{Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode},
 };
 
@@ -67,6 +70,275 @@ impl Default for InteractiveStats {
             files_skipped: 0,
             total_matches: 0,
         }
+    }
+}
+
+/// Mode for the edit session
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditMode {
+    View,           // Viewing/navigating lines
+    LineEdit,       // Editing a specific line
+    Replace,        // In replace mode
+    SaveConfirm,    // Confirming save
+}
+
+/// Actions available during edit mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditAction {
+    MovePrev,
+    MoveNext,
+    StartEdit,
+    StartReplace,
+    Save,
+    Cancel,
+    Unknown,
+}
+
+/// State for the edit session
+struct EditSession {
+    file_path: PathBuf,
+    lines: Vec<String>,
+    current_line: usize,
+    mode: EditMode,
+    modified: bool,
+    match_line: usize,     // The original match line number
+    match_start: usize,    // Start offset of match in line
+    match_end: usize,      // End offset of match in line
+}
+
+impl EditSession {
+    fn new(file_path: PathBuf, match_line: usize, match_start: usize, match_end: usize) -> io::Result<Self> {
+        let content = fs::read_to_string(&file_path)?;
+        let lines: Vec<String> = content.lines().map(String::from).collect();
+        
+        Ok(Self {
+            file_path,
+            lines,
+            current_line: match_line.saturating_sub(1), // 0-based index
+            mode: EditMode::View,
+            modified: false,
+            match_line: match_line.saturating_sub(1),
+            match_start,
+            match_end,
+        })
+    }
+
+    fn save(&self) -> io::Result<()> {
+        let content = self.lines.join("\n") + "\n";
+        fs::write(&self.file_path, content)
+    }
+
+    fn run(&mut self, use_color: bool) -> Result<bool, SearchError> {
+        while self.mode != EditMode::SaveConfirm {
+            // Clear screen and show content
+            print!("{}", Clear(ClearType::All));
+            print!("\x1B[H");
+            
+            // Show header
+            let header = format!(
+                "=== Edit Mode: {} ===",
+                self.file_path.display()
+            );
+            println!("{}", if use_color { 
+                header.bright_blue().bold()
+            } else { 
+                header.normal()
+            });
+            println!("Press: [↑/↓] navigate, [Enter] edit line, [r]eplace, [s]ave, [c]ancel\n");
+
+            // Show file content with context
+            self.display_content(use_color)?;
+
+            // Handle input based on current mode
+            match self.mode {
+                EditMode::View => {
+                    match self.read_view_action()? {
+                        EditAction::MovePrev => {
+                            if self.current_line > 0 {
+                                self.current_line -= 1;
+                            }
+                        }
+                        EditAction::MoveNext => {
+                            if self.current_line < self.lines.len() - 1 {
+                                self.current_line += 1;
+                            }
+                        }
+                        EditAction::StartEdit => {
+                            self.mode = EditMode::LineEdit;
+                        }
+                        EditAction::StartReplace => {
+                            self.mode = EditMode::Replace;
+                        }
+                        EditAction::Save => {
+                            if self.modified {
+                                if let Err(e) = self.save() {
+                                    eprintln!("Failed to save: {}", e);
+                                    continue;
+                                }
+                                return Ok(true); // true = file was modified
+                            } else {
+                                return Ok(false);
+                            }
+                        }
+                        EditAction::Cancel => {
+                            return Ok(false);
+                        }
+                        _ => {}
+                    }
+                }
+                EditMode::LineEdit => {
+                    self.edit_current_line(use_color)?;
+                    self.mode = EditMode::View;
+                }
+                EditMode::Replace => {
+                    self.do_replace(use_color)?;
+                    self.mode = EditMode::View;
+                }
+                _ => {}
+            }
+        }
+        
+        Ok(false)
+    }
+
+    fn display_content(&self, use_color: bool) -> Result<(), SearchError> {
+        // Show a window of lines around current_line
+        let window_size = 5;
+        let start = self.current_line.saturating_sub(window_size);
+        let end = (self.current_line + window_size + 1).min(self.lines.len());
+
+        for (i, line) in self.lines[start..end].iter().enumerate() {
+            let line_num = start + i;
+            let line_prefix = if line_num == self.current_line {
+                ">".to_string()
+            } else {
+                " ".to_string()
+            };
+
+            let line_display = if line_num == self.match_line {
+                // Highlight the matched portion
+                let mut colored_line = line.clone();
+                if use_color {
+                    colored_line.replace_range(
+                        self.match_start..self.match_end,
+                        &line[self.match_start..self.match_end].bright_green().bold().to_string()
+                    );
+                }
+                if use_color {
+                    colored_line.normal()
+                } else {
+                    colored_line.normal()
+                }
+            } else {
+                if use_color {
+                    line.normal()
+                } else {
+                    line.normal()
+                }
+            };
+
+            println!("{}{:>3}: {}", line_prefix, line_num + 1, line_display);
+        }
+        
+        Ok(())
+    }
+
+    fn read_view_action(&self) -> Result<EditAction, SearchError> {
+        match event::read()
+            .map_err(|e| SearchError::config_error(format!("Failed to read event: {}", e)))?
+        {
+            Event::Key(key) => match key.code {
+                KeyCode::Up => Ok(EditAction::MovePrev),
+                KeyCode::Down => Ok(EditAction::MoveNext),
+                KeyCode::Enter => Ok(EditAction::StartEdit),
+                KeyCode::Char('r') | KeyCode::Char('R') => Ok(EditAction::StartReplace),
+                KeyCode::Char('s') | KeyCode::Char('S') => Ok(EditAction::Save),
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Ok(EditAction::Cancel),
+                KeyCode::Char('c') | KeyCode::Char('C') => Ok(EditAction::Cancel),
+                KeyCode::Esc => Ok(EditAction::Cancel),
+                _ => Ok(EditAction::Unknown),
+            },
+            _ => Ok(EditAction::Unknown),
+        }
+    }
+
+    fn edit_current_line(&mut self, _use_color: bool) -> Result<(), SearchError> {
+        print!("\r\nEdit line {}: ", self.current_line + 1);
+        io::stdout().flush().ok();
+
+        // Read the new line content
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)
+            .map_err(|e| SearchError::config_error(format!("Failed to read line: {}", e)))?;
+
+        let new_content = input.trim();
+        if new_content != self.lines[self.current_line] {
+            self.lines[self.current_line] = new_content.to_string();
+            self.modified = true;
+        }
+
+        Ok(())
+    }
+
+    fn do_replace(&mut self, _use_color: bool) -> Result<(), SearchError> {
+        print!("\r\nSearch pattern: ");
+        io::stdout().flush().ok();
+        let mut pattern = String::new();
+        io::stdin().read_line(&mut pattern)
+            .map_err(|e| SearchError::config_error(format!("Failed to read pattern: {}", e)))?;
+        let pattern = pattern.trim();
+
+        print!("Replacement text: ");
+        io::stdout().flush().ok();
+        let mut replacement = String::new();
+        io::stdin().read_line(&mut replacement)
+            .map_err(|e| SearchError::config_error(format!("Failed to read replacement: {}", e)))?;
+        let replacement = replacement.trim();
+
+        print!("Confirm each replacement? (y/N): ");
+        io::stdout().flush().ok();
+        let mut confirm = String::new();
+        io::stdin().read_line(&mut confirm)
+            .map_err(|e| SearchError::config_error(format!("Failed to read confirmation: {}", e)))?;
+        let mut confirm_replacements = confirm.trim().to_lowercase().starts_with('y');
+
+        let mut modified = false;
+        for line in &mut self.lines {
+            if confirm_replacements {
+                // Show the potential replacement
+                if line.contains(pattern) {
+                    println!("\nCurrent:  {}", line);
+                    let new_line = line.replace(pattern, replacement);
+                    println!("Replace with: {}", new_line);
+                    print!("Replace? (y/N/a=all): ");
+                    io::stdout().flush().ok();
+
+                    let mut response = String::new();
+                    io::stdin().read_line(&mut response)
+                        .map_err(|e| SearchError::config_error(format!("Failed to read response: {}", e)))?;
+                    let response = response.trim().to_lowercase();
+
+                    if response == "a" {
+                        // Switch to automatic mode
+                        confirm_replacements = false;
+                        *line = new_line;
+                        modified = true;
+                    } else if response.starts_with('y') {
+                        *line = new_line;
+                        modified = true;
+                    }
+                }
+            } else {
+                // Automatic replacement
+                if line.contains(pattern) {
+                    *line = line.replace(pattern, replacement);
+                    modified = true;
+                }
+            }
+        }
+
+        self.modified |= modified;
+        Ok(())
     }
 }
 
@@ -284,8 +556,16 @@ fn interactive_loop(
             PromptAction::Quit => break,
             PromptAction::Editor => {
                 disable_raw_mode()?;
-                open_in_editor(file_path, m.line_number)?;
+                let was_modified = open_in_editor(file_path, m.line_number, m.start, m.end, use_color)?;
                 enable_raw_mode()?;
+                
+                if was_modified {
+                    // Re-run the search to get updated matches
+                    // TODO: Implement re-scanning of the modified file
+                    // For now, we'll just continue with the current matches
+                    println!("\nFile was modified. Press any key to continue...");
+                    let _ = read_key_input()?;
+                }
             }
             PromptAction::Unknown => {}
         }
@@ -324,9 +604,9 @@ fn show_match(
         file_path.display()
     );
     println!("{}", if use_color { 
-        header.bold().bright_blue() 
+        header.bright_blue().bold()
     } else { 
-        header.normal() 
+        header.normal()
     });
     
     let stats_line = format!(
@@ -336,9 +616,9 @@ fn show_match(
         stats.files_skipped
     );
     println!("{}", if use_color { 
-        stats_line.bright_black() 
+        stats_line.bright_black()
     } else { 
-        stats_line.normal() 
+        stats_line.normal()
     });
     
     print_context(file_path, m, use_color);
@@ -346,9 +626,9 @@ fn show_match(
     println!("\nNavigation (wrap-around enabled):");
     let nav_help = "[n]ext [p]rev [f]skip file [a]ll skip [q]uit [e]dit";
     println!("{}", if use_color { 
-        nav_help.bright_black() 
+        nav_help.bright_black()
     } else { 
-        nav_help.normal() 
+        nav_help.normal()
     });
     println!("Arrow keys: ←/→ prev/next, ↑/↓ prev/next");
 }
@@ -413,18 +693,18 @@ fn print_context(file_path: &PathBuf, m: &ScoutMatch, use_color: bool) {
     println!("\n{}", "-".repeat(40));
     let header = format!("File: {}", file_path.display());
     println!("{}", if use_color { 
-        header.bright_yellow() 
+        header.bright_yellow()
     } else { 
-        header.normal() 
+        header.normal()
     });
 
     // Show context before
     for (num, line) in &m.context_before {
         let line_str = format!("   {} | {}", num, line);
         println!("{}", if use_color { 
-            line_str.dimmed() 
+            line_str.dimmed()
         } else { 
-            line_str.normal() 
+            line_str.normal()
         });
     }
 
@@ -442,26 +722,21 @@ fn print_context(file_path: &PathBuf, m: &ScoutMatch, use_color: bool) {
     for (num, line) in &m.context_after {
         let line_str = format!("   {} | {}", num, line);
         println!("{}", if use_color { 
-            line_str.dimmed() 
+            line_str.dimmed()
         } else { 
-            line_str.normal() 
+            line_str.normal()
         });
     }
 }
 
 /// Open the file in an editor at the specified line
-fn open_in_editor(file_path: &PathBuf, line: usize) -> Result<(), SearchError> {
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
-    let status = std::process::Command::new(editor)
-        .arg(format!("+{}", line))
-        .arg(file_path)
-        .status()
-        .map_err(|e| SearchError::config_error(format!("Failed to launch editor: {}", e)))?;
+fn open_in_editor(file_path: &PathBuf, line: usize, match_start: usize, match_end: usize, use_color: bool) -> Result<bool, SearchError> {
+    // Create and run an edit session
+    let mut session = EditSession::new(file_path.clone(), line, match_start, match_end)
+        .map_err(|e| SearchError::config_error(format!("Failed to create edit session: {}", e)))?;
 
-    if !status.success() {
-        eprintln!("Editor exited with non-zero code.");
-    }
-    Ok(())
+    // Run the edit session
+    session.run(use_color)
 }
 
 /// Print final summary statistics
