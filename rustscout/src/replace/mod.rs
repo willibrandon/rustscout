@@ -401,26 +401,37 @@ impl FileReplacementPlan {
             return Ok(None);
         }
 
+        // 1) Figure out the workspace root
         let workspace_root = detect_workspace_root(&self.file_path)?;
+        // 2) Determine the "backups" subdirectory
         let backup_dir = if let Some(ref dir) = config.backup_dir {
             dir.clone()
         } else {
             workspace_root.join(".rustscout").join("backups")
         };
+        fs::create_dir_all(&backup_dir)?;
 
-        fs::create_dir_all(&backup_dir).map_err(SearchError::IoError)?;
+        // 3) Compute a unique backup filename from the *relative path*
+        let relative = self
+            .file_path
+            .strip_prefix(&workspace_root)
+            .unwrap_or(&self.file_path);
+        let relative_str = relative
+            .to_string_lossy()
+            .replace("\\", "_")
+            .replace("/", "_");
 
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let backup_name = format!(
-            "{}.{}",
-            self.file_path.file_name().unwrap().to_string_lossy(),
-            timestamp
-        );
-        let backup_path = backup_dir.join(backup_name);
 
+        // 4) Build the final backup filename (use path-based name + timestamp)
+        // e.g. "crate_a_lib.rs.1737267859"
+        let backup_name = format!("{}.{}", relative_str, timestamp);
+        let backup_path = backup_dir.join(&backup_name);
+
+        // 5) Copy original file to the new backup path
         fs::copy(&self.file_path, &backup_path).map_err(SearchError::IoError)?;
 
         if config.preserve_metadata {
