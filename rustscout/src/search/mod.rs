@@ -92,6 +92,7 @@
 /// let mut line_buffer = String::with_capacity(256);
 /// ```
 pub mod engine;
+pub mod interactive_search;
 pub mod matcher;
 pub mod processor;
 

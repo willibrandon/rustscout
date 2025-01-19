@@ -11,6 +11,7 @@ pub mod metrics;
 pub mod replace;
 pub mod results;
 pub mod search;
+pub mod workspace;
 
 pub use cache::{
     ChangeDetectionStrategy, ChangeDetector, ChangeStatus, FileChangeInfo, FileSignatureDetector,
@@ -23,4 +24,5 @@ pub use metrics::MemoryMetrics;
 pub use replace::{FileReplacementPlan, ReplacementConfig, ReplacementSet, ReplacementTask};
 pub use results::{FileResult, Match, SearchResult as SearchResultType};
 pub use search::matcher::{HyphenMode, PatternDefinition, WordBoundaryMode};
-pub use search::search;
+pub use search::{interactive_search, search};
+pub use workspace::{detect_workspace_root, WorkspaceMetadata};
