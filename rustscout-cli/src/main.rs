@@ -19,30 +19,72 @@ use tracing_subscriber::{self, EnvFilter};
 type Result<T> = std::result::Result<T, SearchError>;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(name = "RustScout CLI")]
+#[command(about = "RustScout is a **high-performance** code search and replace tool, featuring concurrency, incremental caching, partial/interactive workflows, and robust workspace management.")]
+#[command(long_about = None)]
+#[command(after_help = "\
+Global Options:
+  -h, --help        Print this help message
+  -V, --version     Print the version of RustScout
+  -v, --verbosity <LEVEL>
+                    Set the global log level (error|warn|info|debug|trace)
+                    (Defaults to 'info')
+
+Commands:
+  search (s)               High-speed, multi-pattern code search with boundary
+                           modes, incremental caching, and rich output
+  replace (r)              Full-featured find-and-replace with undo, partial
+                           revert, and interactive approvals
+  interactive-search (i)   Steer through matches one by one in a TUI, optionally
+                           editing them in place
+  workspace (w)            Initialize and manage RustScout's workspace metadata
+  help (h)                 Display help or usage for any command
+
+For detailed usage of each command, run:
+  rustscout-cli <COMMAND> --help
+
+Examples:
+  # Basic code search
+  rustscout-cli search -p \"TODO\" -d ./src
+  
+  # Perform a replacement operation with backup and interactive confirmations
+  rustscout-cli replace do --pattern foo --replacement bar -B --interactive
+  
+  # Undo the last replacement by its ID
+  rustscout-cli replace undo 1672834920
+  
+  # Launch TUI to step through each match, showing context
+  rustscout-cli interactive-search -p \"fixme\" -B 2 -A 2
+  
+  # Initialize a new RustScout workspace at /my_project
+  rustscout-cli workspace init --dir /my_project")]
 struct Cli {
+    /// Set the global log level (error|warn|info|debug|trace)
+    #[arg(short = 'v', long = "verbosity", global = true, default_value = "info")]
+    verbosity: String,
+
     #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Powerfully search your codebase for patterns—literal or regex—while leveraging features like boundary modes, incremental caching, context lines, and more
+    /// High-speed, multi-pattern code search with boundary modes, incremental caching, and rich output
     #[command(visible_alias = "s")]
     Search(Box<CliSearchConfig>),
 
-    /// Replace patterns in files
+    /// Full-featured find-and-replace with undo, partial revert, and interactive approvals
     #[command(visible_alias = "r")]
     Replace {
         #[command(subcommand)]
         command: ReplaceCommands,
     },
 
-    /// Interactively search your codebase match by match. Navigate results using keyboard shortcuts, display context lines, skip files, and optionally edit matches on the spot
+    /// Steer through matches one by one in a TUI, optionally editing them in place
     #[command(visible_alias = "i")]
     InteractiveSearch(Box<InteractiveSearchArgs>),
 
-    /// Manage RustScout workspace configuration
+    /// Initialize and manage RustScout's workspace metadata
     #[command(visible_alias = "w")]
     Workspace {
         #[command(subcommand)]
@@ -73,10 +115,6 @@ fn setup_logging(level: &str) -> Result<()> {
 }
 
 #[derive(Subcommand, Debug)]
-#[command(about = "Perform search-and-replace operations with powerful pattern matching and undo capabilities")]
-#[command(long_about = "RustScout's advanced find-and-replace workflow suite, featuring:\n\
-1. Powerful Search/Replace capabilities (replace do), with literal or regex matches, boundary modes, dry runs, and interactive approvals.\n\
-2. Seamless Undo operations (replace undo), supporting partial or full revert of prior changes, with interactive or hunk-based selection.")]
 enum ReplaceCommands {
     /// Perform a search/replace operation
     Do(ReplaceDo),
