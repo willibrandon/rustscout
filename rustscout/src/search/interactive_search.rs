@@ -216,13 +216,16 @@ impl EditSession {
             };
 
             let line_display = if line_num == self.match_line {
-                // Highlight the matched portion
+                // Highlight the matched portion if it still fits within the line
                 let mut colored_line = line.clone();
-                if use_color {
-                    colored_line.replace_range(
-                        self.match_start..self.match_end,
-                        &line[self.match_start..self.match_end].bright_green().bold().to_string()
-                    );
+                if use_color && self.match_start < line.len() {
+                    let highlight_end = self.match_end.min(line.len());
+                    if highlight_end > self.match_start {
+                        colored_line.replace_range(
+                            self.match_start..highlight_end,
+                            &line[self.match_start..highlight_end].bright_green().bold().to_string()
+                        );
+                    }
                 }
                 if use_color {
                     colored_line.normal()
